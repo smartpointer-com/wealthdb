@@ -794,15 +794,27 @@ class TestStatementOfAssetsHoldingDetail:
         assert row["cost_basis"] is None
         assert row["acquisition_fx_rate"] is None
 
-    def test_a_cash_line_keeps_its_rate_as_the_current_one(self):
-        rows = parse_statement_of_assets_text("\n".join([
+    def _cash_rows(self, iban_line: str) -> list[dict]:
+        """The fixture's cash rows, its IBAN line being `iban_line`."""
+        text = "\n".join([
             "Valued in USD", "Detailed positions",
             "GBP 1 000.00 Example Cash Account GBP 0.00 1.3000 1 300 0.10",
-            "CH00 0000 0000 0000 0000 A",
-            "Additional information Abbreviations",
-        ]), "<doc-token>", self.LABEL)
+            iban_line, "Additional information Abbreviations"])
+        return parse_statement_of_assets_text(text, "<doc-token>", self.LABEL)
+
+    def test_a_cash_line_keeps_its_rate_as_the_current_one(self):
+        rows = self._cash_rows("CH00 0000 0000 0000 0000 A")
         assert rows[0]["current_fx_rate"] == pytest.approx(1.3)
         assert rows[0]["acquisition_fx_rate"] is None
+
+    @pytest.mark.parametrize(("printed", "iban"), [
+        ("CH00 0000 0000 0000 0000 A", "CH000000000000000000A"),
+        ("CH00 0000 0000 0000 0000 1", "CH0000000000000000001"),
+        ("CH000000000000000000A", "CH000000000000000000A"),
+    ])
+    def test_a_cash_line_takes_the_iban_below_it(self, printed, iban):
+        rows = self._cash_rows(f"    {printed}")
+        assert [r["account_external_id"] for r in rows] == [iban]
 
     def test_a_holding_whose_headline_does_not_parse_takes_no_other(self):
         # The second headline prints an integer cost price, and its market

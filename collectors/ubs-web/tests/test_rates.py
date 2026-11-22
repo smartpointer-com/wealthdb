@@ -872,6 +872,12 @@ def test_the_legacy_page_reads_both_tables_from_the_first_copy():
     assert rate_parsers.legacy_iban(html) == IBAN_LEGACY
 
 
+def test_a_legacy_iban_printed_with_no_break_spaces_reads():
+    html = _legacy_page([("01.01.2026", "0.100%", "")], [],
+                        iban=IBAN_LEGACY_PRINTED.replace(" ", "&nbsp;"))
+    assert rate_parsers.legacy_iban(html) == IBAN_LEGACY
+
+
 def test_a_legacy_page_with_headers_and_no_rows_states_nothing():
     html = _legacy_page([], [], repeated=False)
     assert rate_parsers.legacy_conditions(html) == []

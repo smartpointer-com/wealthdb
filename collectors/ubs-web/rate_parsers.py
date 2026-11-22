@@ -22,6 +22,7 @@ from datetime import datetime
 from html.parser import HTMLParser
 
 import landmarks as ubs  # local module
+from pdf_common import iban_in
 
 SIDE_CREDIT = "credit"
 SIDE_DEBIT = "debit"
@@ -35,9 +36,6 @@ _LEGACY_TABLES = {"credit interest": SIDE_CREDIT,
 # The columns every legacy rate table carries, in its header row.
 _LEGACY_COLUMNS = ("valid from", "interest rate", "limit")
 
-# A CH IBAN as printed: two letters, two check digits, then 17
-# characters, in groups of four or run together.
-_IBAN_RE = re.compile(r"\bCH\d{2}(?:\s?[0-9A-Z]){17}\b")
 # The account page's chooser row for its own account. The chooser
 # lists every other account beside it, so only this row names the page's.
 _SELECTED_ROW_CLASSES = {"bzeSelectDialogRow", "selected"}
@@ -282,8 +280,10 @@ def legacy_iban(html: str) -> str | None:
     p = _SelectedRow()
     p.feed(html)
     p.close()
-    m = _IBAN_RE.search(" ".join(p.text or []))
-    return ubs.iban_canonical(m.group(0)) if m else None
+    # Each run of whitespace, a no-break space among them, reads as one
+    # space, as in the contract list's rows.
+    text = " ".join(" ".join(p.text or []).split())
+    return ubs.iban_canonical(iban_in(text))
 
 
 def _rate_table_side(table: dict) -> str | None:
@@ -406,7 +406,5 @@ def legacy_account_rows(html: str) -> list[dict]:
         if ref in seen:
             continue
         seen.add(ref)
-        m = _IBAN_RE.search(text)
-        out.append({"iban": ubs.iban_canonical(m.group(0)) if m else None,
-                    "ref": ref})
+        out.append({"iban": ubs.iban_canonical(iban_in(text)), "ref": ref})
     return out

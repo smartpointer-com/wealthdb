@@ -19,8 +19,8 @@ from collectorkit.words import Extracted
 
 import soa_transaction_list
 from pdf_common import (
-    LONG_DATE, document_text, dmy_to_iso, dmy_to_unix, long_date, to_float,
-    to_unix,
+    LONG_DATE, document_text, dmy_to_iso, dmy_to_unix, iban_in, long_date,
+    to_float, to_unix,
 )
 
 
@@ -155,9 +155,6 @@ _CASH_AMOUNT_LINE_RE = re.compile(
     r"^(?P<ccy>[A-Z]{3})\s+(?P<units>-?[\d\s']+(?:\.\d+)?)\s+(?P<desc>.+?)\s+"
     r"(?P<opening>[\d\s']+(?:\.\d+)?)\s+(?:(?P<fx>\d+\.\d+)\s+)?"
     r"(?P<market_value>-?[\d\s']+)\s+(?P<pct>-?\d+\.\d{2})\s*$"
-)
-_IBAN_LINE_RE = re.compile(
-    r"\b(?P<iban>CH\d{2}(?:\s?[A-Z0-9]{4}){4}\s?[A-Z]{1})\b"
 )
 
 # Securities-position anchor line:
@@ -393,9 +390,8 @@ def _positions(full_text: str, doc_token: str, label_meta: dict,
                 "fx": to_float(am["fx"]) if am["fx"] else None,
             }
             continue
-        im = _IBAN_LINE_RE.search(line)
-        if im and pending_cash is not None:
-            iban = im["iban"].replace(" ", "")
+        iban = iban_in(line)
+        if iban and pending_cash is not None:
             results.append({
                 **_position_row(label_meta["as_of_date"], psn_portfolio,
                                 base_ccy, doc_token),

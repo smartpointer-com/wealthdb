@@ -1,5 +1,6 @@
 """What every UBS document reader shares: dates, numbers, the IBAN
-shape, a bold header's doubled characters, and a document's text.
+shape, a bold header's doubled characters, and a document's text. The
+rate pages' reader (rate_parsers.py) takes the IBAN shape from here too.
 
 A reader module imports this one and `collectorkit.words`, and nothing
 that extracts a PDF (see pdf_parsers.py).
@@ -91,7 +92,7 @@ def to_float(s: str | None) -> float | None:
 
 
 
-# An IBAN as the statements and advices print it, spaced or not.
+# A CH IBAN as the documents and the rate pages print it, spaced or not.
 _IBAN_RE = re.compile(r"CH\d{2}(?:[ ]?[A-Z0-9]){17}")
 
 
