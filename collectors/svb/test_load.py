@@ -1487,6 +1487,34 @@ def _distinct_bronze(tmp_path, monkeypatch):
     return bronze, calls
 
 
+def test_parse_cache_dir_is_the_collectors_cache_root(tmp_path, monkeypatch):
+    # The default is the kit's cache root, which WEALTHDB_CACHE_DIR names;
+    # collectorkit's own tests hold the rest of its rule.
+    monkeypatch.setenv("WEALTHDB_CACHE_DIR", str(tmp_path / "root"))
+    seen = {}
+    monkeypatch.setattr(B, "build", lambda *a, **kw: seen.update(kw))
+    assert B.main(["--silver-db", str(tmp_path / "svb.db"),
+                   "--bronze-dir", str(tmp_path / "bronze")]) == 0
+    assert seen["cache_dir"] == tmp_path / "root"
+
+
+def test_a_parse_cache_dir_inside_a_secrets_dir_is_not_written(
+        tmp_path, monkeypatch):
+    # The build runs without a cache: every statement is parsed and no
+    # sidecar is written.
+    bronze, calls = _distinct_bronze(tmp_path, monkeypatch)
+    secrets = tmp_path / "secrets"
+    monkeypatch.setattr(B.extract, "_SECRETS_DIRS", (secrets,))
+    build = B.build                 # in process, where the parser stub reaches
+    monkeypatch.setattr(B, "build",
+                        lambda *a, **kw: build(*a, **kw, max_workers=1))
+    assert B.main(["--silver-db", str(tmp_path / "svb.db"),
+                   "--bronze-dir", str(bronze),
+                   "--parse-cache-dir", str(secrets / "svb")]) == 0
+    assert sorted(calls) == sorted(_DISTINCT_STEMS)
+    assert not secrets.exists()
+
+
 def test_parse_cache_reuse(tmp_path, monkeypatch):
     """A warm run replays every parse from the sidecar (no parser call) and
     re-emits byte-identical silver, transactions included."""

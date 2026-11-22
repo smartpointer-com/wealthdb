@@ -42,11 +42,8 @@ workbook reader pinned in requirements.txt. Idempotent and
 reproducible-from-bronze: re-running against the same bronze dir converges.
 
 Parsing the statement PDFs dominates the run and is CPU-bound, so it is fanned
-out across a process pool and memoised in a persistent sidecar cache keyed by
-(statement sha256, parser-logic fingerprint, signature set) — the fingerprint
-folds in both parsers' import closure and the versions of both extraction
-stacks (:data:`_EXTRACTOR_DISTS`), the per-platform OCR recogniser included, so
-a cache does not move between platforms. Since the bronze is a static,
+out across a process pool and memoised in a persistent sidecar cache; DESIGN.md
+gives its key and what invalidates it. Since the bronze is a static,
 closed-account archive, a warm run replays every parse from the sidecar and
 re-emits byte-identical silver. See :func:`parse_statements`.
 """
@@ -67,7 +64,7 @@ from itertools import repeat
 from pathlib import Path
 from typing import NamedTuple
 
-from collectorkit import bronze, cli, silver, srcfp
+from collectorkit import bronze, cli, extract, silver, srcfp
 
 import derived_marks
 import instrument_links
@@ -945,18 +942,6 @@ def _parse_statement(path: str, signatures: tuple[str, ...]) -> dict:
     return parsed
 
 
-def _default_cache_dir() -> Path:
-    """XDG cache location for the parse sidecar.
-
-    Defaults to ``$XDG_CACHE_HOME/wealthdb/svb`` (``~/.cache/wealthdb/svb`` when
-    the variable is unset). The sidecar holds parsed statement data — derived
-    PII — so it stays outside the repo, exactly like the silver DB, and never
-    under a secrets dir.
-    """
-    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(base) / "wealthdb" / "svb"
-
-
 # Both extraction stacks: pdfplumber reads the brokerage statements' text
 # layer, pypdfium2 plus a recogniser rasters and OCRs the families that have
 # none. A version change in any of them can shift what a parse produces for
@@ -1247,17 +1232,16 @@ def main(argv=None) -> int:
                         "archive stands on its statements alone.")
     p.add_argument("--migrations-dir", type=Path,
                    default=Path(__file__).parent / "migrations")
-    p.add_argument("--parse-cache-dir", type=Path, default=_default_cache_dir(),
+    p.add_argument("--parse-cache-dir", type=Path,
+                   default=extract.cache_root("svb"),
                    help="directory for the persistent parse cache sidecar "
-                        "(default $XDG_CACHE_HOME/wealthdb/svb). Keyed by "
-                        "(statement sha256, parser-logic fingerprint, "
-                        "signature set), "
-                        "so a parser edit or an upgrade to either extraction "
-                        "stack auto-invalidates it — the OCR recogniser is "
-                        "per-platform and part of the key, so a cache does not "
-                        "move between platforms. A warm run replays every parse "
-                        "from it. It holds parsed statement data, so it lives "
-                        "outside the repo like the silver DB.")
+                        "(default: the collector's cache root, "
+                        "$WEALTHDB_CACHE_DIR when set, else "
+                        "${XDG_CACHE_HOME:-~/.cache}/wealthdb/svb). A parser "
+                        "edit or an extraction-stack upgrade invalidates its "
+                        "entries. It holds parsed statement data, so a "
+                        "directory inside a secrets directory is refused and "
+                        "the build runs without a cache.")
     # svb has no incremental path — build() always deletes and rebuilds —
     # so --force parses but cannot change the outcome.
     cli.add_standard_args(p, verb="load", always_rebuilds=True)
@@ -1269,7 +1253,8 @@ def main(argv=None) -> int:
                     "signature.txt); ingesting every PDF unverified")
     workbook = args.derived_marks or (args.bronze_dir / _DERIVED_MARKS_FILE)
     build(args.silver_db, args.bronze_dir, signatures=sigs,
-          migrations_dir=args.migrations_dir, cache_dir=args.parse_cache_dir,
+          migrations_dir=args.migrations_dir,
+          cache_dir=extract.usable_cache_dir(args.parse_cache_dir),
           workbook=workbook)
     return 0
 

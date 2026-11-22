@@ -57,8 +57,9 @@ collectors/svb/svb load
 ```
 
 `load` is a full rebuild, reproducible from the PDFs alone. It caches each
-parse under `$XDG_CACHE_HOME/wealthdb/svb/`, so a warm rebuild is fast. Extra
-flags pass through to `load.py`, e.g.:
+parse in the collector's cache root (`${XDG_CACHE_HOME:-~/.cache}/wealthdb/svb/`
+by default, see [collectors/README.md](../README.md#conventions-shared-across-collectors)),
+so a warm rebuild is fast. Extra flags pass through to `load.py`, e.g.:
 
 ```sh
 collectors/svb/svb load --statement-signature "<page-1 substring>"

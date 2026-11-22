@@ -383,24 +383,34 @@ wealthdb reload svb-mortgage
 A bronze dir with no PDFs fails the load without touching the existing silver —
 a mis-pointed dir must never replace a good one with an empty rebuild.
 
-PDF parsing dominates a rebuild and is CPU-bound, so `load.py` fans it out
-across a process pool and memoises each parse in a persistent sidecar cache
-(`$XDG_CACHE_HOME/wealthdb/svb/parse-cache.json` by default; overridable with
-`--parse-cache-dir`). The cache is keyed by `(statement sha256, parser-logic
-fingerprint, signature set)` — the fingerprint (`collectorkit.srcfp`) covers
-both parsers' import closures and the installed pdfplumber / pdfminer.six /
-pypdfium2 / ocrmac / rapidocr versions, so editing either parser (or anything
-they import) or upgrading either extraction stack auto-invalidates every entry,
-while a comment / formatting / docstring edit does not. A recogniser that is
-not installed is recorded as unavailable rather than skipped, so a macOS key
-and a Linux key differ and a sidecar moved between them re-parses. The
-signature component is the sorted set, so reordering `signature.txt` does not
-evict the cache. New/changed statements miss and re-parse. Each run rewrites
-the sidecar to hold only its own entries, so a key from an older fingerprint or
-a statement that left the archive does not accumulate. Against this static
-archive a warm rebuild replays every parse from the sidecar (sub-second) and
-emits byte-identical silver. The sidecar holds parsed statement data, so — like
-the silver DBs — it lives outside the repo and never under a secrets dir.
+PDF parsing dominates a rebuild and is CPU-bound. So `load.py` fans it out
+across a process pool and memoises each parse in a persistent sidecar cache,
+`parse-cache.json`. The sidecar sits in the cache root that
+`collectorkit.extract.cache_root` names, or in the dir `--parse-cache-dir`
+names.
+
+- **Key.** An entry is keyed by `(statement sha256, parser-logic fingerprint,
+  signature set)`. A new or changed statement misses and is parsed again.
+- **Invalidation.** The fingerprint (`collectorkit.srcfp`) covers both
+  parsers' import closures and the installed pdfplumber, pdfminer.six,
+  pypdfium2, ocrmac and rapidocr versions. An edit to either parser or to
+  anything they import invalidates every entry. So does an upgrade of
+  either extraction stack. A comment, formatting or docstring edit does not.
+- **Platform.** A recogniser that is not installed is recorded as
+  unavailable, not skipped. So a macOS key and a Linux key differ, and a
+  sidecar moved between them parses again.
+- **Signatures.** The signature part is the sorted set, so reordering
+  `signature.txt` keeps the cache.
+- **One run's entries.** Each run rewrites the sidecar to hold only its own
+  entries. A key from an older fingerprint or a statement that left the
+  archive does not accumulate.
+- **Privacy.** The sidecar holds parsed statement data. Like the silver DBs,
+  it lives outside the repo. A cache dir inside a secrets dir is refused
+  (`collectorkit.extract.usable_cache_dir`). The build then runs without a
+  cache and logs one warning.
+
+Against this static archive a warm rebuild replays every parse from the
+sidecar (sub-second) and emits byte-identical silver.
 
 A brokerage statement carrying none of the configured registrations is refused
 and counted as a `signature-mismatch` in the build census rather than ingested;

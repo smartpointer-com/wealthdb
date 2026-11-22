@@ -469,6 +469,14 @@ def test_the_cache_root_is_xdg(monkeypatch, tmp_path):
     assert extract.cache_root("ubs-web") == tmp_path / "wealthdb" / "ubs-web"
 
 
+def test_the_cache_root_falls_back_to_home_cache(monkeypatch, tmp_path):
+    monkeypatch.delenv("WEALTHDB_CACHE_DIR", raising=False)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert (extract.cache_root("ubs-web")
+            == tmp_path / ".cache" / "wealthdb" / "ubs-web")
+
+
 def test_the_wrappers_cache_dir_is_the_cache_root(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("WEALTHDB_CACHE_DIR", str(tmp_path / "mounted"))
