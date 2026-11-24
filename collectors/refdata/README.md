@@ -31,11 +31,11 @@ account or bank is sent.
 ## Use
 
 ```sh
-./refdata download --dry-run       # plan a run and print what it would fetch
-./refdata download                 # fetch what the wanted list lacks
-./refdata download --backfill      # also fetch past dates while each fund was held
-./refdata load                     # parse bronze into silver
-./refdata load --force             # rebuild silver from every kept run, as after a parser fix
+wealthdb-collect refdata download --dry-run       # plan a run and print what it would fetch
+wealthdb-collect refdata download                 # fetch what the wanted list lacks
+wealthdb-collect refdata download --backfill      # also fetch past dates while each fund was held
+wealthdb-collect refdata load                     # parse bronze into silver
+wealthdb-collect refdata load --force             # rebuild silver from every kept run, as after a parser fix
 wealthdb load refdata              # bring it into gold (the source's id in wealthdb.cfg)
 wealthdb exposure coverage         # see what is described, and what is not
 ```
@@ -273,7 +273,7 @@ Each runs once `providers` names it, for example:
 ```
 
 `finra` also needs its credential ([finra](#finra)).
-`./refdata login --check` shows that it works. Then download and load
+`wealthdb-collect refdata login --check` shows that it works. Then download and load
 as in [Use](#use). The first download reads what each source keeps of
 the past, so it takes longer than later runs.
 
@@ -348,8 +348,8 @@ monthly_returns want on, whatever days the fund was held. A composition fetched 
 not count as having them, so no `load --force` is needed:
 
 ```sh
-./refdata download --backfill --no-securities --ref symbol:ACWI --ref symbol:BND --ref symbol:IVV
-./refdata load
+wealthdb-collect refdata download --backfill --no-securities --ref symbol:ACWI --ref symbol:BND --ref symbol:IVV
+wealthdb-collect refdata load
 wealthdb load refdata
 ```
 
@@ -1154,8 +1154,8 @@ Gold reads the silver as a source of kind `refdata` in `wealthdb.cfg`:
 ## Reclaiming disk
 
 ```sh
-./refdata prune --dry-run   # print the plan, delete nothing
-./refdata prune             # delete it
+wealthdb-collect refdata prune --dry-run   # print the plan, delete nothing
+wealthdb-collect refdata prune             # delete it
 ```
 
 `prune` removes run dirs that are not complete and the `--debug`
@@ -1163,8 +1163,8 @@ traces. A complete run's raw files are `load` inputs and stay, as do
 the inbox, those two state files and the silver DB.
 
 ```sh
-./refdata compact --dry-run               # print the plan and its bytes, write nothing
-./refdata compact                         # rewrite the complete runs
+wealthdb-collect refdata compact --dry-run               # print the plan and its bytes, write nothing
+wealthdb-collect refdata compact                         # rewrite the complete runs
 wealthdb-collect dedup --source refdata   # share identical files across runs
 ```
 

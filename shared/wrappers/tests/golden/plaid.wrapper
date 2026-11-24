@@ -20,7 +20,8 @@ institution login is one Plaid Item with a local name. Subcommands:
   login               Settle the sign-ins link left open: claim an Item
                       one made, remove the record of a page that has
                       closed. Opens no page; with none left open, it
-                      does nothing.
+                      does nothing. With no Item linked yet, it names
+                      link as the first step.
   login --check       Probe the app keys and every stored Item, and list
                       the sign-ins left open. Reads only; exit 0 when the
                       keys are accepted, an Item is linked, and every
@@ -79,7 +80,8 @@ institution login is one Plaid Item with a local name. Subcommands:
   login               Settle the sign-ins link left open: claim an Item
                       one made, remove the record of a page that has
                       closed. Opens no page; with none left open, it
-                      does nothing.
+                      does nothing. With no Item linked yet, it names
+                      link as the first step.
   login --check       Probe the app keys and every stored Item, and list
                       the sign-ins left open. Reads only; exit 0 when the
                       keys are accepted, an Item is linked, and every
@@ -136,6 +138,8 @@ python3
 exit: 0
 --- stdout
 --- stderr
+plaid: No institution is linked yet. Link one first:
+plaid:   wealthdb-collect plaid link --item <name>
 === download
 --- calls
 python3

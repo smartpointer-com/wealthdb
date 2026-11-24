@@ -1,0 +1,15 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+var UBS_PSN_CLIENT_ID required plain CH<digits> Your PSN SFTP login ID
+flag UBS_PSN_CLIENT_ID --client-id
+keyfile ubs_psn_key The SSH private key whose public half UBS activated
+checks login
+provider Sign a UBS PSN agreement with the SFTP Pull channel. Make an
+provider RSA key pair named ubs_psn_key in the secrets folder, and
+provider send UBS its .pub half to activate.
+docs Prerequisites
+signin There is no sign-in: the key is the credential. To test it,
+signin run: wealthdb-collect ubs-psn login --check
+then wealthdb-collect ubs-psn download
+then wealthdb-collect ubs-psn load
+then wealthdb load -a

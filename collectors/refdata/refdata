@@ -51,7 +51,7 @@ case "$VERB" in
         host_login_probe download.py --bronze-dir "$DATA_DIR"
         cat >&2 <<'EOF'
 refdata: no-op. No provider has a session to mint.
-To probe each enabled provider, run `./refdata login --check`.
+To probe each enabled provider, run `wealthdb-collect refdata login --check`.
 EOF
         ;;
     download) host_run download.py --bronze-dir "$DATA_DIR" ;;

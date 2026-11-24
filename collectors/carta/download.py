@@ -205,7 +205,7 @@ def _settle_for_individual_id(page, url: str) -> str | None:
         settled = page.url
         if LOGIN_HOST in settled or "/accounts/login" in settled:
             raise RuntimeError(
-                "session is not authenticated — run `./carta login` first")
+                "session is not authenticated — run `wealthdb-collect carta login` first")
         m = re.search(r"/investors/individual/(\d+)/", settled)
         if m:
             return m.group(1)
@@ -243,7 +243,7 @@ def land_and_get_individual_id(page, api: Api) -> str:
     raise RuntimeError(
         f"could not read the individual id from the landing URL "
         f"({_short(landing)}) or the portfolio routes; the app routing may "
-        f"have changed — re-run `./carta explore`")
+        f"have changed — re-run `wealthdb-collect carta explore`")
 
 
 def discover_firm_id(api: Api, iid: str) -> tuple[str | None, dict, dict]:
@@ -649,7 +649,7 @@ def run(context, args, run_dir: Path, snapshot_at: int,
     if not firm_id:
         raise RuntimeError(
             "could not determine the firm/organization id from "
-            "navigation-config or account-switcher; re-run `./carta explore`")
+            "navigation-config or account-switcher; re-run `wealthdb-collect carta explore`")
     investments = list_investments(api, firm_id, iid)
     log.info("found %d investment entit(ies)", len(investments))
 
@@ -786,7 +786,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "by default — the captures are never read by load, and `prune` "
               "reclaims <run>/screenshots/ from complete dumps. No-op under "
               "--dry-run, which creates no run dir to write into. Distinct "
-              "from `./carta explore`, whose HAR / trace / click log land "
+              "from `wealthdb-collect carta explore`, whose HAR / trace / click log land "
               "OUTSIDE bronze under /debug."),
     )
     cli.add_standard_args(p, verb="download", full_history=True)

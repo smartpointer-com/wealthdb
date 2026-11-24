@@ -40,7 +40,7 @@ case "$VERB" in
         host_login_probe download.py
         cat >&2 <<'EOF'
 curves: no-op. The portals are public; there is no session to mint.
-To ask each portal for its cheapest answer, run `./curves login --check`.
+To ask each portal for its cheapest answer, run `wealthdb-collect curves login --check`.
 EOF
         ;;
     download) host_run download.py --bronze-dir "$DATA_DIR" ;;

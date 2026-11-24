@@ -1,0 +1,12 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+var FRED_API_KEY required secret <api-key> Your FRED API key
+checks login
+provider Ask FRED for a free API key at
+provider   https://fred.stlouisfed.org/docs/api/api_key.html
+docs Usage
+signin There is no sign-in: the key is the credential. To test the
+signin key, run: wealthdb-collect fred login --check
+then wealthdb-collect fred download
+then wealthdb-collect fred load
+then wealthdb load -a

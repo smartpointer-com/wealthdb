@@ -4,7 +4,10 @@
 # schwab-web. A bare `login` is a host-side no-op that never starts a
 # container. amex, chase and raiffeisen_at let `login --check` and the
 # help flags through to the container; fidelity-web and schwab-web have no
-# session to probe, so their trap takes every `login`. Runs each wrapper
+# session to probe, so their trap takes every `login`. A bare `login`
+# with a credential missing prints the setup instructions and exits 78
+# instead (setup-lib.sh), and with the setup complete prints the notice.
+# Runs each wrapper
 # with a stubbed docker on PATH, so nothing real is invoked. Pass wrapper
 # paths to test those instead of the five.
 set -uo pipefail
@@ -63,6 +66,18 @@ for wrapper in "${WRAPPERS[@]}"; do
     name="$(basename "$wrapper")"
     echo "$name login trap:"
 
+    rm -f "$WEALTHDB_SECRETS_DIR/$name.env"
+    out="$(run "$wrapper" login 2>&1)"; rc=$?
+    [[ $rc -eq 78 ]] && ok "bare login with no credential exits 78" ||
+        bad "bare login with no credential exit=$rc"
+    grep -q "Then run: wealthdb-collect $name login" <<<"$out" \
+        && ok "bare login with no credential says what to do" ||
+        bad "bare login with no credential: $out"
+    started && bad "bare login with no credential started a container" ||
+        ok "bare login with no credential starts no container"
+
+    awk '$1 == "var" {print $2 "=x"}' "$(dirname "$wrapper")/setup.txt" \
+        > "$WEALTHDB_SECRETS_DIR/$name.env"
     out="$(run "$wrapper" login 2>&1)"; rc=$?
     [[ $rc -eq 0 ]] && ok "bare login exits 0" || bad "bare login exit=$rc"
     grep -q "folds into 'download'" <<<"$out" \

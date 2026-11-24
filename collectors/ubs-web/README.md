@@ -194,8 +194,8 @@ not as 0%. Gold puts the credit side on the account's cash balances
 ([the adapter doc](../../wealthdb/docs/adapters/ubs.md)).
 
 ```sh
-./ubs-web download --only rates         # the rate pass alone; the dump is marked partial
-./ubs-web load
+wealthdb-collect ubs-web download --only rates         # the rate pass alone; the dump is marked partial
+wealthdb-collect ubs-web load
 ```
 
 ### The two UBS export caps
@@ -333,15 +333,15 @@ Pass any debug-flag value as `/debug/...` so debug artefacts stay
 out of the bronze/silver tree.
 
 ```sh
-./ubs-web login --check
-./ubs-web login --qr-png /debug/qr.png
-./ubs-web download --dry-run --screenshot-dir /debug/download
-./ubs-web download --lookback 1y        # explicit wider window (default = 90 days)
-./ubs-web download --only cards         # one pass; the dump is marked partial
-./ubs-web load                          # defaults under the /data mount
-./ubs-web explore                       # VNC-driven capture into /debug
-./ubs-web prune --dry-run               # print the deletion plan, delete nothing
-./ubs-web prune                         # reclaim non-complete dumps and old debug captures
+wealthdb-collect ubs-web login --check
+wealthdb-collect ubs-web login --qr-png /debug/qr.png
+wealthdb-collect ubs-web download --dry-run --screenshot-dir /debug/download
+wealthdb-collect ubs-web download --lookback 1y        # explicit wider window (default = 90 days)
+wealthdb-collect ubs-web download --only cards         # one pass; the dump is marked partial
+wealthdb-collect ubs-web load                          # defaults under the /data mount
+wealthdb-collect ubs-web explore                       # VNC-driven capture into /debug
+wealthdb-collect ubs-web prune --dry-run               # print the deletion plan, delete nothing
+wealthdb-collect ubs-web prune                         # reclaim non-complete dumps and old debug captures
 ```
 
 #### Driving an `explore` session

@@ -86,7 +86,8 @@ spend two sign-ins per run, so `login` folds into `download`, as at
   every run signs in again.
 - **`vnc-login`** runs the same walk with the sign-in done by hand over
   VNC. It is the only way past a captcha.
-- **`login`** is a host-side no-op. `login --check` reports whether this
+- **`login`** is a host-side no-op. With a credential missing, it says
+  what to set up first. `login --check` reports whether this
   device is registered. It reads the profile's cookie and signs in to
   nothing.
 - **`download --dry-run` still signs in.** It skips the exports and
@@ -135,21 +136,21 @@ AMEX_PASSWORD='...'
 ## Usage
 
 ```
-./amex download                    # the whole run: sign in + REST fetch → bronze (~90 days)
-./amex download --lookback all     # everything the source offers (the initial backfill)
-./amex download --dry-run          # roster + activity counts; STILL SIGNS IN, exports nothing
-./amex download --no-documents     # skip the statement PDFs
-./amex download --fresh            # move device trust aside, forcing the untrusted flow
-./amex download --format xls       # csv, xls, qfx, qbo (repeatable; default csv+qfx)
+wealthdb-collect amex download                    # the whole run: sign in + REST fetch → bronze (~90 days)
+wealthdb-collect amex download --lookback all     # everything the source offers (the initial backfill)
+wealthdb-collect amex download --dry-run          # roster + activity counts; STILL SIGNS IN, exports nothing
+wealthdb-collect amex download --no-documents     # skip the statement PDFs
+wealthdb-collect amex download --fresh            # move device trust aside, forcing the untrusted flow
+wealthdb-collect amex download --format xls       # csv, xls, qfx, qbo (repeatable; default csv+qfx)
 
-./amex vnc-login              # the same walk, sign-in by hand over VNC (answers a captcha)
-./amex login --check          # is this device registered? (profile cookie, no sign-in)
+wealthdb-collect amex vnc-login              # the same walk, sign-in by hand over VNC (answers a captcha)
+wealthdb-collect amex login --check          # is this device registered? (profile cookie, no sign-in)
 
-./amex load                   # bronze → silver SQLite
-./amex load --force           # rebuild silver from all bronze; the old one stays until the new one is complete
+wealthdb-collect amex load                   # bronze → silver SQLite
+wealthdb-collect amex load --force           # rebuild silver from all bronze; the old one stays until the new one is complete
 
-./amex prune --dry-run        # preview what prune would reclaim
-./amex explore                # discovery harness over VNC
+wealthdb-collect amex prune --dry-run        # preview what prune would reclaim
+wealthdb-collect amex explore                # discovery harness over VNC
 ```
 
 When a passcode does fire, `download` asks for it **in the terminal** and

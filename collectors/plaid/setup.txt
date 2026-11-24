@@ -1,0 +1,19 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+var PLAID_CLIENT_ID required plain <client-id> The client ID on the Keys page of the Plaid Dashboard
+flag PLAID_CLIENT_ID --client-id
+var PLAID_SECRET required secret <secret> The Production secret on the same page
+var PLAID_SANDBOX_SECRET optional secret <secret> The Sandbox secret, for test runs with --sandbox
+checks link
+skip --sandbox
+provider Make a free Plaid account and start the Trial plan. Then
+provider copy the keys from the Keys page of the Plaid Dashboard.
+docs Set up a Plaid account
+signin link prints the address of a sign-in page that Plaid hosts.
+signin Open it in a browser and sign in to your bank there.
+first No institution is linked yet. Link one first:
+first   wealthdb-collect plaid link --item <name>
+then wealthdb-collect plaid link --item <name>   # Run it once for each bank that is not linked yet.
+then wealthdb-collect plaid download --lookback all
+then wealthdb-collect plaid load
+then wealthdb load -a

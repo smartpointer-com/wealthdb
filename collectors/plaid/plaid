@@ -17,7 +17,8 @@
 #   login               Settle the sign-ins link left open: claim an Item
 #                       one made, remove the record of a page that has
 #                       closed. Opens no page; with none left open, it
-#                       does nothing.
+#                       does nothing. With no Item linked yet, it names
+#                       link as the first step.
 #   login --check       Probe the app keys and every stored Item, and list
 #                       the sign-ins left open. Reads only; exit 0 when the
 #                       keys are accepted, an Item is linked, and every
@@ -65,6 +66,12 @@ host_source_env_file
 
 case "$VERB" in
     link|login)
+        # With no Item linked yet, `login` has nothing to settle, so it
+        # names the first step: link.
+        if [[ "$VERB" == login ]] && ! host_has_flag --check ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"} &&
+            ! compgen -G "$SECRETS_DIR/plaid-token-*.json" > /dev/null; then
+            setup_print_first
+        fi
         host_run "$VERB.py" --secrets-dir "$SECRETS_DIR"
         ;;
     download)

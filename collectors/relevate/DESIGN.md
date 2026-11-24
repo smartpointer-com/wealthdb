@@ -302,7 +302,7 @@ like a browser's:
 
 1. Load `/secrets/relevate-state.json` and restore the cookie
    jar into a `requests.Session`. Missing file → exit 6 with
-   "run `./relevate login` first".
+   "run `wealthdb-collect relevate login` first".
 2. Set the session headers listed in §3.4. No `X-CSRFT759` on GETs:
    Airlock enforces double-submit only on POSTs.
 3. Probe `/auth/rest/protected/self-service/ui/configuration/portal`.
@@ -730,7 +730,7 @@ PDFs.
 ### 9.2 Wrapper subcommand surface
 
 ```
-./relevate <verb>
+wealthdb-collect relevate <verb>
 
 build       Build the Docker image.
 login       login.py — mint a session, or probe it with --check.

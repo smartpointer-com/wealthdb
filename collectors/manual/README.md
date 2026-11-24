@@ -23,8 +23,8 @@ valuations and exits**. Cash stays with the banks (see
 | Script | Purpose |
 | --- | --- |
 | [`load.py`](load.py) | Validate `accounts.csv` / `positions.csv` / `valuations.csv` / `cost_basis.csv` / `exits.csv` and rebuild the SQLite silver from them. Aggressive validation; a bad row fails the whole load with `file:row:column` context. |
-| `login` | **N/A.** No source, no session. `./manual login` is a no-op that says so. |
-| `download` | **N/A.** No source to fetch; the CSVs are hand-maintained. `./manual download` is a no-op. |
+| `login` | **N/A.** No source, no session. `wealthdb-collect manual login` is a no-op that says so. |
+| `download` | **N/A.** No source to fetch; the CSVs are hand-maintained. `wealthdb-collect manual download` is a no-op. |
 | `prune` | **N/A.** Nothing to reclaim (see [below](#reclaiming-disk-prune)). |
 
 There is no Docker image and no `~/.secrets/manual.env`. There is
@@ -57,7 +57,7 @@ Build the `.venv` with `make build-manual` (the host-venv pattern — see
 #    Copy it as a skeleton and replace the placeholder holdings.
 
 # 2. Load — validates the CSVs and (re)builds $XDG_DATA_HOME/wealthdb/manual/manual.db
-./manual load
+wealthdb-collect manual load
 ```
 
 The CSV dir is the collector's data dir. `--data-dir` and `--silver-db`
@@ -70,7 +70,7 @@ the new state. There are no incremental dumps to reconcile.
 To try it against the committed synthetic data, from this directory:
 
 ```bash
-./manual load --data-dir examples --silver-db /tmp/manual-example.db -v
+wealthdb-collect manual load --data-dir examples --silver-db /tmp/manual-example.db -v
 ```
 
 ## The CSV schema (bronze)
@@ -167,7 +167,7 @@ realizes the gain against the position's cost basis.
 
 ## Maintaining the files
 
-Every edit is just a line in a CSV followed by `./manual load`. The load
+Every edit is just a line in a CSV followed by `wealthdb-collect manual load`. The load
 rebuilds silver from scratch each time, so there is no state to reconcile and
 no way to get a half-applied change: fix the line, run it again.
 
@@ -232,7 +232,7 @@ one that is typed.
 ### A trial load
 
 ```bash
-./manual load --silver-db /tmp/manual-check.db -v
+wealthdb-collect manual load --silver-db /tmp/manual-check.db -v
 ```
 
 This validates the CSVs into a throwaway DB and leaves the real silver
@@ -276,7 +276,7 @@ silver keeps its previous contents.
 
 ## Reclaiming disk (`prune`)
 
-`prune` is a **no-op** here. `./manual prune` explains why and exits 0.
+`prune` is a **no-op** here. `wealthdb-collect manual prune` explains why and exits 0.
 The collector keeps no timestamped run dirs and writes no debug
 artefacts. The CSVs are `load`'s only input and the only copy, so they
 are never a prune target. `manual.db` is rebuilt from them by `load`, so

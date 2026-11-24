@@ -5,7 +5,7 @@ Part of the BYO-session path: AngelList's venture login is gated by an
 invisible Turnstile / reCAPTCHA challenge that flags the Camoufox /
 Playwright automation stack (see DESIGN.md). The workaround is to log in
 once in a genuine, un-instrumented Firefox driven by a human over VNC
-(`./angellist login`), then read that Firefox profile's *plaintext*
+(`wealthdb-collect angellist login`), then read that Firefox profile's *plaintext*
 `cookies.sqlite` and hand the cookies to the collector — no manual export
 or copying.
 
@@ -63,7 +63,7 @@ def extract(db: Path, host_filter: str) -> list[dict]:
     if not db.exists():
         raise SystemExit(
             f"Firefox cookie DB not found: {db}\n"
-            f"Log in via `./angellist login` first (it writes the "
+            f"Log in via `wealthdb-collect angellist login` first (it writes the "
             f"profile here)."
         )
     tmp = Path(tempfile.mkdtemp(prefix="alck_"))

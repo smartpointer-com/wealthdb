@@ -1,0 +1,14 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+var RAIFFEISEN_AT_USERNAME required plain <verfueger-number> Your Verfüger number, without the region prefix
+var RAIFFEISEN_AT_PASSWORD required secret <pin> Your PIN
+var RAIFFEISEN_AT_REGION required plain <mandant-code> The code of your regional bank (Mandant), in lower case
+session raiffeisen_at-profile
+checks login download
+docs Setup
+signin The sign-in is part of every download. Approve the pushTAN in
+signin the Raiffeisen app. Check that it shows the same code as the
+signin terminal. There is nothing to type.
+then wealthdb-collect raiffeisen_at download --lookback all
+then wealthdb-collect raiffeisen_at load
+then wealthdb load -a

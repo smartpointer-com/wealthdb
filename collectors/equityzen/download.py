@@ -361,7 +361,7 @@ def main(argv: list[str]) -> int:
         # still shaped as the locators expect.
         capture(page, "10-portfolio")
         if not _authenticated(page):
-            raise SystemExit("Not authenticated — run `./equityzen login` first.")
+            raise SystemExit("Not authenticated — run `wealthdb-collect equityzen login` first.")
         stage_bodies: dict[str, dict] = {}
         deal_ids: list[str] = []
         for stage, label in (("ONGOING", "Ongoing"), ("CLOSED", "Closed"), ("EXITED", "Exited")):
@@ -386,7 +386,7 @@ def main(argv: list[str]) -> int:
                 if did not in deal_ids:
                     deal_ids.append(did)
         if not stage_bodies:
-            raise SystemExit("No getBuyerInvestments responses captured — re-run `./equityzen explore`.")
+            raise SystemExit("No getBuyerInvestments responses captured — re-run `wealthdb-collect equityzen explore`.")
         log.info("total: %d distinct investment(s)", len(deal_ids))
 
         if args.dry_run:

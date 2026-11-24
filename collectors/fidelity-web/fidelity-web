@@ -118,7 +118,7 @@ EOF
     exit 0
 fi
 
-# `./fidelity-web login` → clean host-side no-op (exit 0), never a container
+# `wealthdb-collect fidelity-web login` → clean host-side no-op (exit 0), never a container
 # spin. The Fidelity session lives only for the browser's lifetime, so a
 # login-and-exit persists nothing, and no flag passes through. Use
 # `download` (login is folded in) or `vnc-login` for the first-time /
@@ -138,14 +138,14 @@ fi
 # can run while a download is mid-flight (prune's own age guard protects
 # an in-flight dump). Each resolves the dir flags with host_resolve_dirs.
 
-# `./fidelity-web load [args...]` — parse bronze → silver SQLite.
+# `wealthdb-collect fidelity-web load [args...]` — parse bronze → silver SQLite.
 if [[ "${1:-}" == "load" ]]; then
     shift
     host_resolve_dirs load "$@"
     host_run load.py --silver-db "$SILVER_DB" --bronze-dir "$DATA_DIR"
 fi
 
-# `./fidelity-web prune [args...]` — reclaim disk (host-side walk): the
+# `wealthdb-collect fidelity-web prune [args...]` — reclaim disk (host-side walk): the
 # bronze tree, plus the /debug cache the container's --screenshot-dir /
 # --trace write to. Both halves take DEBUG_DIR from
 # collector_default_paths, so they name the same dir.
@@ -155,7 +155,7 @@ if [[ "${1:-}" == "prune" ]]; then
     host_run prune.py --bronze-dir "$DATA_DIR" --debug-dir "$DEBUG_DIR"
 fi
 
-# `./fidelity-web recompress [args...]` — one-time backlog sweep converting
+# `wealthdb-collect fidelity-web recompress [args...]` — one-time backlog sweep converting
 # pre-compression HTML/CSV bronze to the .zst form download writes
 # (verify-then-unlink per file, under prune's completeness envelope).
 # Manual only — never schedule; review --dry-run first.

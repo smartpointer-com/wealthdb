@@ -52,7 +52,7 @@ historical archive (SVB wound down in 2023). Drop the in-scope statement PDFs
 performance workbook of month-end account values for the months the
 statements do not cover) into <data-dir>/bronze/ (default
 $XDG_DATA_HOME/wealthdb/svb/bronze/), in whatever folder layout suits — load
-searches it recursively — then run `./svb load` to rebuild the silver DBs from
+searches it recursively — then run `wealthdb-collect svb load` to rebuild the silver DBs from
 them.
 EOF
         exit 0

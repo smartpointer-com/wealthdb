@@ -1,0 +1,6 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+first Nothing to set up: the yield curves are public.
+then wealthdb-collect curves download
+then wealthdb-collect curves load
+then wealthdb load -a

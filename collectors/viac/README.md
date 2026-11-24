@@ -75,15 +75,15 @@ benefits, a similar Airlock-shaped auth stack).
 ## Examples
 
 ```sh
-./viac build                               # build the image
-./viac login --check                       # session alive? exit 0 or 1; no SMS
-./viac login                               # mint a session; sends an SMS mTAN
-./viac download --dry-run                  # walk the JSON endpoints; write nothing
-./viac download                            # bronze dump; documents from the last ~90 days
-./viac download --lookback all             # every document in the archive
-./viac download --no-transaction-documents # skip the per-event receipt PDFs
-./viac load                                # parse bronze into silver
-./viac prune --dry-run                     # print what prune would delete
+wealthdb-collect viac build                               # build the image
+wealthdb-collect viac login --check                       # session alive? exit 0 or 1; no SMS
+wealthdb-collect viac login                               # mint a session; sends an SMS mTAN
+wealthdb-collect viac download --dry-run                  # walk the JSON endpoints; write nothing
+wealthdb-collect viac download                            # bronze dump; documents from the last ~90 days
+wealthdb-collect viac download --lookback all             # every document in the archive
+wealthdb-collect viac download --no-transaction-documents # skip the per-event receipt PDFs
+wealthdb-collect viac load                                # parse bronze into silver
+wealthdb-collect viac prune --dry-run                     # print what prune would delete
 ```
 
 `--lookback` bounds the documents and the transactions. The documents walk

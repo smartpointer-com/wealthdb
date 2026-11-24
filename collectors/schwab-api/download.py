@@ -18,7 +18,7 @@ NEVER compressed (it is the forward completeness signal `prune` and
 
 OAuth tokens are loaded from a local token file. Schwab refresh tokens
 expire 7 days after issue and cannot be renewed without an interactive
-browser login; run `./schwab-api login` to mint a fresh token when this
+browser login; run `wealthdb-collect schwab-api login` to mint a fresh token when this
 script reports refresh failure.
 
 Usage:
@@ -139,7 +139,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=Path,
         default=Path.home() / ".secrets" / "schwab-api-token.json",
         help="Path to the schwab-py token JSON file. The file must already "
-             "exist (mint it with `./schwab-api login` first). Default: "
+             "exist (mint it with `wealthdb-collect schwab-api login` first). Default: "
              "~/.secrets/schwab-api-token.json.",
     )
     p.add_argument(
@@ -482,7 +482,7 @@ def run(args: argparse.Namespace) -> int:
     if not args.token_path.is_file():
         raise SystemExit(
             f"Token file {args.token_path} does not exist. "
-            f"Run `./schwab-api login` first to mint one (interactive "
+            f"Run `wealthdb-collect schwab-api login` first to mint one (interactive "
             f"browser flow)."
         )
 

@@ -37,6 +37,8 @@
 . "$(dirname "${BASH_SOURCE[0]}")/envfile-lib.sh"
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/paths-lib.sh"
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/setup-lib.sh"
 
 # host_python — the interpreter to run the collector's .py with. Prefers the
 # collector's own .venv (built by `make build-<name>`); falls back to a
@@ -72,8 +74,10 @@ host_resolve_dirs() {
 # host_begin VERB... -- [ARGS...] — the start of a host wrapper. With no
 # ARGS, or help / --help / -h as the first, print the wrapper's banner and
 # exit 0. A first arg that is none of the VERBs exits 2, before any
-# directory is made or any env file read. Otherwise set VERB to it and
-# resolve the paths of the rest (host_resolve_dirs).
+# directory is made or any env file read. Otherwise set VERB to it,
+# resolve the paths of the rest (host_resolve_dirs) and run the setup
+# check (setup_check), which stops a verb that signs in when a
+# credential is missing.
 host_begin() {
     local -a verbs=()
     while [[ "$1" != -- ]]; do
@@ -99,6 +103,8 @@ host_begin() {
         exit 2
     fi
     host_resolve_dirs "$VERB" "$@"
+    setup_check host "$SECRETS_DIR" "$VERB" ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+    setup_arm_next "$VERB" ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
 }
 
 # host_run SCRIPT [ARGS...] — exec the collector's SCRIPT on its
@@ -109,7 +115,7 @@ host_run() {
     local py script="$1"
     shift
     py="$(host_python)"
-    exec "$py" "$HERE/$script" "$@" ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+    setup_exec "$py" "$HERE/$script" "$@" ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
 }
 
 # host_login_probe SCRIPT [ARGS...] — the session probe in the `login`

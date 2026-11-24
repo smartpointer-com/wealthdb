@@ -113,12 +113,12 @@ nothing.
 ## Usage
 
 ```sh
-./curves login --check                     # ask each portal for its cheapest answer
-./curves download                          # last ~90 days of every series (default)
-./curves download --series CHF             # the franc's series only
-./curves download --series EUR --lookback 2026-10-01
-./curves load
-./curves prune --dry-run
+wealthdb-collect curves login --check                     # ask each portal for its cheapest answer
+wealthdb-collect curves download                          # last ~90 days of every series (default)
+wealthdb-collect curves download --series CHF             # the franc's series only
+wealthdb-collect curves download --series EUR --lookback 2026-10-01
+wealthdb-collect curves load
+wealthdb-collect curves prune --dry-run
 ```
 
 `download` honours the shared
@@ -171,8 +171,8 @@ After adding the source, `wealthdb load curves` merges it into gold.
 ### Reclaiming disk
 
 ```sh
-./curves prune --dry-run   # print the deletion plan, delete nothing
-./curves prune             # delete it
+wealthdb-collect curves prune --dry-run   # print the deletion plan, delete nothing
+wealthdb-collect curves prune             # delete it
 ```
 
 `prune` works within the

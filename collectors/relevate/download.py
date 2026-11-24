@@ -152,7 +152,7 @@ def new_session_from_state(
     if state is None:
         raise FileNotFoundError(
             f"state file missing: {state_path}. Run "
-            "`./relevate login` first.",
+            "`wealthdb-collect relevate login` first.",
         )
     session = requests.Session()
     session.headers.update({
@@ -880,7 +880,7 @@ def do_download(args: argparse.Namespace) -> int:
 
     if not step_probe(session):
         logger.error(
-            "session probe failed — run `./relevate login` "
+            "session probe failed — run `wealthdb-collect relevate login` "
             "to mint a fresh session.",
         )
         return cli.EXIT_NEEDS_PERSON

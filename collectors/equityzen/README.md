@@ -87,28 +87,28 @@ warns that the flag has no effect.
 
 ```sh
 # Build the image (on the shared base-camoufox image).
-./equityzen build
+wealthdb-collect equityzen build
 
 # Credentials: ~/.secrets/equityzen.env, chmod 0600.
 #   EQUITYZEN_USERNAME='buyer@example.com'   # alias: EQUITYZEN_EMAIL
 #   EQUITYZEN_PASSWORD='...'
 
 # Mint the session. Prompts once for the TOTP code.
-./equityzen login
+wealthdb-collect equityzen login
 
 # Pull a bronze dump, documents included.
-./equityzen download
+wealthdb-collect equityzen download
 
 # Parse bronze into silver.
-./equityzen load
+wealthdb-collect equityzen load
 ```
 
 Checks that send no TOTP prompt and write no data:
 
 ```sh
-./equityzen login --check          # exit 0 if the session is valid, 1 if not
-./equityzen download --dry-run     # read the offerings list, write nothing
-./equityzen prune --dry-run        # print the deletion plan
+wealthdb-collect equityzen login --check          # exit 0 if the session is valid, 1 if not
+wealthdb-collect equityzen download --dry-run     # read the offerings list, write nothing
+wealthdb-collect equityzen prune --dry-run        # print the deletion plan
 ```
 
 Other useful flags:

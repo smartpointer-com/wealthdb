@@ -69,10 +69,26 @@ def test_the_wrapper_refuses_a_verb_it_does_not_have(tmp_path):
 
 def test_link_without_an_item_runs_nothing(tmp_path):
     # No arguments must never start an action: here that means no link.
-    result = _wrapper(tmp_path, "link")
+    result = _wrapper(tmp_path, "link", PLAID_CLIENT_ID="synthetic-id",
+                      PLAID_SECRET="synthetic-secret")
     assert result.returncode == 2
     assert "--item NAME is required" in result.stderr
     assert not (tmp_path / "secrets").exists()
+
+
+def test_link_without_the_keys_says_what_to_set_up(tmp_path):
+    # The setup check of setup.txt answers before link.py runs.
+    result = _wrapper(tmp_path, "link", "--item", "bank")
+    assert result.returncode == 78
+    assert "PLAID_CLIENT_ID='<client-id>'" in result.stderr
+    assert "Then run: wealthdb-collect plaid link" in result.stderr
+    assert not (tmp_path / "secrets").exists()
+
+
+def test_login_with_no_item_names_link_first(tmp_path):
+    result = _wrapper(tmp_path, "login")
+    assert result.returncode == 0, result.stderr
+    assert "wealthdb-collect plaid link --item <name>" in result.stderr
 
 
 def test_login_with_nothing_left_open_is_a_clean_no_op(tmp_path):

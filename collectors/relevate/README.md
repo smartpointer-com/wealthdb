@@ -69,22 +69,22 @@ similar REST + mTAN shape).
 | `load` | Applies the migrations and parses each new dump into silver. It skips a dump whose `run.json` status is set to anything but `complete`. Idempotent on `dump_runs`. |
 | `prune` | Reclaims non-complete dumps and `download --debug` HTTP traces. |
 
-`./relevate help` prints the full list, including `build` and `sh`.
+`wealthdb-collect relevate help` prints the full list, including `build` and `sh`.
 
 ## Examples
 
 ```sh
-./relevate build                                   # build the image
-./relevate login --check                           # session alive? no mTAN
-./relevate login                                   # mint a session; sends an SMS mTAN
-./relevate download --dry-run                      # read the two listings, log the plan, write nothing
-./relevate download                                # bronze dump; documents from the last ~90 days
-./relevate download --lookback all                 # every document in the archive
-./relevate download --lookback 2020-01-01          # an ISO start date works too
-./relevate download --no-documents                 # everything except the document index and PDFs
-./relevate download --mode portfolios --limit-portfolios 1
-./relevate load                                    # parse bronze into silver
-./relevate prune --dry-run                         # print what prune would delete
+wealthdb-collect relevate build                                   # build the image
+wealthdb-collect relevate login --check                           # session alive? no mTAN
+wealthdb-collect relevate login                                   # mint a session; sends an SMS mTAN
+wealthdb-collect relevate download --dry-run                      # read the two listings, log the plan, write nothing
+wealthdb-collect relevate download                                # bronze dump; documents from the last ~90 days
+wealthdb-collect relevate download --lookback all                 # every document in the archive
+wealthdb-collect relevate download --lookback 2020-01-01          # an ISO start date works too
+wealthdb-collect relevate download --no-documents                 # everything except the document index and PDFs
+wealthdb-collect relevate download --mode portfolios --limit-portfolios 1
+wealthdb-collect relevate load                                    # parse bronze into silver
+wealthdb-collect relevate prune --dry-run                         # print what prune would delete
 ```
 
 `--mode {all,accounts,portfolios,documents}` and the `--limit-*` flags

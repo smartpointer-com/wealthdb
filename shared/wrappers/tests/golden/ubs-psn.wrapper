@@ -66,7 +66,7 @@ exit: 0
 ubs-psn: no-op. UBS PSN is an SSH-key-authenticated SFTP delivery — there is
 no interactive login / MFA session to mint. To verify the key is accepted
 (connect + host-key check, no files consumed), run:
-  ./ubs-psn login --check
+  wealthdb-collect ubs-psn login --check
 === download
 --- calls
 python3

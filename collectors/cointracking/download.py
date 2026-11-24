@@ -138,7 +138,7 @@ def discover_portfolios(page) -> list[dict]:
     page.goto(ENTER_COINS_URL, wait_until="networkidle", timeout=45_000)
     if not is_authenticated(page):
         raise RuntimeError(
-            "session unauthenticated; run `./cointracking login` first"
+            "session unauthenticated; run `wealthdb-collect cointracking login` first"
         )
 
     # Wait for late-JS anchor injection to settle before scraping.

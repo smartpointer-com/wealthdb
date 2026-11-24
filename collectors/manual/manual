@@ -48,7 +48,7 @@ the source of truth. Maintain the CSVs by hand in the data dir (default
 $XDG_DATA_HOME/wealthdb/manual/): positions.csv, valuations.csv, and
 optionally accounts.csv to give positions their own tax sleeve and
 management style, cost_basis.csv for capital paid in over time, and
-exits.csv for what a position was sold for — then run `./manual load` to
+exits.csv for what a position was sold for — then run `wealthdb-collect manual load` to
 validate them and rebuild the silver. See README.md for the columns and how
 to maintain them.
 EOF

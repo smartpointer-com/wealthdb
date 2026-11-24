@@ -1,0 +1,9 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+var VIAC_LOGIN required plain +CC<digits> The mobile number you sign in with, in international form
+var VIAC_PASSWORD required secret <password> Your VIAC password
+checks login
+signin VIAC sends a code by SMS. Type it in the terminal when asked.
+then wealthdb-collect viac download --lookback all
+then wealthdb-collect viac load
+then wealthdb load -a

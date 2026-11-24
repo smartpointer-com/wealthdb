@@ -95,16 +95,16 @@ RAIFFEISEN_AT_REGION='...'     # the Mandant code selecting the regional bank (D
 ## Usage
 
 ```
-./raiffeisen_at download                 # one-shot login + REST fetch → bronze (default window ~90 days)
-./raiffeisen_at download --lookback all   # full history (the initial backfill)
-./raiffeisen_at download --dry-run        # sign in, record the roster, fetch nothing
-./raiffeisen_at download --fresh          # force the cold region/Verfüger/PIN form
-./raiffeisen_at login --check             # is a session still alive? (dead between runs is expected)
-./raiffeisen_at vnc-login                 # by-hand login fallback over VNC
-./raiffeisen_at load                      # bronze + supplied listings → silver SQLite
-./raiffeisen_at load --force              # rebuild the silver from all bronze
+wealthdb-collect raiffeisen_at download                 # one-shot login + REST fetch → bronze (default window ~90 days)
+wealthdb-collect raiffeisen_at download --lookback all   # full history (the initial backfill)
+wealthdb-collect raiffeisen_at download --dry-run        # sign in, record the roster, fetch nothing
+wealthdb-collect raiffeisen_at download --fresh          # force the cold region/Verfüger/PIN form
+wealthdb-collect raiffeisen_at login --check             # is a session still alive? (dead between runs is expected)
+wealthdb-collect raiffeisen_at vnc-login                 # by-hand login fallback over VNC
+wealthdb-collect raiffeisen_at load                      # bronze + supplied listings → silver SQLite
+wealthdb-collect raiffeisen_at load --force              # rebuild the silver from all bronze
 
-./raiffeisen_at explore                   # discovery harness over VNC
+wealthdb-collect raiffeisen_at explore                   # discovery harness over VNC
 ```
 
 `download` fills the region/Verfüger/PIN form (or clicks the saved-user

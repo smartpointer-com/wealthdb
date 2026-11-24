@@ -28,7 +28,7 @@ real 2FA challenge at a real device. Repeated automated logins can trip
 Chase's fraud heuristics into a lock-out.
 
 - Allowed without asking: reading code/config/docs, `make build-chase` /
-  `make test-chase`, `./chase explore --help`, unit tests, and
+  `make test-chase`, `wealthdb-collect chase explore --help`, unit tests, and
   `login --check` (probes the persisted profile read-only, no new MFA).
 - Not allowed unless explicitly asked: anything that mints a new session or
   fires a challenge. That covers `download`, `vnc-login`, `explore`, and

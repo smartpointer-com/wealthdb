@@ -26,7 +26,7 @@ Federal Reserve, pulled via the [FRED API](https://fred.stlouisfed.org/docs/api/
 | [`prune.py`](prune.py) | Reclaim bronze disk: delete non-complete (crashed) run dirs and `--debug` traces. A complete dump's `load` inputs are never touched. |
 
 FRED authenticates with an API key, not a session, so a bare `login` is
-a no-op. `login --check` is the credential probe. It resolves the key
+a no-op. Without a key, it says how to get and store one. `login --check` is the credential probe. It resolves the key
 and asks FRED for a single observation, so a key that is present but
 rejected fails there rather than at the next `download`. It writes
 nothing. `download --dry-run` fetches with the key and writes no bronze.
@@ -92,13 +92,13 @@ tenor and basis.
 ## Usage
 
 ```sh
-./fred download                       # last ~90 days (default)
-./fred download --lookback 1950-01-01 # each series' whole history
-./fred download --lookback all        # the last 30 years
-./fred download --lookback 2010-01-01 # explicit backfill start
-./fred download --series DEXSZUS,DEXUSEU
-./fred download --series DGS2,DGS10,DTB3
-./fred load
+wealthdb-collect fred download                       # last ~90 days (default)
+wealthdb-collect fred download --lookback 1950-01-01 # each series' whole history
+wealthdb-collect fred download --lookback all        # the last 30 years
+wealthdb-collect fred download --lookback 2010-01-01 # explicit backfill start
+wealthdb-collect fred download --series DEXSZUS,DEXUSEU
+wealthdb-collect fred download --series DGS2,DGS10,DTB3
+wealthdb-collect fred load
 ```
 
 `download` honours the shared
@@ -126,8 +126,8 @@ nothing.
 ### Reclaiming disk
 
 ```sh
-./fred prune --dry-run   # print the deletion plan, delete nothing
-./fred prune             # delete it
+wealthdb-collect fred prune --dry-run   # print the deletion plan, delete nothing
+wealthdb-collect fred prune             # delete it
 ```
 
 `prune` works within the

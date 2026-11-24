@@ -92,7 +92,7 @@ EOF
     exit 0
 fi
 
-# `./schwab-web login` → clean host-side no-op (exit 0), never a container
+# `wealthdb-collect schwab-web login` → clean host-side no-op (exit 0), never a container
 # spin. schwab-web is a one-shot scraper: the Firefox session is minted
 # inside `download` (CLI-MFA on stdin) and persists nothing separately, so
 # there is no standalone login step and no flag passes through.

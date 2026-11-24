@@ -20,7 +20,7 @@ source-specific design notes.
 | [`prune.py`](prune.py) | Reclaims bronze disk by removing zip-less shells (crashed runs, pulls that found nothing queued) and legacy debug captures. A run dir holding any zip is never a deletion candidate. See [Reclaiming disk](#reclaiming-disk). |
 
 Each script lists its flags with `--help`, for example
-`./ubs-psn download --help`.
+`wealthdb-collect ubs-psn download --help`.
 
 ## download.py
 
@@ -98,20 +98,20 @@ Probe the key. This opens one authenticated SSH session and closes it.
 It lists nothing and consumes no file:
 
 ```sh
-./ubs-psn login --check
+wealthdb-collect ubs-psn login --check
 ```
 
 Dry run. This connects, verifies the host key, authenticates, and exits.
 It creates no run dir, lists nothing and fetches nothing:
 
 ```sh
-./ubs-psn download --dry-run
+wealthdb-collect ubs-psn download --dry-run
 ```
 
 Real download:
 
 ```sh
-./ubs-psn download
+wealthdb-collect ubs-psn download
 ```
 
 (All three read `UBS_PSN_CLIENT_ID` from `~/.secrets/ubs-psn.env`;
@@ -121,8 +121,8 @@ Archive recovery — fetch the dated archive copies instead of the queue
 files, e.g. after a missed or corrupted delivery:
 
 ```sh
-./ubs-psn download --recover                    # the whole ~2-month archive
-./ubs-psn download --recover --lookback 4w      # only the last four weeks
+wealthdb-collect ubs-psn download --recover                    # the whole ~2-month archive
+wealthdb-collect ubs-psn download --recover --lookback 4w      # only the last four weeks
 ```
 
 On a normal pull `--lookback` cannot narrow anything, so it is logged
@@ -274,8 +274,8 @@ confirmation are described in [DESIGN.md §8](DESIGN.md#8-cost-basis).
 ### Usage
 
 ```sh
-./ubs-psn load                      # defaults under $XDG_DATA_HOME/wealthdb/ubs-psn
-./ubs-psn load --force              # rebuild silver from all bronze, swapped in when it succeeds
+wealthdb-collect ubs-psn load                      # defaults under $XDG_DATA_HOME/wealthdb/ubs-psn
+wealthdb-collect ubs-psn load --force              # rebuild silver from all bronze, swapped in when it succeeds
 ```
 
 The loader scans `<bronze-dir>` for subdirectories whose names match
@@ -304,8 +304,8 @@ at the latest schema, so code never handles "if column X exists".
 ## Reclaiming disk
 
 ```sh
-./ubs-psn prune --dry-run   # print the deletion plan, delete nothing
-./ubs-psn prune             # delete it
+wealthdb-collect ubs-psn prune --dry-run   # print the deletion plan, delete nothing
+wealthdb-collect ubs-psn prune             # delete it
 ```
 
 `prune` uses the fleet prune engine

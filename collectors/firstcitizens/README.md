@@ -95,14 +95,14 @@ FIRSTCITIZENS_PASSWORD='...'
 ## Usage
 
 ```
-./firstcitizens login                     # sign in; 2FA from the terminal if needed
-./firstcitizens login --check             # does the trusted device still skip 2FA?
-./firstcitizens vnc-login --fresh         # forget the device; do the full 2FA by hand over VNC
-./firstcitizens download                  # REST fetch into bronze (last ~90 days)
-./firstcitizens download --lookback all   # complete history
-./firstcitizens download --dry-run        # sign in, log the roster and transaction totals, fetch nothing
-./firstcitizens load                      # bronze → silver
-./firstcitizens explore                   # discovery harness over VNC
+wealthdb-collect firstcitizens login                     # sign in; 2FA from the terminal if needed
+wealthdb-collect firstcitizens login --check             # does the trusted device still skip 2FA?
+wealthdb-collect firstcitizens vnc-login --fresh         # forget the device; do the full 2FA by hand over VNC
+wealthdb-collect firstcitizens download                  # REST fetch into bronze (last ~90 days)
+wealthdb-collect firstcitizens download --lookback all   # complete history
+wealthdb-collect firstcitizens download --dry-run        # sign in, log the roster and transaction totals, fetch nothing
+wealthdb-collect firstcitizens load                      # bronze → silver
+wealthdb-collect firstcitizens explore                   # discovery harness over VNC
 ```
 
 `login` needs a **real TTY** for the 2FA prompt. Each real session can

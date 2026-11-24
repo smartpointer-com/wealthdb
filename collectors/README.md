@@ -27,7 +27,7 @@ Every collector exposes the same four steps:
 
 | Step | Produces | What it does |
 | --- | --- | --- |
-| `login` | a session/token in `~/.secrets/` | Authenticate; usually prompts for MFA. Where `download` mints its own session, `login` is a no-op that says so. |
+| `login` | a session/token in `~/.secrets/` | Authenticate; usually prompts for MFA. Where `download` mints its own session, `login` is a no-op that says so. When a credential is missing, `login` says what to set up instead (see [The setup declaration](#the-setup-declaration--setuptxt)). |
 | `download` | **bronze** under `$XDG_DATA_HOME/wealthdb/<source>/<UTC-ts>/` | Fetch raw artefacts (JSON / CSV / XLS / PDF / zip), exactly as the source returns them. |
 | `load` | **silver** `$XDG_DATA_HOME/wealthdb/<source>/<source>.db` | Parse bronze into a source-shaped SQLite. Idempotent — already-loaded dumps are skipped. |
 | `prune` | reclaimed disk | Delete debug artefacts from complete dumps + whole non-complete dumps, plus aged-out entries of the host-side debug cache. Never touches a `load` input. See [Debug artefacts, run status, and pruning bronze](#debug-artefacts-run-status-and-pruning-bronze). |
@@ -154,6 +154,7 @@ the wrapper, the env file, and the image name.
 ```
 collectors/<name>/
 ├── <name>                 the wrapper — what wealthdb-collect dispatches to (executable)
+├── setup.txt              what the first sign-in needs: credentials, steps, next commands
 ├── collector.py           the declaration: SPEC, a collectorkit.spec.Collector
 ├── login.py               mints/refreshes the session  (may be a no-op or absent)
 ├── download.py            fetches bronze
@@ -249,7 +250,8 @@ A wrapper with a config file calls `wrapper_source_cfg` first. The
 wrapper then calls `wrapper_init`, prints its help when
 `wrapper_wants_help`, and ends with `wrapper_main "$@"`. A wrapper whose
 `login` folds into `download` calls `wrapper_login_folds` before that.
-A bare `login` then prints a notice and starts no container. `wrapper_main`
+A bare `login` then prints a notice and starts no container.
+`wrapper_main` and `wrapper_login_folds` run the setup check first. `wrapper_main`
 runs `build`, and runs `prune` on the host through
 `wrapper_host_prune`; fidelity-web and schwab-api route `prune`
 themselves. The library bind-mounts the dirs listed under Docker mounts
@@ -261,8 +263,8 @@ sources [`shared/wrappers/host-lib.sh`](../shared/wrappers/host-lib.sh)
 and calls these:
 
 - `host_begin VERB... -- "$@"` prints the banner as help and rejects an
-  unknown verb. It then sets `VERB` and resolves `SECRETS_DIR`,
-  `DATA_DIR`, `SILVER_DB` and `FORWARD_ARGS`.
+  unknown verb. It then sets `VERB`, resolves `SECRETS_DIR`,
+  `DATA_DIR`, `SILVER_DB` and `FORWARD_ARGS`, and runs the setup check.
 - `host_source_env_file [FILE]` sources `<secrets>/<name>.env`. Given
   FILE, it sources another source's `<secrets>/<FILE>.env`, overridden
   by `<FILE>_ENV_FILE` in upper snake case.
@@ -271,6 +273,105 @@ and calls these:
 - `host_login_probe SCRIPT [ARGS...]` is the probe in the `login` of a
   source with no session. `--check` runs SCRIPT. Otherwise it returns,
   and the wrapper prints its notice.
+
+### The setup declaration — `setup.txt`
+
+Each collector states what its first sign-in needs in `setup.txt`,
+beside its wrapper. It names the env file, each variable to put in it,
+what to do at the provider first, how the sign-in runs, and the
+commands that come after `login`. Before a verb that signs in, the
+wrapper reads it and checks that the credentials are in place.
+
+The file is plain text, one fact per line. A line is a keyword, one
+space and a value. Blank lines and lines that start with `#` are
+skipped. Bash 3.2 reads it with no other tool. It is data, never
+sourced.
+
+| Keyword | Value | Meaning |
+| --- | --- | --- |
+| `envfile` | `FILE.env [FALLBACK.env...]` | A file the sign-in reads from the secrets folder. The first name that exists is read. Several lines: several files. With none, `<name>.env`. |
+| `var` | `NAME need kind shape label` | A variable. `need` is `required` or `optional`. `kind` is `secret` or `plain`. `shape` is the placeholder of the template, with no space. `label` is the rest of the line. |
+| `alias` | `NAME OTHER` | `OTHER` is accepted in place of `NAME`. |
+| `flag` | `NAME --flag` | `--flag VALUE` on the command line gives `NAME`. |
+| `keyfile` | `FILE label` | A file that must be in the secrets folder, such as an SSH key. |
+| `session` | `PATH` | A stored session in the secrets folder. When it exists, a sign-in may need no credential, so the check never stops the verb. |
+| `checks` | `VERB...` | The verbs the check runs before. |
+| `skip` | `FLAG...` | Flags that turn the check off for that run. |
+| `provider` | text | A step at the provider before the first sign-in. One line each. |
+| `docs` | `SECTION` | The section of the collector's README.md with more. |
+| `signin` | text | How the sign-in runs, in plain words. |
+| `first` | text | The first step of a collector with nothing to sign in to. |
+| `then` | command | A command after `login`, in order. It is listed with what it does, taken from its verb (`download`, `load`, `link`, `wealthdb load`). A note after three spaces and `# ` adds a line. A part in `[ ]` that holds `<name>` is kept, with the name in place, when the verb run named one with `--item`; else it is left out. |
+
+An example, for a collector that signs in with an email and a password:
+
+```
+var ACME_BANK_USERNAME required plain <email> The email you sign in with
+var ACME_BANK_PASSWORD required secret <password> Your password
+checks login
+signin Acme Bank sends a code by SMS. Type it in the terminal.
+then wealthdb-collect acme-bank download
+then wealthdb-collect acme-bank load
+then wealthdb load -a
+```
+
+The check ([`shared/wrappers/setup-lib.sh`](../shared/wrappers/setup-lib.sh))
+runs before each verb of `checks`, in both wrapper families:
+
+- It resolves the secrets folder and the env file as the wrapper does:
+  `--secrets-dir`, `${PREFIX}_SECRETS_DIR`, `WEALTHDB_SECRETS_DIR`,
+  `~/.secrets`. `${FILE}_ENV_FILE` (`VIAC_ENV_FILE` for `viac.env`)
+  names the file where the wrapper reads it on the host: a host-venv
+  wrapper, or a Docker wrapper with `HAS_ENV_FILE`.
+- A variable is there when it is set and not empty in the environment
+  or in an env file, under its name or an alias, or when its flag is
+  given.
+- A value that is still exactly its `shape`, the placeholder of the
+  template, does not count. It stops the verb even for an optional
+  variable, since the provider would receive it. The instructions list
+  its line as one that still holds the placeholder. The value is
+  compared where the file is sourced and never printed.
+- It reads an env file the way root [AGENTS.md](../AGENTS.md) §3 sets:
+  `bash -n`, then `source` in a subshell. Only the names of the
+  variables leave the subshell. No value is ever printed.
+- A required variable or a key file that is missing, or a missing
+  secrets folder of a Docker collector, prints the instructions and
+  stops the verb with exit status **78**. No collector uses 78 for
+  anything else. The instructions give the provider steps, the
+  commands that make the folder (`chmod 700`) and the file
+  (`chmod 600`), a template of the lines to add, how the sign-in runs,
+  and `Then run: wealthdb-collect <name> <verb>`.
+- An env file that `bash -n` rejects is reported as not valid, with
+  the fix and without its lines, and the verb stops with 78.
+- An env file that is missing while every variable is optional prints
+  a short note on what it would hold, and the verb goes on.
+- A complete setup prints nothing before the verb runs.
+- A `login` that ends well, or the `link` of a collector that links one
+  login at a time, closes with the commands that follow it: the
+  `then` lines, numbered, between two rules. So the first command a
+  setup names always says what comes next. It is printed for a person
+  only, when stderr is a terminal, and a scheduled run's output stays
+  as it is. `WEALTHDB_SETUP_NEXT=1` prints it without a terminal, `0`
+  never. A help flag and a session probe (`--check`) do not get it.
+- On a terminal, the block and the setup's instructions are coloured
+  as `wealthdb config` colours: titles bold, commands to run cyan,
+  what each does dimmed. `NO_COLOR` or `TERM=dumb` turns the colours
+  off; `WEALTHDB_SETUP_COLOR=1` or `0` decides them.
+
+A message or a help text names a collector's command as
+`wealthdb-collect <name> <verb>`, never as `./<name>`: the reader's
+working directory is not known.
+
+The check is skipped for `--help`, `-h`, `--check` (a session probe),
+`--env-file` (a file named on the command line), the flags of `skip`,
+and every verb that `checks` does not name. A dry run of a download
+that signs in is checked. A dry run of a download that does not sign
+in is never in `checks`.
+
+`shared/wrappers/tests/test_setup_check.sh` holds each declaration to
+its collector. Every variable must be one the wrapper forwards
+(`ENV_VARS`) or sources on the host, and every credential name in the
+collector's code must be declared.
 
 ### Collector CLI conventions
 
@@ -287,7 +388,7 @@ are the escape, not opt-ins. The canonical spelling per concept:
 | documents / heavy detail | fetched by default; opt out with `--no-documents` (and the same `--no-<detail>` pattern for other heavy passes) | **on** |
 | force reload (on `load`) | `--force` — rebuild silver from all bronze; on the load frame the old silver stays in place until the new one is complete; on the load frame and the loaders that call `rebuild.runs_without_bronze`, a warning first names each loaded run whose bronze is gone | off |
 | session probe | `login --check`: exit `0` = credential or session alive, nonzero = not. See [login.py — the session](#loginpy--the-session) for what it reads and for the five collectors that differ. | — |
-| exit status (`download`, `login --check`) | `collectorkit.cli`: `0` done, `1` failed, `2` usage error, `3` no verdict (a probe that could not run), `6` a person has to sign in first. A full `login` may give its own codes. | — |
+| exit status (`download`, `login --check`) | `collectorkit.cli`: `0` done, `1` failed, `2` usage error, `3` no verdict (a probe that could not run), `6` a person has to sign in first. A full `login` may give its own codes. `78`: the setup check stopped the verb (see [The setup declaration](#the-setup-declaration--setuptxt)). | — |
 | human-MFA wait | `--mfa-timeout SECONDS` | per source; see the list below |
 | MFA-page-appear wait | `--mfa-page-timeout SECONDS` | per source |
 | login-diagnostics dir | `--screenshot-dir` (login); `--debug-dir` on an `explore` harness, and on `prune`, which reclaims that dir | None |

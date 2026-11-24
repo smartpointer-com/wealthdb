@@ -174,7 +174,7 @@ def login(page, email: str, password: str) -> None:
         raise RuntimeError(
             f"login form did not appear. {page_summary(page)}. Carta may "
             f"be showing a Cloudflare interactive challenge or the markup "
-            f"changed — re-run `./carta explore` to re-map."
+            f"changed — re-run `wealthdb-collect carta explore` to re-map."
         ) from exc
 
     if page.locator(PWD_SELECTOR).count() == 0:

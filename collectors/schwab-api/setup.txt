@@ -1,0 +1,20 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+envfile schwab-api.env
+envfile schwab-web.env
+var SCHWAB_CLIENT_ID required plain <client-id> The Client ID of your app on the Schwab developer portal
+flag SCHWAB_CLIENT_ID --client-id
+var SCHWAB_CLIENT_SECRET required secret <client-secret> The Client Secret of that app
+var SCHWAB_LOGIN_ID optional plain <login-id> Your Schwab Login ID, so login can fill in the sign-in
+var SCHWAB_PASSWORD optional secret <password> Your Schwab password, for the same
+checks login
+provider Register an app for the Trader API - Individual product on
+provider the Schwab developer portal, with the callback URL
+provider   https://127.0.0.1:8182
+docs Setup
+signin login opens the Schwab sign-in and fills it in for you. Type
+signin the code Schwab sends in the terminal when asked. The sign-in
+signin lasts 7 days; then run login again.
+then wealthdb-collect schwab-api download
+then wealthdb-collect schwab-api load
+then wealthdb load -a

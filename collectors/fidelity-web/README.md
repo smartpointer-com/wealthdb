@@ -81,7 +81,8 @@ geoip-matched locale and humanised cursor movement gets through. See
 
 - Fidelity ends a session when its Firefox process exits. So `download`
   signs in, walks, logs out and exits in one run. `login` is a no-op
-  that says so.
+  that says so. With a credential missing, it says what to set up
+  first.
 - A fresh sign-in asks for a 6-digit code. `download` prompts for it on
   stdin.
 - The run ticks "Trust this browser" at the code prompt. The profile dir
@@ -105,7 +106,7 @@ make test-fidelity-web
 
 fidelity-web is a hybrid collector. `download`, `vnc-login` and
 `explore` run in the Docker image. `load`, `prune` and `recompress` run
-on a host venv built from `requirements.txt`. `./fidelity-web build`
+on a host venv built from `requirements.txt`. `wealthdb-collect fidelity-web build`
 builds the image alone. The image builds on the shared
 `wealthdb/base-camoufox`
 ([`shared/images/base-camoufox.Dockerfile`](../../shared/images/base-camoufox.Dockerfile)),
@@ -128,17 +129,17 @@ for the shared env-file rules.
 ## Run
 
 ```sh
-./fidelity-web vnc-login --mode none -v    # first sign-in on a fresh profile, by hand
-./fidelity-web download                     # every phase, last 90 days
-./fidelity-web download --mode positions    # positions, lots and the DAF pool snapshot
-./fidelity-web download --mode activity --lookback 2022-06-01   # activity since a date
-./fidelity-web download --lookback all      # everything Fidelity still serves
-./fidelity-web download --check             # is the stored session alive?
-./fidelity-web load                         # bronze → silver
-./fidelity-web prune --dry-run              # preview the disk reclaim
+wealthdb-collect fidelity-web vnc-login --mode none -v    # first sign-in on a fresh profile, by hand
+wealthdb-collect fidelity-web download                     # every phase, last 90 days
+wealthdb-collect fidelity-web download --mode positions    # positions, lots and the DAF pool snapshot
+wealthdb-collect fidelity-web download --mode activity --lookback 2022-06-01   # activity since a date
+wealthdb-collect fidelity-web download --lookback all      # everything Fidelity still serves
+wealthdb-collect fidelity-web download --check             # is the stored session alive?
+wealthdb-collect fidelity-web load                         # bronze → silver
+wealthdb-collect fidelity-web prune --dry-run              # preview the disk reclaim
 ```
 
-`./fidelity-web help` lists the verbs, and `download --help` the flags.
+`wealthdb-collect fidelity-web help` lists the verbs, and `download --help` the flags.
 A few behaviours worth knowing:
 
 - `--mode` picks one phase: `positions`, `activity`, `documents`,
@@ -170,7 +171,7 @@ runs after the sign-in lands.
 
 ### Discovery sessions
 
-`./fidelity-web explore` opens the sign-in over VNC and records a
+`wealthdb-collect fidelity-web explore` opens the sign-in over VNC and records a
 human-driven session under the debug dir: network log with response
 bodies, click log, downloads and DOM snapshots. It maps surfaces the
 walk does not cover; [DESIGN.md §12](DESIGN.md#12-donor-advised-fund-extension)
@@ -231,11 +232,11 @@ A core that states no SEC yield gives its cash no rate.
 ## Reclaiming disk
 
 ```sh
-./fidelity-web prune --dry-run        # print the plan, delete nothing
-./fidelity-web prune
-./fidelity-web recompress --dry-run   # plan the backlog sweep
-./fidelity-web recompress
-./fidelity-web load --force           # silver must come out unchanged
+wealthdb-collect fidelity-web prune --dry-run        # print the plan, delete nothing
+wealthdb-collect fidelity-web prune
+wealthdb-collect fidelity-web recompress --dry-run   # plan the backlog sweep
+wealthdb-collect fidelity-web recompress
+wealthdb-collect fidelity-web load --force           # silver must come out unchanged
 ```
 
 `prune` removes `screenshots/` from complete dumps, whole unfinished

@@ -788,10 +788,10 @@ process.** The sibling-tool "login mints `storageState.json`,
 download reuses it across runs" pattern (UBS, Swissquote) does
 not apply.
 
-`./fidelity-web download` is a one-shot:
+`wealthdb-collect fidelity-web download` is a one-shot:
 
 ```
-./fidelity-web download [flags]
+wealthdb-collect fidelity-web download [flags]
     → docker spawn → Camoufox launch
     → IUA accept (if non-US locale) → signin
     → MFA auto-skip via device-trust cookie, or stdin prompt
@@ -850,7 +850,7 @@ defaults to five minutes (`--mfa-timeout 300`).
 
 ## 7. Login + MFA flow
 
-Default flow (`./fidelity-web download`), assuming a profile
+Default flow (`wealthdb-collect fidelity-web download`), assuming a profile
 dir that already has Akamai trust + Fidelity device-trust
 cookies:
 

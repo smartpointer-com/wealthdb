@@ -89,29 +89,29 @@ run reads the source once `wealthdb.cfg` lists it under `silver_sources`.
 
 ```sh
 # 1. Build the image (stock Firefox + Camoufox base; ~1-2 min on warm cache).
-./angellist build
+wealthdb-collect angellist build
 
 # 2. Lift a session. A still-valid saved session exits at once with the
 #    cookie refreshed. Otherwise stock Firefox opens under VNC: connect,
 #    log in (+2FA), check that the portfolio loads, then CLOSE Firefox.
 #    The cookie is extracted on close. Repeat about monthly.
-./angellist login
+wealthdb-collect angellist login
 #   (already valid) login: existing AngelList session still valid — cookie lifted to
 #   (fresh login)   login: VNC ready on 127.0.0.1:<port>
 #                   login: password (single-use):  <password>
 
 # 3. Pull a fresh bronze dump (headless; ~15s; read-only GraphQL).
-./angellist download
+wealthdb-collect angellist download
 
 # 4. Ingest into the SQLite silver.
-./angellist load
+wealthdb-collect angellist load
 ```
 
 Iterate without a fresh login:
 
 ```sh
-./angellist download --dry-run    # navigate + capture with the saved cookie, write no bronze
-./angellist load --force          # rebuild silver from all bronze
+wealthdb-collect angellist download --dry-run    # navigate + capture with the saved cookie, write no bronze
+wealthdb-collect angellist load --force          # rebuild silver from all bronze
 ```
 
 `download --dry-run` uses the saved cookie and never signs in. It lists
@@ -136,8 +136,8 @@ Bronze lands under `$XDG_DATA_HOME/wealthdb/angellist/`:
 ### Reclaiming disk
 
 ```sh
-./angellist prune --dry-run   # print the deletion plan, delete nothing
-./angellist prune             # delete it
+wealthdb-collect angellist prune --dry-run   # print the deletion plan, delete nothing
+wealthdb-collect angellist prune             # delete it
 ```
 
 `prune` follows the

@@ -1,0 +1,11 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+var SWISSQUOTE_USERNAME required plain <username> The username you sign in to Swissquote with
+flag SWISSQUOTE_USERNAME --username
+var SWISSQUOTE_PASSWORD optional secret <password> Your Swissquote password. Without it, login asks for it
+checks login
+signin login shows an operation number. Check that your phone shows
+signin the same number, then approve the request there.
+then wealthdb-collect swissquote download
+then wealthdb-collect swissquote load
+then wealthdb load -a

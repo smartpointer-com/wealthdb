@@ -1,0 +1,12 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+var EQUITYZEN_USERNAME required plain <email> The email you sign in to EquityZen with
+alias EQUITYZEN_USERNAME EQUITYZEN_EMAIL
+var EQUITYZEN_PASSWORD required secret <password> Your EquityZen password
+checks login
+signin login fills in the EquityZen sign-in for you, then asks for
+signin the 6-digit code of your authenticator app. Type it in the
+signin terminal.
+then wealthdb-collect equityzen download
+then wealthdb-collect equityzen load
+then wealthdb load -a

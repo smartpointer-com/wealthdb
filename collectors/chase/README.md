@@ -82,7 +82,7 @@ liability ([adapter doc](../../wealthdb/docs/adapters/chase.md)).
 
 ```sh
 # 1. Build the image (on the shared base-camoufox image).
-./chase build                    # or, from the repo root: make build-chase
+wealthdb-collect chase build                    # or, from the repo root: make build-chase
 
 # 2. Put the credentials in ~/.secrets/chase.env (chmod 0600):
 #    CHASE_USERNAME=example-username
@@ -90,13 +90,13 @@ liability ([adapter doc](../../wealthdb/docs/adapters/chase.md)).
 
 # 3. Sign in and scrape. 2FA runs in the terminal: pick a factor, then
 #    type the code or approve the push. Writes a bronze run dir.
-./chase download                 # or: wealthdb-collect chase download
-./chase download --lookback 1y   # widen the statement window
-./chase download --no-documents  # skip the statement PDFs
+wealthdb-collect chase download                 # or: wealthdb-collect chase download
+wealthdb-collect chase download --lookback 1y   # widen the statement window
+wealthdb-collect chase download --no-documents  # skip the statement PDFs
 
 # 4. Load the bronze into silver.
-./chase load                     # or: wealthdb-collect chase load
-./chase load --force             # rebuild silver from all bronze; the old one stays until the new one is complete
+wealthdb-collect chase load                     # or: wealthdb-collect chase load
+wealthdb-collect chase load --force             # rebuild silver from all bronze; the old one stays until the new one is complete
 ```
 
 `--lookback` bounds only the statement pass. The activity export always
@@ -105,16 +105,17 @@ the statement PDFs.
 
 Other verbs:
 
-- `./chase vnc-login` is the fallback when the terminal 2FA cannot find a
+- `wealthdb-collect chase vnc-login` is the fallback when the terminal 2FA cannot find a
   challenge control. It exposes VNC, and Sign In + 2FA are done by hand in
   the browser. The scrape then runs as in `download`.
-- `./chase login` does nothing: it folds into `download`.
-  `./chase login --check` probes the stored profile without a 2FA push. It
+- `wealthdb-collect chase login` does nothing: it folds into `download`. With a
+  credential missing, it says what to set up first.
+  `wealthdb-collect chase login --check` probes the stored profile without a 2FA push. It
   reports the session dead between runs, by design.
-- `./chase prune --dry-run` previews the reclaim; `./chase prune` deletes
+- `wealthdb-collect chase prune --dry-run` previews the reclaim; `wealthdb-collect chase prune` deletes
   non-complete dumps, the `--debug` bodies under `raw/svc/` and the aged
   debug cache.
-- `./chase help` and `./chase <verb> --help` list the flags.
+- `wealthdb-collect chase help` and `wealthdb-collect chase <verb> --help` list the flags.
 
 The 2FA dialog is a standalone, tested module,
 [`auth_dialog.py`](auth_dialog.py). Its demo replays the dialog on synthetic
@@ -158,7 +159,7 @@ balances.
 ## Discovery harness
 
 ```sh
-./chase explore                  # drive the live UI over VNC and record it
+wealthdb-collect chase explore                  # drive the live UI over VNC and record it
 ```
 
 `explore` prints the VNC connection details at startup. The login form is

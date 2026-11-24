@@ -1,0 +1,11 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+var FIRSTCITIZENS_USERNAME required plain <username> The username you sign in to online banking with
+var FIRSTCITIZENS_PASSWORD required secret <password> Your online banking password
+checks login download
+signin login fills in the sign-in for you. Pick Text or Call in the
+signin terminal, then type the code you receive. The computer is
+signin then trusted, so download signs in with no code.
+then wealthdb-collect firstcitizens download --lookback all
+then wealthdb-collect firstcitizens load
+then wealthdb load -a

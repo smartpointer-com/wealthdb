@@ -1,0 +1,9 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+var RELEVATE_LOGIN required plain <email-or-OASI-number> Your Relevate portal login: your email or OASI number
+var RELEVATE_PASSWORD required secret <password> Your Relevate portal password
+checks login
+signin login sends a code by SMS. Type it in the terminal when asked.
+then wealthdb-collect relevate download
+then wealthdb-collect relevate load
+then wealthdb load -a

@@ -54,7 +54,9 @@
 #
 # A wrapper with a config file calls `wrapper_source_cfg PREFIX DEFAULT`
 # before wrapper_init. A wrapper whose `login` folds into `download`
-# calls `wrapper_login_folds` before wrapper_main.
+# calls `wrapper_login_folds` before wrapper_main. Both wrapper_main and
+# wrapper_login_folds run the setup check of $HERE/setup.txt
+# (setup-lib.sh) before a verb that signs in.
 #
 # wrapper_init POPULATES (for the caller and the helpers below):
 #   HOST_SECRETS, HOST_DATA, HOST_DEBUG (when HAS_DEBUG=1),
@@ -77,6 +79,8 @@ _WRAPPER_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$(dirname "${BASH_SOURCE[0]}")/envfile-lib.sh"
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/paths-lib.sh"
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/setup-lib.sh"
 
 # _abs_dir DIR — echo the existing directory DIR as an absolute path.
 # `docker run -v` reads a bare relative source such as `mydata` as a
@@ -390,7 +394,9 @@ wrapper_safety_guard() {
 # then prints its notice and exits 0 without starting a container. That
 # keeps an orchestrator's login -> download -> load from tripping and
 # saves a container start. A PASS_FLAG, such as a session probe's
-# `--check` or a help flag, takes `login` to the container.
+# `--check` or a help flag, takes `login` to the container. Before it
+# returns true, the setup check runs (setup_check): a missing credential
+# prints what to do and exits SETUP_EXIT in place of the notice.
 wrapper_login_folds() {
     local -a pass=()
     while [[ $# -gt 0 && "$1" != -- ]]; do
@@ -405,6 +411,8 @@ wrapper_login_folds() {
             [[ "$a" == "$p" ]] && return 1
         done
     done
+    setup_check docker "$(setup_secrets_dir "$HOST_SECRETS" "$@")" "$@"
+    setup_arm_next "$@"
     return 0
 }
 
@@ -430,6 +438,10 @@ wrapper_main() {
     # then continue with the remaining args as the positional parameters.
     wrapper_resolve_dir_args "$@"
     set -- ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+    # Before a verb that signs in: stop with instructions when a
+    # credential the collector's setup.txt declares is missing.
+    setup_check docker "$HOST_SECRETS" "$@"
+    setup_arm_next "$@"
     wrapper_source_env_file
 
     wrapper_check_mounts
@@ -482,5 +494,5 @@ wrapper_main() {
     fi
     docker_args+=(-v "$HERE:/app")
 
-    exec docker run "${docker_args[@]}" "$IMAGE" "$@"
+    setup_exec docker run "${docker_args[@]}" "$IMAGE" "$@"
 }

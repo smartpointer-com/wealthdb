@@ -1,0 +1,11 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+var COINTRACKING_USERNAME required plain <email> The email you sign in to CoinTracking with
+var COINTRACKING_PASSWORD required secret <password> Your CoinTracking password
+session cointracking-profile
+checks login
+signin login asks for the 6-digit code of your authenticator app.
+signin Type it in the terminal. Later sign-ins need no code.
+then wealthdb-collect cointracking download
+then wealthdb-collect cointracking load
+then wealthdb load -a

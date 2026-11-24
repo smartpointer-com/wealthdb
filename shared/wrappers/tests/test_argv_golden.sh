@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Golden command lines of every collector wrapper and entrypoint.
 #
-# Wrapper side: each collectors/<name>/<name> runs from a copy of itself
-# and shared/wrappers/*.sh in a temp tree, so it finds no .venv. Its
-# environment is empty but for a sandboxed HOME, TMPDIR, XDG dirs and
-# stub programs: `docker`, `python3` and `lsof` record their argv and
-# start nothing. The secrets dir holds an env file of invented values,
-# and the stubs print each forwarded variable, since `-e VAR` passes a
-# name and the value travels in the environment.
+# Wrapper side: each collectors/<name>/<name> runs from a copy of itself,
+# its setup.txt and shared/wrappers/*.sh in a temp tree, so it finds no
+# .venv. Its environment is empty but for a sandboxed HOME, TMPDIR, XDG
+# dirs and stub programs: `docker`, `python3` and `lsof` record their
+# argv and start nothing. The secrets dir holds an env file of invented
+# values, and the stubs print each forwarded variable, since `-e VAR`
+# passes a name and the value travels in the environment. Every setup is
+# complete, so the setup check runs and prints nothing.
 #
 # Entrypoint side: each collectors/<name>/entrypoint.sh runs under a bash
 # whose BASH_ENV defines a `source` that loads a recording library in
@@ -139,17 +140,35 @@ wrapper_golden() {
     trap - EXIT
     sandbox "$root"
     mkdir -p "$root/tree/collectors/$name" "$root/tree/shared/wrappers"
-    cp -p "$REPO/collectors/$name/$name" "$root/tree/collectors/$name/"
+    cp -p "$REPO/collectors/$name/$name" "$REPO/collectors/$name/setup.txt" \
+        "$root/tree/collectors/$name/"
     cp -p "$REPO/shared/wrappers/"*.sh "$root/tree/shared/wrappers/"
     w="$root/tree/collectors/$name/$name"
+    local decl="$root/tree/collectors/$name/setup.txt"
     # The env file sets each variable the wrapper forwards, and one more
     # that only a host-side source passes on. refdata reads finra.env too.
+    # Every case is a complete setup, so the setup check prints nothing:
+    # the env file also sets each other variable setup.txt names, and its
+    # key files are there. Those values are not `invented-`, so no stub
+    # lists them.
     {
         ( eval "$(awk '/ENV_VARS=\(/ {f=1} f {print} f && /\)/ {exit}' "$w")"
-          for v in ${ENV_VARS[@]+"${ENV_VARS[@]}"}; do echo "$v=invented-$v"; done )
+          for v in ${ENV_VARS[@]+"${ENV_VARS[@]}"}; do echo "$v=invented-$v"; done
+          for v in $(awk '$1 == "var" {print $2}' "$decl"); do
+              [[ " ${ENV_VARS[*]-} " == *" $v "* ]] || echo "$v=complete-$v"
+          done )
         echo "GOLDEN_ENV_FILE=invented-$name"
     } > "$root/home/.secrets/$name.env"
     echo "GOLDEN_FINRA=invented-finra" > "$root/home/.secrets/finra.env"
+    for v in $(awk '$1 == "keyfile" {print $2}' "$decl"); do
+        : > "$root/home/.secrets/$v"
+    done
+    # A download that the setup check runs before finds a complete setup
+    # in the other secrets dir too. No wrapper of such a download sources
+    # the env file on the host, so the record does not change.
+    if awk '$1 == "checks"' "$decl" | grep -qw download; then
+        awk '$1 == "var" {print $2 "=complete-" $2}' "$decl" > "$root/alt-secrets/$name.env"
+    fi
     run() { case_run "$root" "$*" "${SANDBOX_ENV[@]}" "$w" "$@"; }
     run
     run help

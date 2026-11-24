@@ -1,0 +1,11 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+var CHASE_USERNAME required plain <user-id> The user ID you sign in to chase.com with
+var CHASE_PASSWORD required secret <password> Your Chase password
+checks login download
+signin The sign-in is part of every download. Chase asks for a
+signin second step each time. Approve the request in the Chase app,
+signin or type the 8-digit code it sends by text or call.
+then wealthdb-collect chase download
+then wealthdb-collect chase load
+then wealthdb load -a

@@ -1,0 +1,13 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+envfile finra.env
+var FINRA_CLIENT_ID optional plain <client-id> The client ID of a free FINRA API credential
+flag FINRA_CLIENT_ID --client-id
+var FINRA_CLIENT_SECRET optional secret <client-secret> The secret of that credential
+checks login
+docs finra
+signin There is no sign-in. Every source is public, apart from the
+signin optional finra provider, which takes a credential.
+then wealthdb-collect refdata download
+then wealthdb-collect refdata load
+then wealthdb load -a

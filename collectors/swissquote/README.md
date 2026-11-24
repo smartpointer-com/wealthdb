@@ -77,16 +77,16 @@ confirmations, statements, fee notes).
 ## Examples
 
 ```sh
-./swissquote build                       # Docker image on the shared base-playwright image
+wealthdb-collect swissquote build                       # Docker image on the shared base-playwright image
 
-./swissquote login                       # sign in; approve the Mobile Level 3 push
-./swissquote login --check               # is the stored session alive? no push
-./swissquote download --dry-run          # check session and selectors, export nothing
-./swissquote download                    # last ~90 days (the fleet default)
-./swissquote download --lookback 2y      # wider backfill
-./swissquote load                        # parse new dumps into silver
-./swissquote load --force                # rebuild silver from all bronze; swapped in once complete
-./swissquote prune --dry-run             # preview the bronze disk reclaim
+wealthdb-collect swissquote login                       # sign in; approve the Mobile Level 3 push
+wealthdb-collect swissquote login --check               # is the stored session alive? no push
+wealthdb-collect swissquote download --dry-run          # check session and selectors, export nothing
+wealthdb-collect swissquote download                    # last ~90 days (the fleet default)
+wealthdb-collect swissquote download --lookback 2y      # wider backfill
+wealthdb-collect swissquote load                        # parse new dumps into silver
+wealthdb-collect swissquote load --force                # rebuild silver from all bronze; swapped in once complete
+wealthdb-collect swissquote prune --dry-run             # preview the bronze disk reclaim
 ```
 
 Credentials live in `~/.secrets/swissquote.env` as `SWISSQUOTE_USERNAME`

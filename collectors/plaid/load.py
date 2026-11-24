@@ -537,7 +537,8 @@ def main(argv: list[str] | None = None) -> int:
     trees.check_data_dir(args.bronze_dir, "loaded")
     found = trees.select(args.bronze_dir, args.item)
     if not found:
-        log.info("no Item tree under %s; nothing to load", args.bronze_dir)
+        log.info("no Item tree under %s; nothing to load. Download first: "
+                 "wealthdb-collect plaid download", args.bronze_dir)
         return 0
     status = 0
     for tree in found:

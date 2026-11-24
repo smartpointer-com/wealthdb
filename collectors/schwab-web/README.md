@@ -135,7 +135,7 @@ fresh the cookies and `_abck` on disk are.
 So sign-in and scrape share one continuous Firefox session. `download`
 signs in, walks Statements & Tax Forms and Transaction History, and
 exits. Each `download` pays one 2FA challenge. `login` is a no-op that
-says so. `download --check` reports whether the stored profile is
+says so. With a credential missing, it says what to set up first. `download --check` reports whether the stored profile is
 alive; after Firefox has closed, it reports DEAD.
 
 On a new IP, Schwab may add a device-trust prompt on top of 2FA the
@@ -145,7 +145,7 @@ carries enough state for later sign-ins.
 ## Build
 
 ```sh
-make build-schwab-web    # or: ./schwab-web build
+make build-schwab-web    # or: wealthdb-collect schwab-web build
 make test-schwab-web
 ```
 
@@ -170,9 +170,10 @@ Credentials go in `~/.secrets/schwab-web.env`; see
 [collectors/README.md](../README.md#conventions-shared-across-collectors)
 for the shared env-file rules. The login script reads
 `/secrets/schwab-web.env`, and a value in the file wins over one
-already set in the environment. When either variable is unset, the
-form is not pre-filled, and Log In is driven by hand over `vnc-login`.
-Nothing prompts for a password.
+already set in the environment. When either variable is unset,
+`download` stops and says what to set up. Over `vnc-login` the form is
+then not pre-filled, and Log In is driven by hand. Nothing prompts for
+a password.
 
 ```sh
 # ~/.secrets/schwab-web.env
@@ -183,16 +184,16 @@ SCHWAB_PASSWORD='your-password-with-$pecial-chars'
 ## Run
 
 ```sh
-./schwab-web download                         # statements + transactions, last 3 months
-./schwab-web download --lookback all          # full backfill, capped at ~10 years
-./schwab-web download --lookback 2016-01-01   # from a date
-./schwab-web download --mode statements       # documents only
-./schwab-web vnc-login                        # sign in by hand over VNC, then scrape
-./schwab-web load                             # bronze → silver
-./schwab-web prune --dry-run                  # preview the disk reclaim
+wealthdb-collect schwab-web download                         # statements + transactions, last 3 months
+wealthdb-collect schwab-web download --lookback all          # full backfill, capped at ~10 years
+wealthdb-collect schwab-web download --lookback 2016-01-01   # from a date
+wealthdb-collect schwab-web download --mode statements       # documents only
+wealthdb-collect schwab-web vnc-login                        # sign in by hand over VNC, then scrape
+wealthdb-collect schwab-web load                             # bronze → silver
+wealthdb-collect schwab-web prune --dry-run                  # preview the disk reclaim
 ```
 
-`./schwab-web help` lists the verbs, and `download --help` the flags. A
+`wealthdb-collect schwab-web help` lists the verbs, and `download --help` the flags. A
 few behaviours worth knowing:
 
 - `--mode` is `statements`, `transactions` or `all` (the default).
@@ -226,7 +227,7 @@ VNC, and the script then takes over the same page and scrapes. The
 wrapper picks a free port in 5900-6000 and prints it:
 
 ```sh
-./schwab-web vnc-login --screenshot-dir /debug/login-$(date +%Y%m%dT%H%M%SZ) -v
+wealthdb-collect schwab-web vnc-login --screenshot-dir /debug/login-$(date +%Y%m%dT%H%M%SZ) -v
 #   vnc-login: VNC ready on 127.0.0.1:5900
 #   vnc-login: password (single-use):  <16 hex chars>
 ssh -L 5900:127.0.0.1:5900 <host>    # from another machine
@@ -259,14 +260,14 @@ $XDG_DATA_HOME/wealthdb/schwab-web/
 `<suffix>` is the account-number suffix Schwab shows beside the account
 name. [DESIGN.md §6](DESIGN.md#6-bronze-artefact-layout-for-reference)
 has the full layout and what `load` parses from each file. Inside the
-container (`./schwab-web sh`), `python3 pdf_parsers.py <pdf>...` prints
+container (`wealthdb-collect schwab-web sh`), `python3 pdf_parsers.py <pdf>...` prints
 a statement's parse as JSON.
 
 ## Reclaiming disk (`prune`)
 
 ```sh
-./schwab-web prune --dry-run     # preview; deletes nothing
-./schwab-web prune
+wealthdb-collect schwab-web prune --dry-run     # preview; deletes nothing
+wealthdb-collect schwab-web prune
 ```
 
 `prune` follows the fleet rules in
@@ -298,8 +299,8 @@ so `load --force` reproduces identical silver. Copies that do not parse
 alike are reported as **DIVERGENT** and left alone.
 
 ```sh
-./schwab-web collapse-statements --dry-run   # evidence report; collapses nothing
-./schwab-web collapse-statements
+wealthdb-collect schwab-web collapse-statements --dry-run   # evidence report; collapses nothing
+wealthdb-collect schwab-web collapse-statements
 ```
 
 It needs the PDF parser, so it runs in the container like `load`. It

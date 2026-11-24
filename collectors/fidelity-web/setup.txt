@@ -1,0 +1,18 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+var FIDELITY_WEB_USERNAME required plain <username> The username you sign in to fidelity.com with
+alias FIDELITY_WEB_USERNAME FIDELITY_USERNAME
+var FIDELITY_WEB_PASSWORD required secret <password> Your Fidelity password
+alias FIDELITY_WEB_PASSWORD FIDELITY_PASSWORD
+checks login download
+provider On a new computer, sign in once by hand. Run
+provider   wealthdb-collect fidelity-web vnc-login --mode none
+provider and sign in in the browser you see through Screen Sharing.
+docs Sessions and MFA
+signin The sign-in is part of every download. Fidelity may send a
+signin 6-digit code. Type it in the terminal when asked. The browser
+signin is then trusted for about 30 days.
+then wealthdb-collect fidelity-web vnc-login --mode none
+then wealthdb-collect fidelity-web download
+then wealthdb-collect fidelity-web load
+then wealthdb load -a

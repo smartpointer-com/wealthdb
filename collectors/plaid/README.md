@@ -57,11 +57,13 @@ all collectors share.
 - **`link --item NAME`** links one institution. It prints the URL of a
   sign-in page that Plaid hosts. The sign-in at the institution happens
   on that page, in an ordinary browser. The collector waits, then stores
-  the access token.
+  the access token. Without the app keys, `link` says how to set them
+  up.
 - **`link --item NAME`** on a name that is linked already renews that
   link. No second link is made.
 - **`login`** settles the sign-ins that a stopped `link` left open. It
   never opens a sign-in page. With none left open, it does nothing.
+  With no institution linked yet, it names `link` as the first step.
 - **`login --check`** reports whether Plaid accepts the keys, the state
   of every linked institution, and the sign-ins left open. It changes
   nothing.
@@ -82,18 +84,18 @@ short name for it, such as `bank` or `broker`.
 ## Examples
 
 ```sh
-./plaid login --check                                # keys and links
-./plaid link --item bank                             # link a bank or a card
-./plaid link --item broker --require investments     # link a broker
-./plaid link --item bank                             # later: renew the link
-./plaid login                                        # settle a stopped link
-./plaid download --lookback all                      # first run: all history
-./plaid download                                     # later: the last ~90 days
-./plaid download --item broker --dry-run             # what a run would read
-./plaid download --item broker --refresh             # fetch investments first (opt-in below)
-./plaid load                                         # every Item into its silver
-./plaid load --item broker                           # one Item
-./plaid prune --dry-run                              # what prune would delete
+wealthdb-collect plaid login --check                                # keys and links
+wealthdb-collect plaid link --item bank                             # link a bank or a card
+wealthdb-collect plaid link --item broker --require investments     # link a broker
+wealthdb-collect plaid link --item bank                             # later: renew the link
+wealthdb-collect plaid login                                        # settle a stopped link
+wealthdb-collect plaid download --lookback all                      # first run: all history
+wealthdb-collect plaid download                                     # later: the last ~90 days
+wealthdb-collect plaid download --item broker --dry-run             # what a run would read
+wealthdb-collect plaid download --item broker --refresh             # fetch investments first (opt-in below)
+wealthdb-collect plaid load                                         # every Item into its silver
+wealthdb-collect plaid load --item broker                           # one Item
+wealthdb-collect plaid prune --dry-run                              # what prune would delete
 ```
 
 `download` reads the bank and card ledger and the investment transactions
@@ -108,13 +110,13 @@ needs no real login. Its runs belong in a data dir of their own, never in
 a deployment's:
 
 ```sh
-./plaid link --item test-bank --sandbox              # sign in as user_good / pass_good
-./plaid link --item test-platypus --sandbox-institution ins_109508   # no browser
-./plaid login --check --sandbox
-./plaid download --sandbox --lookback 2y --data-dir ~/plaid-sandbox
+wealthdb-collect plaid link --item test-bank --sandbox              # sign in as user_good / pass_good
+wealthdb-collect plaid link --item test-platypus --sandbox-institution ins_109508   # no browser
+wealthdb-collect plaid login --check --sandbox
+wealthdb-collect plaid download --sandbox --lookback 2y --data-dir ~/plaid-sandbox
 ```
 
-`./plaid <verb> --help` lists the flags of a verb.
+`wealthdb-collect plaid <verb> --help` lists the flags of a verb.
 
 ## Set up a Plaid account
 
@@ -166,7 +168,7 @@ only Plaid's test institutions.
 ### 4. Check the keys
 
 ```sh
-./plaid login --check
+wealthdb-collect plaid login --check
 ```
 
 It prints `production: Plaid accepts the app keys` when the Trial plan is
@@ -305,7 +307,7 @@ Plaid has no account for is noted in `run.json` and skipped.
 Plaid fetches the history of a new link in steps, over minutes or hours.
 A run made before it is done notes what was missing and exits with
 status 1. Its log names the command that reads the same window again,
-such as `./plaid download --item bank --lookback all`.
+such as `wealthdb-collect plaid download --item bank --lookback all`.
 
 ## Silver
 
@@ -314,7 +316,7 @@ oldest first. A run older than the newest one loaded, such as one
 restored from a backup, stops its Item. That database stays as it was,
 the other Items load, and `load` exits with status 1. The log names the
 run and the command that rebuilds the Item from all its runs, such as
-`./plaid load --force --item bank`.
+`wealthdb-collect plaid load --force --item bank`.
 
 Its tables:
 

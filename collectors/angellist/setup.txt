@@ -1,0 +1,9 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+checks login
+signin login opens a Firefox window that you see through Screen
+signin Sharing (VNC). Sign in there by hand, with your second step,
+signin then close Firefox. The tool types nothing for you.
+then wealthdb-collect angellist download
+then wealthdb-collect angellist load
+then wealthdb load -a

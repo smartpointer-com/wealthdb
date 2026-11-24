@@ -1,0 +1,12 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+var CARTA_USERNAME required plain <email> The email you sign in to Carta with
+alias CARTA_USERNAME CARTA_EMAIL
+var CARTA_PASSWORD required secret <password> Your Carta password
+session carta-profile
+checks login
+signin login fills in the Carta sign-in for you. Carta then asks
+signin for a code. Type it in the terminal when asked.
+then wealthdb-collect carta download
+then wealthdb-collect carta load
+then wealthdb load -a

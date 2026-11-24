@@ -84,28 +84,28 @@ pass, the run's dominant cost, and the manifest records `skipped=true`.
 
 ```sh
 # 1. Build the image (on top of the shared base-camoufox image).
-./carta build
+wealthdb-collect carta build
 
 # 2. Put the credentials in ~/.secrets/carta.env (chmod 0600):
 #      CARTA_USERNAME=login-email
 #      CARTA_PASSWORD=password
 
 # 3. Mint the session. Prompts once for the 2FA code on stdin.
-./carta login
+wealthdb-collect carta login
 
 # 4. Pull a bronze dump, then parse it into silver.
-./carta download
-./carta load
+wealthdb-collect carta download
+wealthdb-collect carta load
 ```
 
 Cheaper runs:
 
 ```sh
-./carta login --check          # exit 0 if the session is valid, 1 if not
-./carta download --dry-run     # list the held entities; write nothing
-./carta download --no-documents
-./carta load --force           # rebuild silver from all bronze
-./carta prune --dry-run        # print what prune would delete
+wealthdb-collect carta login --check          # exit 0 if the session is valid, 1 if not
+wealthdb-collect carta download --dry-run     # list the held entities; write nothing
+wealthdb-collect carta download --no-documents
+wealthdb-collect carta load --force           # rebuild silver from all bronze
+wealthdb-collect carta prune --dry-run        # print what prune would delete
 ```
 
 `download --dry-run` uses the stored session and never signs in.

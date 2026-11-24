@@ -65,7 +65,7 @@ venv.
 | `prune` | Reclaims disk: `download --debug` traces, unfinished dumps, and old login captures. |
 | `recompress` | A manual sweep that compresses plain-JSON dumps to the `.json.zst` form `download` writes. |
 
-`./schwab-api help` summarises the verbs. `./schwab-api <verb> --help`
+`wealthdb-collect schwab-api help` summarises the verbs. `wealthdb-collect schwab-api <verb> --help`
 lists every flag of a verb. [DESIGN.md](DESIGN.md) holds the design
 rationale: the silver schema, the temporal model, and the login flow's
 failure discipline.
@@ -86,7 +86,7 @@ failure discipline.
    [`schwab-web`](../schwab-web/) collector uses.
 4. Build both halves with `make build-schwab-api`. That builds the host
    venv and the login image.
-5. Mint the first token with `./schwab-api login`.
+5. Mint the first token with `wealthdb-collect schwab-api login`.
 
 ## Token lifecycle
 
@@ -123,9 +123,9 @@ the recovery path. Schwab itself unlocks a locked account.
 [DESIGN.md](DESIGN.md) §3.1 explains these rules.
 
 ```sh
-./schwab-api login          # automated: answer the 2FA prompt on the terminal
-./schwab-api vnc-login      # drive login, 2FA and consent by hand over VNC
-./schwab-api login --check  # show the token's age, then prove it works
+wealthdb-collect schwab-api login          # automated: answer the 2FA prompt on the terminal
+wealthdb-collect schwab-api vnc-login      # drive login, 2FA and consent by hand over VNC
+wealthdb-collect schwab-api login --check  # show the token's age, then prove it works
 ```
 
 `vnc-login` prints the VNC tunnel and a one-time password. It still
@@ -166,10 +166,10 @@ this stage. The code calls no write endpoint; [AGENTS.md](AGENTS.md) §1
 lists the allowed surface.
 
 ```sh
-./schwab-api download --dry-run            # refresh the token, list account hashes, write nothing
-./schwab-api download                      # transactions of the last 90 days
-./schwab-api download --lookback 1y        # a wider window, by preset
-./schwab-api download --lookback 2024-01-01  # or from a date
+wealthdb-collect schwab-api download --dry-run            # refresh the token, list account hashes, write nothing
+wealthdb-collect schwab-api download                      # transactions of the last 90 days
+wealthdb-collect schwab-api download --lookback 1y        # a wider window, by preset
+wealthdb-collect schwab-api download --lookback 2024-01-01  # or from a date
 ```
 
 `--lookback` follows the fleet's window contract
@@ -239,8 +239,8 @@ the latest schema. Each dump loads in one transaction. A failure rolls
 the whole dump back, and the next run retries it.
 
 ```sh
-./schwab-api load           # load new dumps
-./schwab-api load --force   # rebuild silver from all bronze
+wealthdb-collect schwab-api load           # load new dumps
+wealthdb-collect schwab-api load --force   # rebuild silver from all bronze
 ```
 
 ### Silver tables
@@ -294,8 +294,8 @@ run always writes. `load` applies the same rule, so pruning a dump never
 changes silver.
 
 ```sh
-./schwab-api prune --dry-run   # print the deletion plan
-./schwab-api prune             # delete it
+wealthdb-collect schwab-api prune --dry-run   # print the deletion plan
+wealthdb-collect schwab-api prune             # delete it
 ```
 
 ## recompress
@@ -310,7 +310,7 @@ It rewrites load inputs, so it is manual only and never scheduled.
 Review the plan first, then check that a rebuild gives the same silver:
 
 ```sh
-./schwab-api recompress --dry-run   # print the sweep plan
-./schwab-api recompress             # compress complete dumps
-./schwab-api load --force           # silver must come out unchanged
+wealthdb-collect schwab-api recompress --dry-run   # print the sweep plan
+wealthdb-collect schwab-api recompress             # compress complete dumps
+wealthdb-collect schwab-api load --force           # silver must come out unchanged
 ```

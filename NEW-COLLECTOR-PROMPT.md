@@ -188,7 +188,13 @@ and move on.
    (<NAME>_USERNAME / <NAME>_PASSWORD — map onto whatever the login
    form actually asks for once explore shows it); env only, never
    argv; ask the user to create the file, stating the exact variable
-   names. Verify make build-<name> and make test-<name> resolve via
+   names. A setup.txt beside the wrapper declares those variables, the
+   provider steps, how the sign-in runs and the commands after login
+   (format: collectors/README.md, "The setup declaration"). Then a
+   bare `login` with a credential missing prints what to set up.
+   test_setup_check.sh in make test-wrappers fails a collector without
+   one, and holds it to ENV_VARS and to the credential names in the
+   code. Verify make build-<name> and make test-<name> resolve via
    the root Makefile's auto-discovery. A wrapper's and an entrypoint's
    command lines are pinned in shared/wrappers/tests/golden/, so a new
    collector fails make test-wrappers until its files exist.

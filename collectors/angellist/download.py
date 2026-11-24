@@ -210,7 +210,7 @@ def download_documents(cookies, captures, docs_dir, dry_run):
         if "html" in ct.lower():
             log.warning("tax-doc download hit the login wall — the cookie is too "
                         "stale for the file endpoints (GraphQL still worked). Re-run "
-                        "`./angellist login` to refresh, then download again. "
+                        "`wealthdb-collect angellist login` to refresh, then download again. "
                         "(%d written before this.)", written)
             return
         cd = resp.headers.get("content-disposition", "")
@@ -285,7 +285,7 @@ def main(argv: list[str]) -> int:
                                   what="the full AngelList portfolio snapshot")
 
     if not args.cookies.is_file():
-        log.error("cookie jar not found: %s — run `./angellist login` "
+        log.error("cookie jar not found: %s — run `wealthdb-collect angellist login` "
                   "first to lift a session.", args.cookies)
         return 1
     cookies = json.loads(args.cookies.read_text(encoding="utf-8"))
@@ -404,7 +404,7 @@ def main(argv: list[str]) -> int:
                 if not m:
                     log.error("could not establish identity (no ViewerQuery, "
                               "no slug URL — landed on %s). The session may be "
-                              "stale; re-run `./angellist login`.", page.url)
+                              "stale; re-run `wealthdb-collect angellist login`.", page.url)
                     return 1
                 user_slug, accounts = m.group(1), [{"slugName": m.group(2)}]
             else:
@@ -533,7 +533,7 @@ def main(argv: list[str]) -> int:
                     len(errs), sorted({e["op"] for e in errs}))
     if not captures:
         log.error("nothing captured — session likely invalid. Re-run "
-                  "`./angellist login`.")
+                  "`wealthdb-collect angellist login`.")
         return 1
 
     if args.no_documents:

@@ -1,0 +1,8 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+first Nothing to sign in to. Put the SVB statement PDFs in the bronze
+first folder of the data folder, $XDG_DATA_HOME/wealthdb/svb/bronze
+first by default, in any folder layout.
+docs Layout
+then wealthdb-collect svb load
+then wealthdb load -a

@@ -72,13 +72,13 @@ detail.
 | `recompress` | Converts plain `.csv` bronze to `.csv.zst`. Manual, one-off. |
 | `explore` | Discovery harness: Camoufox over VNC with a redacted network record. |
 
-`./cointracking help` and `./cointracking <verb> --help` list the flags.
+`wealthdb-collect cointracking help` and `wealthdb-collect cointracking <verb> --help` list the flags.
 
 ## Quick start
 
 ```sh
 # 1. Build the image.
-./cointracking build
+wealthdb-collect cointracking build
 
 # 2. Put the credentials in the env file and chmod it 0600.
 #    cat > ~/.secrets/cointracking.env <<'EOF'
@@ -87,13 +87,13 @@ detail.
 #    EOF
 
 # 3. Sign in once. Prompts for the 6-digit TOTP code.
-./cointracking login
+wealthdb-collect cointracking login
 
 # 4. Pull a bronze dump of every linked portfolio.
-./cointracking download
+wealthdb-collect cointracking download
 
 # 5. Build silver and fill missing USD prices.
-./cointracking load
+wealthdb-collect cointracking load
 ```
 
 After the first `login`, `download` and `load` need no human until the
@@ -102,13 +102,13 @@ device-trust cookie expires.
 More examples:
 
 ```sh
-./cointracking login --check          # exit 0 if the stored session is signed in
-./cointracking download --dry-run     # walk the pages, export nothing
-./cointracking load --no-fetch-prices # build silver offline
-./cointracking load --replay-only     # re-run the holdings replay only
-./cointracking load --force           # rebuild silver from all bronze
-./cointracking fetch-prices --missing # fill price gaps only
-./cointracking fetch-prices           # drop and re-fetch every price
+wealthdb-collect cointracking login --check          # exit 0 if the stored session is signed in
+wealthdb-collect cointracking download --dry-run     # walk the pages, export nothing
+wealthdb-collect cointracking load --no-fetch-prices # build silver offline
+wealthdb-collect cointracking load --replay-only     # re-run the holdings replay only
+wealthdb-collect cointracking load --force           # rebuild silver from all bronze
+wealthdb-collect cointracking fetch-prices --missing # fill price gaps only
+wealthdb-collect cointracking fetch-prices           # drop and re-fetch every price
 ```
 
 `download --dry-run` uses the stored session and never signs in. On an
@@ -192,7 +192,7 @@ redacted HAR, a network log, a click log and every downloaded file. A
 Playwright trace is opt-in with `--trace`, because nothing redacts one.
 
 ```sh
-./cointracking explore --fresh   # --fresh wipes the profile, so 2FA is asked again
+wealthdb-collect cointracking explore --fresh   # --fresh wipes the profile, so 2FA is asked again
 #  explore: VNC ready on 127.0.0.1:<port>
 #  explore: password (single-use):  <16 hex chars>
 #  explore: tunnel from your laptop with
@@ -220,9 +220,9 @@ For this collector it removes:
 It never touches `known_portfolios.json` or the silver file.
 
 ```sh
-./cointracking prune --dry-run           # print the plan, delete nothing
-./cointracking prune                     # reclaim
-./cointracking prune --min-age-hours 6   # spare anything written in the last 6 hours
+wealthdb-collect cointracking prune --dry-run           # print the plan, delete nothing
+wealthdb-collect cointracking prune                     # reclaim
+wealthdb-collect cointracking prune --min-age-hours 6   # spare anything written in the last 6 hours
 ```
 
 `download` compresses each CSV as it lands, and `load` reads `.csv.zst`
@@ -232,9 +232,9 @@ decompresses to the same sha256. A stopped sweep is safe to run again.
 It rewrites `load` inputs, so it is manual only and never scheduled.
 
 ```sh
-./cointracking recompress --dry-run   # print the plan, rewrite nothing
-./cointracking recompress             # convert, with byte accounting
-./cointracking load --force           # check: silver must come out the same
+wealthdb-collect cointracking recompress --dry-run   # print the plan, rewrite nothing
+wealthdb-collect cointracking recompress             # convert, with byte accounting
+wealthdb-collect cointracking load --force           # check: silver must come out the same
 ```
 
 ## Read-only

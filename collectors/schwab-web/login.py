@@ -335,7 +335,7 @@ def run_check(profile_dir: Path, screenshot_dir: Path | None,
                 rc = 0
             else:
                 log.error(
-                    "session DEAD: %s — run `./schwab-web download` "
+                    "session DEAD: %s — run `wealthdb-collect schwab-web download` "
                     "(or `vnc-login`) to mint a new session",
                     url,
                 )
@@ -420,13 +420,13 @@ def run_manual(profile_dir: Path,
                         log.error(
                             "CLI-MFA could not complete; re-run download "
                             "for a fresh attempt, or drive the login "
-                            "via ./schwab-web vnc-login"
+                            "via wealthdb-collect schwab-web vnc-login"
                         )
                         return 8
                     if verdict == "manual":
                         log.warning(
                             "CLI-MFA path failed; falling back to manual "
-                            "drive — open a VNC session (./schwab-web "
+                            "drive — open a VNC session (wealthdb-collect schwab-web "
                             "vnc-login) and complete the login by hand"
                         )
 
@@ -434,7 +434,7 @@ def run_manual(profile_dir: Path,
                 log.info(
                     "waiting for the post-auth landing page (/app/...). "
                     "If anything stalls, open a VNC session "
-                    "(./schwab-web vnc-login) to recover."
+                    "(wealthdb-collect schwab-web vnc-login) to recover."
                 )
             else:
                 log.info(

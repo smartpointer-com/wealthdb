@@ -1,0 +1,11 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+var SCHWAB_LOGIN_ID required plain <login-id> Your Schwab Login ID
+var SCHWAB_PASSWORD required secret <password> Your Schwab password
+checks login download
+signin The sign-in is part of every download. Schwab asks for a
+signin second step. Type the code it sends in the terminal when
+signin asked.
+then wealthdb-collect schwab-web download
+then wealthdb-collect schwab-web load
+then wealthdb load -a

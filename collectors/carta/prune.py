@@ -11,7 +11,7 @@ across every timestamped run dir under ``--bronze-dir``:
   ``"complete"`` (an ``"in-progress"`` marker from a crashed walk). ``load`` skips such dirs; ``prune`` reclaims them once quiescent.
 * ``screenshots/`` inside a complete dump: the landing-page DOM +
   screenshot ``download --debug`` writes. ``load`` never reads them, so
-  reclaiming them cannot change silver. ``./carta explore``'s diagnostics
+  reclaiming them cannot change silver. ``wealthdb-collect carta explore``'s diagnostics
   (HAR, Playwright trace, click log) are a separate concern — they land
   outside bronze under ``/debug`` and prune never sees them.
 

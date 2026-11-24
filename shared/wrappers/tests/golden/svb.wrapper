@@ -84,7 +84,7 @@ historical archive (SVB wound down in 2023). Drop the in-scope statement PDFs
 performance workbook of month-end account values for the months the
 statements do not cover) into <data-dir>/bronze/ (default
 $XDG_DATA_HOME/wealthdb/svb/bronze/), in whatever folder layout suits — load
-searches it recursively — then run `./svb load` to rebuild the silver DBs from
+searches it recursively — then run `wealthdb-collect svb load` to rebuild the silver DBs from
 them.
 === login
 --- calls
@@ -97,7 +97,7 @@ historical archive (SVB wound down in 2023). Drop the in-scope statement PDFs
 performance workbook of month-end account values for the months the
 statements do not cover) into <data-dir>/bronze/ (default
 $XDG_DATA_HOME/wealthdb/svb/bronze/), in whatever folder layout suits — load
-searches it recursively — then run `./svb load` to rebuild the silver DBs from
+searches it recursively — then run `wealthdb-collect svb load` to rebuild the silver DBs from
 them.
 === prune
 --- calls
@@ -121,7 +121,7 @@ historical archive (SVB wound down in 2023). Drop the in-scope statement PDFs
 performance workbook of month-end account values for the months the
 statements do not cover) into <data-dir>/bronze/ (default
 $XDG_DATA_HOME/wealthdb/svb/bronze/), in whatever folder layout suits — load
-searches it recursively — then run `./svb load` to rebuild the silver DBs from
+searches it recursively — then run `wealthdb-collect svb load` to rebuild the silver DBs from
 them.
 === download --dry-run --lookback 1w
 --- calls
@@ -134,7 +134,7 @@ historical archive (SVB wound down in 2023). Drop the in-scope statement PDFs
 performance workbook of month-end account values for the months the
 statements do not cover) into <data-dir>/bronze/ (default
 $XDG_DATA_HOME/wealthdb/svb/bronze/), in whatever folder layout suits — load
-searches it recursively — then run `./svb load` to rebuild the silver DBs from
+searches it recursively — then run `wealthdb-collect svb load` to rebuild the silver DBs from
 them.
 === load --silver-db <TMP>/w-svb/silver/x.db
 --- calls
@@ -191,7 +191,7 @@ historical archive (SVB wound down in 2023). Drop the in-scope statement PDFs
 performance workbook of month-end account values for the months the
 statements do not cover) into <data-dir>/bronze/ (default
 $XDG_DATA_HOME/wealthdb/svb/bronze/), in whatever folder layout suits — load
-searches it recursively — then run `./svb load` to rebuild the silver DBs from
+searches it recursively — then run `wealthdb-collect svb load` to rebuild the silver DBs from
 them.
 === download --secrets-dir=<TMP>/w-svb/alt-secrets
 --- calls
@@ -204,7 +204,7 @@ historical archive (SVB wound down in 2023). Drop the in-scope statement PDFs
 performance workbook of month-end account values for the months the
 statements do not cover) into <data-dir>/bronze/ (default
 $XDG_DATA_HOME/wealthdb/svb/bronze/), in whatever folder layout suits — load
-searches it recursively — then run `./svb load` to rebuild the silver DBs from
+searches it recursively — then run `wealthdb-collect svb load` to rebuild the silver DBs from
 them.
 === bogus-verb
 --- calls

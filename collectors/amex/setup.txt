@@ -1,0 +1,11 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+var AMEX_USERNAME required plain <user-id> The user ID you sign in to americanexpress.com with
+var AMEX_PASSWORD required secret <password> Your American Express password
+checks login download
+signin The sign-in is part of every download. On a new computer,
+signin American Express sends a one-time code. Type it in the
+signin terminal when asked. The computer is then remembered.
+then wealthdb-collect amex download --lookback all
+then wealthdb-collect amex load
+then wealthdb load -a
