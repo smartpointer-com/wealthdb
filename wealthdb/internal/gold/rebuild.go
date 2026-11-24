@@ -2,9 +2,11 @@ package gold
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 // BuildFreshAndSwap builds a new gold DB via build(tmpPath) — which
@@ -68,7 +70,7 @@ func BuildFreshAndSwap(ctx context.Context, goldPath string, build func(tmpPath 
 	// Carry the live file's mode (0600 in normal deployments) onto the
 	// replacement before it takes over the path.
 	if fi, statErr := os.Stat(goldPath); statErr == nil {
-		if chmodErr := os.Chmod(tmp, fi.Mode().Perm()); chmodErr != nil {
+		if chmodErr := carryMode(tmp, fi.Mode().Perm()); chmodErr != nil {
 			return 0, fmt.Errorf("preserve mode on rebuilt gold %q: %w", tmp, chmodErr)
 		}
 	}
@@ -88,6 +90,37 @@ func BuildFreshAndSwap(ctx context.Context, goldPath string, build func(tmpPath 
 	_ = os.Remove(goldPath + ".wal")
 
 	return oldSize - newSize, nil
+}
+
+// chmod and chmodBackoff are carryMode's, replaced by its tests.
+var (
+	chmod        = os.Chmod
+	chmodBackoff = 250 * time.Millisecond
+)
+
+// chmodTries bounds carryMode's waits: three seconds at chmodBackoff.
+const chmodTries = 12
+
+// carryMode gives the file at path the permission bits mode. A file
+// that has them already is left alone, which is every rebuild of a
+// database the engine created: both are made under the same umask.
+//
+// A file share between a computer and a virtual machine (Docker on a
+// Mac) can show a file just written as owned by another account for
+// about a second, and the machine then refuses its owner's chmod. So a
+// refusal for want of permission is tried again for a few seconds
+// before it fails.
+func carryMode(path string, mode os.FileMode) error {
+	if fi, err := os.Stat(path); err == nil && fi.Mode().Perm() == mode {
+		return nil
+	}
+	var err error
+	for try := 0; ; try++ {
+		if err = chmod(path, mode); err == nil || !errors.Is(err, os.ErrPermission) || try == chmodTries {
+			return err
+		}
+		time.Sleep(chmodBackoff)
+	}
 }
 
 // verifyGold opens the freshly built DB read-only (which runs the

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -55,5 +57,76 @@ func TestBuildFreshAndSwapAbortsOnBadBuild(t *testing.T) {
 	}
 	if matches, _ := filepath.Glob(goldPath + ".rebuild-*"); len(matches) != 0 {
 		t.Errorf("aborted swap left temp files: %v", matches)
+	}
+}
+
+// stubChmod replaces carryMode's chmod with one that fails with
+// refusals errors of kind, then works, and counts its calls. The waits
+// between tries are cut to nothing.
+func stubChmod(t *testing.T, refusals int, kind error) *int {
+	t.Helper()
+	calls := 0
+	realChmod, realBackoff := chmod, chmodBackoff
+	chmod = func(path string, mode os.FileMode) error {
+		calls++
+		if calls <= refusals {
+			return &os.PathError{Op: "chmod", Path: path, Err: kind}
+		}
+		return realChmod(path, mode)
+	}
+	chmodBackoff = 0
+	t.Cleanup(func() { chmod, chmodBackoff = realChmod, realBackoff })
+	return &calls
+}
+
+// A rebuilt file that has the live file's mode is not changed at all: a
+// virtual machine's file share may refuse the owner's chmod of a file
+// just written.
+func TestCarryModeLeavesAMatchingModeAlone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gold.db")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	calls := stubChmod(t, 1000, syscall.EPERM)
+	if err := carryMode(path, 0o600); err != nil {
+		t.Fatalf("a matching mode: %v", err)
+	}
+	if *calls != 0 {
+		t.Errorf("chmod ran %d time(s) on a file that had the mode", *calls)
+	}
+}
+
+// A chmod refused for want of permission is tried again, and gives up
+// after its bound. Any other failure is returned at once.
+func TestCarryModeTriesARefusedChmodAgain(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gold.db")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	calls := stubChmod(t, 3, syscall.EPERM)
+	if err := carryMode(path, 0o640); err != nil {
+		t.Fatalf("three refusals, then a chmod that works: %v", err)
+	}
+	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o640 {
+		t.Errorf("mode %v (%v), want 0640", fi.Mode().Perm(), err)
+	}
+	if *calls != 4 {
+		t.Errorf("chmod ran %d time(s), want 4", *calls)
+	}
+
+	calls = stubChmod(t, 1000, syscall.EPERM)
+	if err := carryMode(path, 0o600); !errors.Is(err, os.ErrPermission) {
+		t.Errorf("a chmod refused every time: %v", err)
+	}
+	if *calls != chmodTries+1 {
+		t.Errorf("chmod ran %d time(s), want %d", *calls, chmodTries+1)
+	}
+
+	calls = stubChmod(t, 1000, syscall.EROFS)
+	if err := carryMode(path, 0o600); !errors.Is(err, syscall.EROFS) {
+		t.Errorf("a read-only file system: %v", err)
+	}
+	if *calls != 1 {
+		t.Errorf("chmod ran %d time(s) on a failure that waiting cannot mend, want 1", *calls)
 	}
 }
