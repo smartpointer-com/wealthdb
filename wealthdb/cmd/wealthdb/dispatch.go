@@ -60,6 +60,15 @@ func runAt(now func() time.Time, args []string, stdin io.Reader, stdout, stderr 
 		return errs.ExitUsage
 	}
 
+	// A folder Docker does not share on a Mac takes what a run saves
+	// into the virtual machine alone: refuse before anything is written.
+	if subcommand != "help" && subcommand != "version" {
+		if err := checkSharedMounts("/proc/self/mountinfo"); err != nil {
+			fmt.Fprintf(stderr, "wealthdb: %s\n", err.Error())
+			return errs.ExitUsage
+		}
+	}
+
 	g.now = now
 	g.notices = noticesOnce(stderr)
 	ctx := context.Background()

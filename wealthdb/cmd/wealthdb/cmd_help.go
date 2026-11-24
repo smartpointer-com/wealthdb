@@ -225,7 +225,7 @@ usage:
   wealthdb [global flags] <subcommand> [subcommand flags]
 
 global flags:
-  -c, --config <path>   config file (default ${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg)
+  -c, --config <path>   config file (default $WEALTHDB_CONFIG, else ${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg)
   -r, --read-only       force read-only access to the database
 
 `

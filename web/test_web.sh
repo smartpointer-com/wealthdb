@@ -802,6 +802,14 @@ out="$( (WEALTHDB_WEB_ENV_FILE="$tmp/bad-web.env" web_main status) 2>&1)"; rc=$?
 check_eq  "a bad env file exits 1"           "1"                          "$rc"
 check     "the message names the file"       "$tmp/bad-web.env has a bash syntax error" "$out"
 check_not "the message hides the bad line"   "Synthetic-marker-7"         "$out"
+# With no WEALTHDB_WEB_ENV_FILE, the file is wealthdb-web.env in WEALTHDB_SECRETS_DIR.
+mkdir -p "$tmp/secrets-alt"
+printf 'if then\n' > "$tmp/secrets-alt/wealthdb-web.env"
+out="$( (unset WEALTHDB_WEB_ENV_FILE; WEALTHDB_SECRETS_DIR="$tmp/secrets-alt" web_main status) 2>&1)"
+case "$out" in
+    *"$tmp/secrets-alt/wealthdb-web.env has a bash syntax error"*) pass "the env file follows WEALTHDB_SECRETS_DIR" ;;
+    *) fail "the env file does not follow WEALTHDB_SECRETS_DIR: $out" ;;
+esac
 
 echo "== web help smoke =="
 hout="$(web_help)"

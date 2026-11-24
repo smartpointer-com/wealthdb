@@ -264,13 +264,27 @@ except OSError:
 PY
 }
 
+# wealthdb_abs_path PATH prints PATH made absolute against the working
+# directory. A container mounts a host path at the same path, and docker
+# reads a relative source as a volume name, so every path the engine's
+# container sees is absolute.
+wealthdb_abs_path() {
+    case "$1" in
+        /*) printf '%s\n' "$1" ;;
+        *)  printf '%s\n' "$PWD/$1" ;;
+    esac
+}
+
 # wealthdb_engine_paths sets the engine's host paths, which the engine
-# wrapper mounts at the same path in its container: DATA_ROOT (gold and
-# every silver; WEALTHDB_DATA_ROOT, else $XDG_DATA_HOME/wealthdb, else
-# ~/.local/share/wealthdb), CFG_DIR ($XDG_CONFIG_HOME, else ~/.config)
-# and CFG, the default wealthdb.cfg in it.
+# wrapper mounts at the same path in its container, each absolute:
+# DATA_ROOT (gold and every silver; WEALTHDB_DATA_ROOT, else
+# $XDG_DATA_HOME/wealthdb, else ~/.local/share/wealthdb), XDG_CFG
+# ($XDG_CONFIG_HOME, else ~/.config), CFG (the config file:
+# WEALTHDB_CONFIG, else wealthdb.cfg in XDG_CFG) and CFG_DIR, the folder
+# that holds CFG. The engine wrapper also takes CFG from a -c flag.
 wealthdb_engine_paths() {
-    DATA_ROOT="${WEALTHDB_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb}"
-    CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
-    CFG="$CFG_DIR/wealthdb.cfg"
+    DATA_ROOT="$(wealthdb_abs_path "${WEALTHDB_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb}")"
+    XDG_CFG="$(wealthdb_abs_path "${XDG_CONFIG_HOME:-$HOME/.config}")"
+    CFG="$(wealthdb_abs_path "${WEALTHDB_CONFIG:-$XDG_CFG/wealthdb.cfg}")"
+    CFG_DIR="$(dirname "$CFG")"
 }

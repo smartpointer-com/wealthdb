@@ -87,12 +87,16 @@ func (g globalFlags) clock() time.Time {
 	return time.Now()
 }
 
-// defaultConfigPath returns wealthdb.cfg under the XDG config dir
-// ($XDG_CONFIG_HOME, falling back to ~/.config), resolved at parse
-// time so help text shows the concrete value.
+// defaultConfigPath returns the config file a run reads without -c:
+// $WEALTHDB_CONFIG, else wealthdb.cfg under the XDG config dir
+// ($XDG_CONFIG_HOME, falling back to ~/.config), made absolute and
+// resolved at parse time so help text shows the concrete value.
 func defaultConfigPath() string {
+	if p := os.Getenv("WEALTHDB_CONFIG"); p != "" {
+		return absPath(p)
+	}
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return filepath.Join(xdg, "wealthdb.cfg")
+		return absPath(filepath.Join(xdg, "wealthdb.cfg"))
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -101,6 +105,15 @@ func defaultConfigPath() string {
 		return "$HOME/.config/wealthdb.cfg"
 	}
 	return filepath.Join(home, ".config", "wealthdb.cfg")
+}
+
+// absPath is p made absolute against the working directory, or p as it
+// is when the working directory cannot be read.
+func absPath(p string) string {
+	if a, err := filepath.Abs(p); err == nil {
+		return a
+	}
+	return p
 }
 
 // parseGlobal extracts top-level flags from the leading slice of

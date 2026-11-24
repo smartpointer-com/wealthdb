@@ -94,11 +94,40 @@ esac
 # collectors' own wrappers) agree. The host path must be one Docker can
 # see (for Colima, listed under `mounts:` in colima.yaml).
 #
-# Config file follows the XDG config dir ($XDG_CONFIG_HOME, falling back
-# to ~/.config). Same-path mount + forwarded variable, like the data
-# root above, so the engine's default config resolution lands on the
-# mounted file on both sides.
+# The config file is the -c flag's path, else WEALTHDB_CONFIG, else
+# wealthdb.cfg in the XDG config dir ($XDG_CONFIG_HOME, falling back to
+# ~/.config). It is mounted at the same path, and the variables are
+# forwarded, so the engine's own config resolution lands on the mounted
+# file. A relative path is made absolute here, in the flag too, since
+# the container's working directory is not the host's.
 wealthdb_engine_paths
+ENV_CFG="${WEALTHDB_CONFIG:+$CFG}"
+
+# One pass over the global flags (-c PATH, -r, in their -x, --x and
+# --x=V forms): a -c path is made absolute in place and names the
+# config, and the first argument past them is the subcommand. The
+# arguments are rebuilt in order.
+sub="" want=0 past=0 n=$#
+for a in "$@"; do
+    if [ "$past" = 0 ]; then
+        if [ "$want" = 1 ]; then
+            a="$(wealthdb_abs_path "$a")" CFG="$a" want=0
+        else
+            case "$a" in
+                -c|--c|-config|--config) want=1 ;;
+                -c=*|--c=*|-config=*|--config=*)
+                    CFG="$(wealthdb_abs_path "${a#*=}")"
+                    a="${a%%=*}=$CFG"
+                    ;;
+                -*) ;;
+                *) sub="$a" past=1 ;;
+            esac
+        fi
+    fi
+    set -- "$@" "$a"
+done
+shift "$n"
+CFG_DIR="$(dirname "$CFG")"
 
 mkdir -p "$CFG_DIR" "$DATA_ROOT"
 
@@ -124,29 +153,19 @@ if [ ! -d "$(dirname "$CFG_TARGET")" ]; then
     exit 2
 fi
 CFG_TARGET_DIR="$(cd "$(dirname "$CFG_TARGET")" && pwd)"
-[ -f "$CFG" ] || : > "$CFG"
-
-# The subcommand: the first argument past the global flags (-c PATH,
-# -r, in their -x, --x and --x=V forms).
-sub="" skip=0
-for a in "$@"; do
-    if [ "$skip" = 1 ]; then skip=0; continue; fi
-    case "$a" in
-        -c|--c|-config|--config) skip=1 ;;
-        -*) ;;
-        *) sub="$a"; break ;;
-    esac
-done
 
 # Every subcommand but `config` mounts the config FILE (Docker follows a
-# link to its file). `config` saves by renaming a temporary file over
+# link to its file), made empty when there is none: Docker would make a
+# folder in its place. `config` saves by renaming a temporary file over
 # the config, which a file mount refuses, so it mounts the config's
-# folder instead, and the folder of the file a link names. It also gets
-# the host's locale, whose region guesses the currency, and TERM, so a
-# terminal that cannot do raw mode gets the numbered menu.
-CFG_MOUNT="$CFG:$CFG"
+# folder instead, and the folder of the file a link names. It creates
+# the file itself, so `config validate` on a path with no file leaves
+# none. It also gets the host's locale, whose region guesses the
+# currency, and TERM, so a terminal that cannot do raw mode gets the
+# numbered menu.
+CFG_MOUNT="$CFG:$CFG" MOUNTS="$CFG"
 if [ "$sub" = config ]; then
-    CFG_MOUNT="$CFG_DIR:$CFG_DIR"
+    CFG_MOUNT="$CFG_DIR:$CFG_DIR" MOUNTS="$CFG_DIR"
     if [ "$(uname -s)" = Darwin ]; then
         locale="$(defaults read -g AppleLocale 2>/dev/null || true)"
     fi
@@ -154,10 +173,30 @@ if [ "$sub" = config ]; then
     set -- -e WEALTHDB_LOCALE="$locale" -e TERM="${TERM:-dumb}" "$IMAGE" "$@"
     if [ "$CFG_TARGET_DIR" != "$(cd "$CFG_DIR" && pwd)" ]; then
         set -- -v "$CFG_TARGET_DIR:$CFG_TARGET_DIR" "$@"
+        MOUNTS="$MOUNTS:$CFG_TARGET_DIR"
     fi
 else
+    [ -f "$CFG" ] || : > "$CFG"
     set -- "$IMAGE" "$@"
 fi
+
+# NO_COLOR, when the host sets it, turns the engine's colours off too.
+if [ -n "${NO_COLOR+x}" ]; then
+    set -- -e NO_COLOR="$NO_COLOR" "$@"
+fi
+
+# WEALTHDB_CONFIG goes to the engine as the host set it, made absolute.
+# A -c path stays a flag, so the engine still tells the two apart when
+# it names the command that sets up the config.
+if [ -n "$ENV_CFG" ]; then
+    set -- -e WEALTHDB_CONFIG="$ENV_CFG" "$@"
+fi
+
+# The host's system and the folders mounted, so the engine refuses a
+# folder that Docker on a Mac does not share with its virtual machine
+# (checkSharedMounts): such a mount takes what is saved into the machine
+# alone. ':' separates them; a mount path cannot hold one.
+set -- -e WEALTHDB_HOST_OS="$(uname -s)" -e WEALTHDB_MOUNTS="$MOUNTS:$DATA_ROOT" "$@"
 
 # Allocate a TTY only when the host shell has one. `wealthdb config`
 # requires this; the other subcommands work either way. Cron / piped
@@ -165,9 +204,13 @@ fi
 TTY=""
 [ -t 0 ] && [ -t 1 ] && TTY="-it"
 
+# host.docker.internal is this computer, as Docker on a Mac names it
+# already: an AI model served here is reached at that name, on Linux
+# too.
 exec docker run --rm $TTY \
+    --add-host=host.docker.internal:host-gateway \
     -e HOME="$HOME" \
-    -e XDG_CONFIG_HOME="$CFG_DIR" \
+    -e XDG_CONFIG_HOME="$XDG_CFG" \
     -e WEALTHDB_DATA_ROOT="$DATA_ROOT" \
     -u "$(id -u):$(id -g)" \
     -v "$CFG_MOUNT" \

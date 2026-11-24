@@ -174,7 +174,7 @@ gold DB at all.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `-c`, `--config` | `${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg` | Path to config file. Tilde (`~`) and `$HOME` are expanded. |
+| `-c`, `--config` | `$WEALTHDB_CONFIG`, else `${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg` | Path to config file. Tilde (`~`) and `$HOME` are expanded. |
 | `-r`, `--read-only` | off | Force read-only access even when the gold DB is writeable, as a safety net for exploration. Without this flag, mode is auto-detected from filesystem permissions (§4.10). |
 
 These come before the subcommand. A subcommand's own `-r` (on
@@ -457,10 +457,11 @@ With `<id>`: snapshots for the one named silver source. With
 source.
 `--latest` prints only the newest snapshot per source.
 
-### 4.9 `wealthdb config [--wizard] [<section>]`
+### 4.9 `wealthdb config [--wizard] [<section>]` / `wealthdb config validate`
 
-The setup of the config file at `-c` (default
-`${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg`). The file is the only
+The setup of the config file at `-c` (default `$WEALTHDB_CONFIG`,
+else `${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg`). `-c` sets up or
+checks a file at any path, to try a setup or keep several. The file is the only
 saved state. Every confirmed answer is written at once, so a run can
 stop at any prompt (q, Ctrl+D or Ctrl+C) and the next run starts from
 what is saved, each prompt showing the saved value as its default.
@@ -486,20 +487,70 @@ says in one line that it goes on, and walks every step pre-filled.
   (`silver_sources`), Dashboards (`web.enabled`, `web.port`), MCP
   server (`mcp.enabled`, `mcp.port`) and Data folder (`gold_db`). The
   entry that walks the basic setup again closes the group.
-- **Advanced**, the features to set up beyond the basics: AI model
-  (`symbol_resolution`), Benchmark portfolios, Yield, Exposure,
-  Spending, Income, Cash flow, Lots, Declared accounts and Equity
-  transfers.
-- **Overrides**, which correct what the sources state: Accounts and
-  portfolios (`account_overrides`, `portfolio_overrides`,
-  `supersession`), Instruments and Returns.
+- **Advanced:** AI model, Report options and Ledger files: the
+  settings that take one value each.
+- **Config file:** Settings edited in the file, and Validate the
+  config file.
 
-A section of the second and third group shows a summary of what is set.
-Opening it names its keys and the doc that describes each; it is edited
-in the file. `wealthdb config <section>` opens one section, by its name
-in lower case with hyphens (`banks-and-brokers`, `mcp-server`), its
-first word (`banks`), or the short names `currency`, `model` and
-`benchmarks`.
+A setting gets an editor when its value is a choice, a switch, a number
+or the path of a file; one that takes a list or a map of objects is
+edited in the file. Each field shows its value, or the default the
+engine takes, and what it does. Enter keeps it, and `-` puts back the
+default by removing the member, with each block the removal leaves
+empty. Typing the value it holds already writes nothing.
+
+- **Report options:** `lots.method`, `lots.missing_basis`,
+  `spending.internal_transfer_matching.window_days` and
+  `.tolerance_pct`, `returns_transfer_matching.enabled`,
+  `cashflow.projection.lookback_months`, `yield.horizon_months` and
+  `exposure.max_gap_days`, each within the bounds the engine takes.
+- **Ledger files:** `spending.pins`, `income.pins`,
+  `equity_transfers` and `exposure.declarations`. The engine's
+  container mounts only the config and the data folder, so a ledger
+  must be a file in the data folder; it is written through
+  `${WEALTHDB_DATA_ROOT}` when the variable names that folder. A path
+  with no file yet is taken, with a note.
+
+**AI model** sets one model for every member that names one:
+`symbol_resolution.model`, `spending.categorization.model`, and
+`income.categorization.model` when `income.categorization` is there
+(without it, income takes spending's block). It asks for the address,
+the model's name and an API key. The key is read without being shown;
+Enter keeps the saved one and `-` removes it. A file that holds a key
+is kept to its owner (mode 0600). Every other member of the blocks
+stays. In the engine's container, `localhost` is the container itself:
+an address on `localhost` or `127.0.0.1` is offered as
+`host.docker.internal`, the name the engine wrapper gives the computer.
+The section can send the model a one-word question to test it, set
+what it is sent (`spending.categorization.context`,
+`descriptor_samples` and `fence_person_names`), and remove the model
+with each block the removal leaves empty. Saving a
+model adds `wealthdb resolve-symbols` and `wealthdb categorize` to the
+to-do block.
+
+**Settings edited in the file** lists every other part of the config,
+in two groups (features, and overrides of what the sources state). Each
+shows what it does in one line, what is set, its keys and its doc. A
+setting the AI model shares a block with counts as set only for what
+that section does not write. A setting that gets an editor of its own
+leaves this list for a section of its own.
+
+**Validate the config file**, and `wealthdb config validate`, check the
+file as every command reads it, and the model blocks as the commands
+that ask a model do. A JSON error names its line and column. The
+subcommand needs no terminal and creates no file. It prints a one-line
+summary and exits 0 for a valid config; a config with no setup, or one
+not finished, exits 2 and names the setup command; any other refusal
+exits 1.
+
+The setup reads the file again before every change and every drawing
+of the menu, so an edit made by hand while it runs is kept. A file
+that does not parse at that moment is not written over.
+
+`wealthdb config <section>` opens one section, by its name in lower
+case with hyphens (`banks-and-brokers`, `mcp-server`), its first word
+(`banks`), or the short names `currency`, `model`, `options`,
+`ledgers` and `file`.
 
 **The wizard** walks Primary currency, Banks and brokers, Dashboards and MCP
 server. It shows the data folder at the top, then a summary of the
@@ -517,15 +568,30 @@ before it so that it reads as an instruction:
   own with a line or two on what it does, and a closing rule. The
   commands are `wealthdb init` when no gold file exists, the collect
   command of each source with no silver yet, `wealthdb load -a` while a
-  source is not loaded, and the start command of each server the run
-  turned on. While a wizard step has no answer, the block names the
+  source is not loaded, the start command of each server the run
+  turned on, and the commands that use a model the run saved. While a wizard step has no answer, the block names the
   setup command first, in place of the database and the data. With
   nothing to run there is no block.
 
-**The menu** lists every section with its saved value, and one entry
-that walks the wizard again. On a terminal it reads keys in raw mode:
+**The screen.** Every line the setup prints passes through one layer
+that keeps the spacing: never two blank lines in a row, and one blank
+line before every question, title and list. On a terminal it colours
+the kinds of text apart: titles bold, help dimmed, the key that picks
+an option bold yellow, a command to run cyan, a question bold green, a
+confirmation green, an answer not taken red, and the menu's marked line
+in reverse video. `NO_COLOR` (passed into the container by the
+wrapper) or `TERM=dumb` turns the colours off, as does output that is
+no terminal. The to-do block of `init` and of the collectors
+takes the same colours.
+
+**The menu** lists every section with its saved value, one entry that
+walks the wizard again, and one that validates the file. On a terminal it reads keys in raw mode:
 Up and Down or a number move, Enter opens, q or Ctrl+C leaves. A
-section's prompts run with the terminal restored. With `TERM=dumb` the
+section's prompts run with the terminal restored. The menu clears the
+screen when it comes back, so a section that printed more than the
+confirmation of a change after the last answer (a check, a list to
+read) waits for Enter first; one that ended at its own question goes
+back at once. With `TERM=dumb` the
 menu is a numbered list read a line at a time. In a window too short
 for the whole menu, the lines around the marked one show, with a note
 that more stand above or below.
@@ -535,7 +601,9 @@ saved value, else the currency of the host locale's region, else USD.
 The wrapper forwards the host locale (`AppleLocale` on macOS, else
 `LC_ALL`, `LC_MONETARY` or `LANG`).
 
-**Banks and brokers** lists:
+**Banks and brokers** first offers, all at once, the collected data
+that no entry names, so a bank linked and downloaded since the last run
+takes one Enter. Then it lists:
 
 - the configured sources, by letter, each with its state: waiting for
   its first download (no silver file), collected but not loaded, or
@@ -1053,9 +1121,9 @@ on.
 
 ## 5. Configuration
 
-JSON file. Path defaults to `wealthdb.cfg` under the XDG config dir
-(`$XDG_CONFIG_HOME`, falling back to `~/.config`) and is
-overridable with `-c` / `--config`. The `.cfg` extension is a
+JSON file. Its path is the `-c` / `--config` flag's, else
+`$WEALTHDB_CONFIG`, else `wealthdb.cfg` under the XDG config dir
+(`$XDG_CONFIG_HOME`, falling back to `~/.config`). The `.cfg` extension is a
 convention; the content is JSON, and an unknown field fails the
 load. Every path value in the file is expanded the same way:
 
@@ -4119,18 +4187,42 @@ rejected for this reason.
 The host wrapper mounts host paths to the **same paths** inside the
 container, so the gold DB path resolves identically on both sides and
 no path translation is needed. The data root is `$WEALTHDB_DATA_ROOT`
-when set, else `${XDG_DATA_HOME:-~/.local/share}/wealthdb`. Two bind
-mounts:
+when set, else `${XDG_DATA_HOME:-~/.local/share}/wealthdb`. The config
+file is the `-c` flag's path, else `$WEALTHDB_CONFIG`, else
+`wealthdb.cfg` in `${XDG_CONFIG_HOME:-~/.config}`. Two bind mounts:
 
 ```
-$XDG_CONFIG_HOME/wealthdb.cfg → $XDG_CONFIG_HOME/wealthdb.cfg   config file
-<data root>/                  → <data root>/                    gold + silver data tree
+<config file> → <config file>   config file
+<data root>/  → <data root>/    gold + silver data tree
 ```
 
-The container also gets `HOME`, `XDG_CONFIG_HOME` and
-`WEALTHDB_DATA_ROOT` from the host, so `~`, `$HOME` and
-`${WEALTHDB_DATA_ROOT}` in the config file, and the engine's default
-config path, land on the same absolute paths inside and outside.
+A ledger the config names (pins, equity transfers, exposure
+declarations) is read inside the container too, so it must be a file
+in the data root: a path anywhere else names a file the container does
+not see, and a missing ledger is no error.
+
+The wrapper makes every one of these paths absolute against the
+working directory, the `-c` flag's value too: the container's working
+directory is not the host's, and docker reads a relative mount source
+as a volume name. The container also gets `HOME`, `XDG_CONFIG_HOME`,
+`WEALTHDB_DATA_ROOT` and, when the host sets it, `WEALTHDB_CONFIG`, so
+`~`, `$HOME` and `${WEALTHDB_DATA_ROOT}` in the config file, and the
+engine's default config path, land on the same absolute paths inside
+and outside. A `-c` path stays a flag, so the engine still names it in
+the command that sets the config up.
+
+On a Mac, Docker runs in a virtual machine that sees only the host
+folders it shares (Colima: the home folder, plus what `colima.yaml`
+lists). A bind mount of any other folder does not fail: Docker makes an
+empty folder on the machine's own disk, and what the engine saves there
+never reaches the Mac. So the wrapper passes `WEALTHDB_HOST_OS` and
+`WEALTHDB_MOUNTS`, the folders it mounts, and the engine reads each
+one's filesystem in `/proc/self/mountinfo` before any subcommand but
+`help` and `version`. A shared folder arrives over a file-sharing
+filesystem (virtiofs, fuse, 9p); one on the machine's own disk (ext4,
+xfs, btrfs, overlay, tmpfs) stops the run with exit 2 and a message
+naming the folder and the fix. On Linux, Docker mounts the host's own
+disk, and nothing is checked.
 
 The host-side `wealthdb` shell wrapper does the mounting. Two shapes:
 
@@ -4138,17 +4230,18 @@ The host-side `wealthdb` shell wrapper does the mounting. Two shapes:
 `wealthdb reset`):
 
 ```sh
-CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
+XDG_CFG="${XDG_CONFIG_HOME:-$HOME/.config}"
+CFG="${WEALTHDB_CONFIG:-$XDG_CFG/wealthdb.cfg}"   # or the -c flag's path
 DATA_ROOT="${WEALTHDB_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb}"
-mkdir -p "$CFG_DIR" "$DATA_ROOT"
-[ -f "$CFG_DIR/wealthdb.cfg" ] || : > "$CFG_DIR/wealthdb.cfg"
+mkdir -p "$(dirname "$CFG")" "$DATA_ROOT"
+[ -f "$CFG" ] || : > "$CFG"
 TTY=""; [ -t 0 ] && [ -t 1 ] && TTY="-it"
 docker run --rm $TTY \
     -e HOME="$HOME" \
-    -e XDG_CONFIG_HOME="$CFG_DIR" \
+    -e XDG_CONFIG_HOME="$XDG_CFG" \
     -e WEALTHDB_DATA_ROOT="$DATA_ROOT" \
     -u "$(id -u):$(id -g)" \
-    -v "$CFG_DIR/wealthdb.cfg:$CFG_DIR/wealthdb.cfg" \
+    -v "$CFG:$CFG" \
     -v "$DATA_ROOT:$DATA_ROOT" \
     "wealthdb:$WEALTHDB_IMAGE_TAG" \
     "$@"
@@ -4158,8 +4251,7 @@ The empty config file lets the mount exist before `wealthdb config`
 writes it (§4.9). A TTY is allocated only when the host shell has one:
 `wealthdb config` needs it, and a cron or piped run skips it.
 
-`wealthdb config` mounts the config's folder, `$CFG_DIR:$CFG_DIR`, in
-place of the file. It saves by renaming a temporary file over the
+`wealthdb config` mounts the config's folder in place of the file. It saves by renaming a temporary file over the
 config, and a rename onto a file mount fails. It also gets the host's
 locale as `WEALTHDB_LOCALE` and `TERM`. Every other subcommand mounts
 the file alone. When the config is a symbolic link, the wrapper follows
@@ -4174,10 +4266,10 @@ host's gold tree):
 ```sh
 docker run --rm \
     -e HOME="$HOME" \
-    -e XDG_CONFIG_HOME="$CFG_DIR" \
+    -e XDG_CONFIG_HOME="$XDG_CFG" \
     -e WEALTHDB_DATA_ROOT="$DATA_ROOT" \
     -u "$(id -u):$(id -g)" \
-    -v "$CFG_DIR/wealthdb.cfg:$CFG_DIR/wealthdb.cfg:ro" \
+    -v "$CFG:$CFG:ro" \
     -v "/mnt/shared/wealthdb:$DATA_ROOT:ro" \
     "wealthdb:$WEALTHDB_IMAGE_TAG" \
     "$@"

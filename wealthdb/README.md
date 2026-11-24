@@ -134,11 +134,20 @@ wealthdb status --marks 2025           # how fresh the marks were at each month 
 2. the banks and brokers to read, picked by number from a list;
 3. whether the dashboards and the MCP server are on.
 
-Each answer is saved at once in `${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg`
-(another path with `-c <path>`), and each pick names the command that
-collects its data. Once every step holds an answer, a run again is a
-menu of the config's sections.
-The rest of the config is edited in the file;
+Each answer is saved at once in the config file, and each pick names
+the command that collects its data. The config file is the `-c <path>`
+flag's, else `$WEALTHDB_CONFIG`, else
+`${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg`. Once every step holds an
+answer, a run again is a menu of the config's sections. The AI model,
+the reports' options and the ledger files are set there too. The menu
+lists the other settings, which are edited in the file, with their
+docs. After an edit by hand, check the file:
+
+```
+wealthdb config validate                         # is the config valid?
+wealthdb -c ~/experiments/test.cfg config validate  # another file
+```
+
 [docs/DESIGN.md §5](docs/DESIGN.md) describes every field and §4.9 the
 setup.
 
@@ -148,6 +157,17 @@ The gold database and the collectors' silver databases live under one
 data root: `$WEALTHDB_DATA_ROOT` when set, else
 `${XDG_DATA_HOME:-~/.local/share}/wealthdb`. The engine reads silver
 and never writes it. Reports print to standard output.
+
+`wealthdb config` points each source at its collector's own folder in
+the data root. A collector moved elsewhere with its `<PREFIX>_DATA_DIR`
+variable needs its entry edited by hand, and the engine reads only
+files inside the data root.
+
+On a Mac, Docker runs in a virtual machine that sees only the folders
+it shares. Colima shares the home folder alone, so the config and the
+data root belong there, or in a folder listed under `mounts:` in
+`~/.colima/default/colima.yaml`. The engine refuses to run on a folder
+Docker does not share, and says which one.
 
 ## Build and run
 

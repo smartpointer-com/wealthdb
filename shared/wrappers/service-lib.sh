@@ -60,14 +60,14 @@ _is_running() { [ -n "$(docker ps  -q -f "name=^${CONTAINER}\$" -f status=runnin
 _exists()     { [ -n "$(docker ps -aq -f "name=^${CONTAINER}\$" 2>/dev/null)" ]; }
 
 # _source_env_file sources the optional env file for the secrets and
-# the knobs: ${SERVICE_ENV}_ENV_FILE, else ~/.secrets/wealthdb-SERVICE.env
-# (repo convention: secrets live in ~/.secrets, never in the config
-# file). It is a bash script: syntax-checked, then sourced with every
+# the knobs: ${SERVICE_ENV}_ENV_FILE, else wealthdb-SERVICE.env in the
+# secrets folder, $WEALTHDB_SECRETS_DIR or ~/.secrets, as the collectors
+# find theirs (repo convention: secrets never live in the config file). It is a bash script: syntax-checked, then sourced with every
 # assignment exported. A file that does not parse returns 1, and bash's
 # message is not shown, since it quotes the line.
 _source_env_file() {
     local var="${SERVICE_ENV}_ENV_FILE" envf
-    envf="${!var:-$HOME/.secrets/wealthdb-$SERVICE.env}"
+    envf="${!var:-${WEALTHDB_SECRETS_DIR:-$HOME/.secrets}/wealthdb-$SERVICE.env}"
     if [ -f "$envf" ] && ! wealthdb_source_bash "$envf"; then
         echo "$SERVICE: $envf has a bash syntax error" >&2
         return 1

@@ -627,7 +627,7 @@ skipping the browser setup wizard. Credentials:
   WEALTHDB_WEB_ADMIN_EMAIL     (default admin@wealthdb.local)
   WEALTHDB_WEB_ADMIN_PASSWORD  (unset = generated + saved chmod 600)
   WEALTHDB_WEB_NO_PROVISION=1  (skip it; use the browser wizard instead)
-Secrets may also live in ~/.secrets/wealthdb-web.env.
+Secrets may also live in wealthdb-web.env in the secrets folder.
 
 When the gold snapshot is older than the dashboards need, start, restart
 and refresh leave Metabase running with the dashboards it had and exit 3.
@@ -638,7 +638,8 @@ WEALTHDB_IMAGE_TAG (the image's tag; unset, the checkout's .image-tag,
 else latest), WEALTHDB_WEB_IMAGE,
 WEALTHDB_WEB_CONTAINER, WEALTHDB_WEB_DATA_DIR,
 WEALTHDB_WEB_BIND (both|v4|v6), WEALTHDB_WEB_ENV_FILE (default
-~/.secrets/wealthdb-web.env, read for the variables above).
+wealthdb-web.env in $WEALTHDB_SECRETS_DIR, else ~/.secrets, read for the
+variables above).
 EOF
 }
 

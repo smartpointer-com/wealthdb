@@ -37,8 +37,8 @@ INSECURE_WARNING="INSECURE: authentication is off; any process on this machine c
 # _resolve_knobs sets the operational knobs from env overrides and
 # defaults. Pure (no Docker, no config round-trip); unit-tested. The
 # data root and config resolve as the engine wrapper resolves them
-# (wealthdb_engine_paths), so the same-path mounts land where the config
-# expects; WEALTHDB_CONFIG names another config file.
+# (wealthdb_engine_paths: WEALTHDB_CONFIG names another config file),
+# so the same-path mounts land where the config expects.
 _resolve_knobs() {
     IMAGE="wealthdb:$WEALTHDB_IMAGE_TAG"
     CONTAINER="${WEALTHDB_MCP_CONTAINER:-wealthdb-mcp}"
@@ -46,7 +46,6 @@ _resolve_knobs() {
     BIND="${WEALTHDB_MCP_BIND:-both}"   # both | v4 | v6
     TOKEN_FILE="$DATA_DIR/token"
     wealthdb_engine_paths
-    CFG="${WEALTHDB_CONFIG:-$CFG}"
     CHARS="${WEALTHDB_MCP_CHARS:-}"
     ALLOW_HOSTS="${WEALTHDB_MCP_ALLOW_HOSTS:-}"
 }
@@ -99,7 +98,7 @@ _base_args() {
     DOCKER_ARGS+=(
         -u "$(id -u):$(id -g)"
         -e HOME="$HOME"
-        -e XDG_CONFIG_HOME="$CFG_DIR"
+        -e XDG_CONFIG_HOME="$XDG_CFG"
         -e WEALTHDB_DATA_ROOT="$DATA_ROOT"
         -v "$CFG:$CFG:ro"
         -v "$DATA_ROOT:$DATA_ROOT:ro"
@@ -386,7 +385,8 @@ WEALTHDB_MCP_CONTAINER, WEALTHDB_MCP_DATA_DIR, WEALTHDB_MCP_BIND
 WEALTHDB_MCP_INSECURE (the config fields' env forms), WEALTHDB_MCP_CHARS
 (characters per result, default 16000), WEALTHDB_MCP_ALLOW_HOSTS (Host
 names to answer besides loopback, comma-separated), WEALTHDB_MCP_ENV_FILE
-(default ~/.secrets/wealthdb-mcp.env, read for the variables above).
+(default wealthdb-mcp.env in $WEALTHDB_SECRETS_DIR, else ~/.secrets, read
+for the variables above).
 EOF
 }
 

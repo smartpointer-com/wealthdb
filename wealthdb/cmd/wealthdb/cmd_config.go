@@ -44,8 +44,9 @@ every section, each with its saved value. --wizard walks the steps
 again. A section's name opens that section alone:
 %s
 
-The AI model is set in the menu too. The other settings are edited in
-the file; the menu lists them with their docs. validate checks the file
+The AI model, the reports' options and the ledger files are set in the
+menu too. The other settings are edited in the file; the menu lists
+them with their docs. validate checks the file
 as every command reads it, and exits 0 when it is valid: run it after
 an edit by hand. It needs no terminal.
 
@@ -224,15 +225,15 @@ func stopOnSignal(fd int, out io.Writer, p wizard.Palette, command string) func(
 	}
 }
 
-// dataRoot is the data folder the wrapper mounts, and whether
-// WEALTHDB_DATA_ROOT names it: the variable, else $XDG_DATA_HOME/wealthdb,
-// else ~/.local/share/wealthdb.
+// dataRoot is the data folder the wrapper mounts, made absolute, and
+// whether WEALTHDB_DATA_ROOT names it: the variable, else
+// $XDG_DATA_HOME/wealthdb, else ~/.local/share/wealthdb.
 func dataRoot() (string, bool) {
 	if v := os.Getenv("WEALTHDB_DATA_ROOT"); v != "" {
-		return filepath.Clean(v), true
+		return absPath(v), true
 	}
 	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
-		return filepath.Join(xdg, "wealthdb"), false
+		return absPath(filepath.Join(xdg, "wealthdb")), false
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "wealthdb"), false

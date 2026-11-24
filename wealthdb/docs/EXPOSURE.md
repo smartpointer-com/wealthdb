@@ -602,7 +602,7 @@ The `exposure` block of `wealthdb.cfg` holds what no source knows
   },
   "reference_funds": ["symbol:IDX9"],
   "size_funds": { "symbol:ALL9": 100, "isin:XX0000000003": 85 },
-  "declarations": "~/ledgers/exposure-declarations.ndjson",
+  "declarations": "${WEALTHDB_DATA_ROOT}/ledgers/exposure-declarations.ndjson",
   "custody": { "bank-1": { "custodian": "Example Bank AG", "country": "CH" } },
   "max_gap_days": 400
 }
