@@ -17,7 +17,7 @@ trap 'rm -rf "$TMP"' EXIT
 TREE="$TMP/tree"
 mkdir -p "$TREE/wealthdb" "$TREE/shared/wrappers" "$TMP/bin" "$TMP/gold/a" "$TMP/gold/b"
 cp "$ROOT/wealthdb/wealthdb-go" "$TREE/wealthdb/"
-cp "$ROOT/shared/wrappers/image-tag.sh" "$TREE/shared/wrappers/"
+cp "$ROOT/shared/wrappers/image-tag.sh" "$ROOT/shared/wrappers/engine-mode.sh" "$TREE/shared/wrappers/"
 cat > "$TMP/bin/docker" <<'EOF'
 #!/bin/sh
 for a in "$@"; do printf '%s\n' "$a"; done

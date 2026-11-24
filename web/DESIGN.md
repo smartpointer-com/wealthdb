@@ -11,6 +11,10 @@ therefore handled **host-side**: the wrapper special-cases the `web`
 verb (like `build`) and execs [`web/web`](web), which drives `docker`
 on the host. The Go engine stays pure (CLI/query only; no daemon).
 
+In a tree of the native engine the server is a program on the computer,
+started by the same script
+([NATIVE.md](../wealthdb/docs/NATIVE.md)).
+
 The one thing the host script needs from the engine is config it cannot
 easily parse itself (`wealthdb.cfg` is JSON, validated in Go). It calls
 `wealthdb config-env web`, a hidden read-only subcommand

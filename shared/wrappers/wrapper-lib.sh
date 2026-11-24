@@ -76,6 +76,8 @@ _WRAPPER_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/image-tag.sh"
 # shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/engine-mode.sh"
+# shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/envfile-lib.sh"
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/paths-lib.sh"
@@ -243,7 +245,8 @@ wrapper_build() {
 }
 
 # Implement `./<wrapper> prune [extra args]` host-side — exec the
-# collector's prune.py under host python3 with collectorkit on
+# collector's prune.py under the host Python (the one ./configure
+# recorded, else python3 on PATH) with collectorkit on
 # PYTHONPATH, defaulting --bronze-dir to the bronze root ($HOST_DATA;
 # an explicit --bronze-dir in the extra args overrides it, argparse
 # last-wins). Runs on the host, not in a container: the prune engine is
@@ -278,7 +281,7 @@ wrapper_host_prune() {
         debug_args=(--debug-dir "$HOST_DEBUG")
     fi
     exec env PYTHONPATH="$HERE/../../shared/collectorkit:${PYTHONPATH:-}" \
-        python3 "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
+        "$(wealthdb_tool "$_WRAPPER_ROOT" PYTHON python3)" "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
         ${debug_args[@]+"${debug_args[@]}"} \
         ${rest[@]+"${rest[@]}"}
 }
@@ -495,5 +498,29 @@ wrapper_main() {
     fi
     docker_args+=(-v "$HERE:/app")
 
-    setup_exec docker run "${docker_args[@]}" "$IMAGE" "$@"
+    wrapper_silver_lock "$@"
+    setup_exec ${SILVER_LOCK[@]+"${SILVER_LOCK[@]}"} docker run "${docker_args[@]}" "$IMAGE" "$@"
+}
+
+# wrapper_silver_lock VERB... sets SILVER_LOCK, the command the container
+# runs through when the verb writes the collector's database in a tree
+# of the native engine: the engine's hold-lock, on the lock file beside
+# that database. The native engine reads the database on this computer,
+# and SQLite's own locks do not reach it from Docker's virtual machine,
+# so the two meet on this lock instead (silverLockName in the engine).
+# Empty for any other verb, and in a tree of the container engine. A
+# config.mk that names no kind of engine stops the wrapper with status
+# 2, as it stops the launcher: the verb never runs unlocked.
+wrapper_silver_lock() {
+    SILVER_LOCK=()
+    collector_verb_takes_silver "${1:-}" || return 0
+    local mode
+    mode="$(wealthdb_engine_mode "$_WRAPPER_ROOT")" || exit 2
+    [[ "$mode" == native ]] || return 0
+    local engine dir="$HOST_DATA"
+    engine="$(wealthdb_native_engine "$_WRAPPER_ROOT")"
+    # No engine built yet: no load can read the database either.
+    [[ -x "$engine" ]] || return 0
+    if [[ -n "${SILVER_DB:-}" ]]; then dir="$(_abs_dir "$(dirname "$SILVER_DB")")"; fi
+    SILVER_LOCK=("$engine" hold-lock "$dir/.wealthdb-silver.lock" --)
 }

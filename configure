@@ -1,0 +1,201 @@
+#!/bin/sh
+# configure — choose the kind of engine this tree builds and runs, check
+# the tools it needs, and record both in config.mk.
+#
+# The Makefile includes config.mk, and the wrappers read it
+# (shared/wrappers/engine-mode.sh). Without one, a tree builds and runs
+# the container engine, so `make all` needs no configure.
+set -eu
+
+usage() {
+    cat <<'EOF'
+usage: ./configure [--engine=container|native] [--prefix=DIR] [--bindir=DIR]
+                   [GO=PATH] [PYTHON=PATH] [JAVA=PATH]
+
+  --engine=container  the engine, the dashboards and the MCP server run in
+                      containers (the default). Needs Docker.
+  --engine=native     they run as programs on this computer. Only the
+                      collectors that drive a browser need Docker.
+                      Needs Go and Python; the dashboards need Java.
+  --prefix=DIR        `make install` copies the tree to DIR/libexec/wealthdb
+                      and links DIR/bin/wealthdb. Without it, `make install`
+                      links this checkout into the bin directory.
+  --bindir=DIR        the bin directory (default: PREFIX/bin, else
+                      ~/.local/bin)
+  GO=, PYTHON=, JAVA= the tools to use, in place of the ones on PATH
+
+Run `make all` next. To switch back, run ./configure again.
+EOF
+}
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+ENGINE=container
+PREFIX=
+BINDIR=
+GO="${GO:-}"
+PYTHON="${PYTHON:-}"
+JAVA="${JAVA:-}"
+
+for arg in "$@"; do
+    case "$arg" in
+        --engine=*) ENGINE="${arg#*=}" ;;
+        --prefix=*) PREFIX="${arg#*=}" ;;
+        --bindir=*) BINDIR="${arg#*=}" ;;
+        GO=*)       GO="${arg#*=}" ;;
+        PYTHON=*)   PYTHON="${arg#*=}" ;;
+        JAVA=*)     JAVA="${arg#*=}" ;;
+        -h | --help) usage; exit 0 ;;
+        *) echo "configure: unknown argument: $arg" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+fail() { echo "configure: $*" >&2; exit 1; }
+
+case "$ENGINE" in
+    container | native) ;;
+    *) fail "--engine=$ENGINE is no kind of engine (want container or native)" ;;
+esac
+
+# abs_tool NAME VALUE: print VALUE as an absolute path to a program, or
+# nothing when there is no such program.
+abs_tool() {
+    case "$2" in
+        '') return 0 ;;
+        /*) if [ -x "$2" ]; then printf '%s\n' "$2"; fi ;;
+        *)  command -v "$2" 2>/dev/null || true ;;
+    esac
+}
+
+# version_ge HAVE WANT: succeed when the dotted version HAVE is at least
+# WANT, comparing up to three numeric parts.
+version_ge() {
+    awk -v have="$1" -v want="$2" 'BEGIN {
+        n = split(have, h, "."); m = split(want, w, ".")
+        for (i = 1; i <= 3; i++) {
+            a = (i <= n) ? h[i] + 0 : 0; b = (i <= m) ? w[i] + 0 : 0
+            if (a > b) exit 0
+            if (a < b) exit 1
+        }
+        exit 0
+    }'
+}
+
+# ---- Python: every mode builds venvs and runs host-side scripts --------
+PY_WANT=3.10
+if [ -n "$PYTHON" ]; then
+    given="$PYTHON"
+    PYTHON="$(abs_tool python "$given")"
+    [ -n "$PYTHON" ] || fail "PYTHON=$given is no program"
+else
+    # The Makefile's PYTHON tries the same versions: a new one is added
+    # to both lists.
+    for p in python3.15 python3.14 python3.13 python3.12 python3.11 python3.10 \
+        /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
+        cand="$(abs_tool python "$p")"
+        [ -n "$cand" ] || continue
+        if "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+            PYTHON="$cand"
+            break
+        fi
+    done
+    [ -n "$PYTHON" ] || fail "no Python $PY_WANT or later found; install one, or pass PYTHON=PATH"
+fi
+# The interpreter itself, where the one found is a virtual environment's:
+# the venvs built from it then outlast that environment.
+base="$("$PYTHON" -c 'import sys; print(getattr(sys, "_base_executable", None) or sys.executable)' 2>/dev/null)" ||
+    fail "$PYTHON does not run"
+if [ -n "$base" ] && [ -x "$base" ]; then PYTHON="$base"; fi
+py_have="$("$PYTHON" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null)" ||
+    fail "$PYTHON does not run"
+version_ge "$py_have" "$PY_WANT" || fail "$PYTHON is Python $py_have; $PY_WANT or later is needed"
+
+# ---- the tools of one kind of engine -----------------------------------
+go_have= java_have= java_note=
+if [ "$ENGINE" = native ]; then
+    go_want="$(sed -n 's/^go[[:space:]][[:space:]]*//p' "$ROOT/wealthdb/go.mod" | sed -n '1p')"
+    [ -n "$go_want" ] || fail "wealthdb/go.mod states no Go version"
+    given="${GO:-go}"
+    GO="$(abs_tool go "$given")"
+    [ -n "$GO" ] || fail "no Go found ($given); the native engine needs Go $go_want or later. Install it, or pass GO=PATH"
+    go_have="$("$GO" env GOVERSION 2>/dev/null | sed 's/^go//')"
+    [ -n "$go_have" ] || fail "$GO does not run"
+    version_ge "$go_have" "$go_want" || fail "$GO is Go $go_have; wealthdb/go.mod needs $go_want or later"
+    command -v cc >/dev/null 2>&1 ||
+        fail "no C compiler (cc) found; the native engine links one library with it"
+
+    # Java is for the dashboards only. /usr/bin/java on a Mac is a stub
+    # that fails when no Java is installed, so the program is run. Its
+    # version line is not always its first: a Java told its options by
+    # the environment says so before it.
+    JAVA_WANT=21
+    given="${JAVA:-${JAVA_HOME:+$JAVA_HOME/bin/java}}"
+    given="${given:-java}"
+    cand="$(abs_tool java "$given")"
+    if [ -n "$cand" ] && out="$("$cand" -version 2>&1)"; then
+        java_have="$(printf '%s\n' "$out" | sed -n 's/.*version "\([0-9][0-9.]*\).*/\1/p' | sed -n '1p')"
+    fi
+    if [ -n "$java_have" ] && version_ge "$java_have" "$JAVA_WANT"; then
+        JAVA="$cand"
+    elif [ -n "$JAVA" ]; then
+        fail "JAVA=$JAVA is not Java $JAVA_WANT or later"
+    else
+        JAVA=
+        java_note="none found; the dashboards need Java $JAVA_WANT or later (configure again once it is installed)"
+    fi
+else
+    GO= JAVA=
+    command -v docker >/dev/null 2>&1 ||
+        echo "configure: note: no docker on PATH; the container engine needs it" >&2
+fi
+
+# ---- where make install puts things ------------------------------------
+case "$PREFIX" in
+    '' | /*) ;;
+    *) fail "--prefix=$PREFIX is not an absolute path" ;;
+esac
+case "$BINDIR" in
+    '' | /*) ;;
+    *) fail "--bindir=$BINDIR is not an absolute path" ;;
+esac
+if [ -z "$BINDIR" ] && [ -n "$PREFIX" ]; then
+    BINDIR="$PREFIX/bin"
+fi
+
+# config.mk is read by make, by sed and by a recipe's shell: a value
+# holds only the characters a path needs, so each of them reads it as
+# text.
+for kv in "PREFIX=$PREFIX" "BINDIR=$BINDIR" "GO=$GO" "PYTHON=$PYTHON" "JAVA=$JAVA"; do
+    case "${kv#*=}" in
+        *[!A-Za-z0-9_./@:+,=-]*)
+            fail "${kv%%=*}=${kv#*=} holds a character other than letters, digits and _ . / @ : + , = -; choose a path without one"
+            ;;
+    esac
+done
+
+tmp="$ROOT/config.mk.tmp.$$"
+trap 'rm -f "$tmp"' EXIT
+{
+    echo "# Written by ./configure; run it again, with every option, to change it."
+    echo "# Read by the Makefile and by shared/wrappers/engine-mode.sh."
+    echo "ENGINE=$ENGINE"
+    [ -z "$PREFIX" ] || echo "PREFIX=$PREFIX"
+    [ -z "$BINDIR" ] || echo "BINDIR=$BINDIR"
+    echo "PYTHON=$PYTHON"
+    [ -z "$GO" ] || echo "GO=$GO"
+    [ -z "$JAVA" ] || echo "JAVA=$JAVA"
+} > "$tmp"
+mv "$tmp" "$ROOT/config.mk"
+
+echo "engine:  $ENGINE"
+echo "python:  $PYTHON ($py_have)"
+if [ "$ENGINE" = native ]; then
+    echo "go:      $GO ($go_have)"
+    echo "java:    ${JAVA:+$JAVA ($java_have)}${java_note}"
+fi
+if [ -n "$PREFIX" ]; then
+    echo "install: a copy under $PREFIX/libexec/wealthdb, linked in $BINDIR"
+else
+    echo "install: links to this checkout in ${BINDIR:-~/.local/bin}"
+fi
+echo
+echo "Wrote config.mk. Run: make all"

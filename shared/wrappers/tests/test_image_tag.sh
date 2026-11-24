@@ -33,6 +33,7 @@ TREE="$TMP/tree"
 mkdir -p "$TREE/wealthdb" "$TREE/shared/wrappers"
 cp "$ROOT/wealthdb/wealthdb" "$ROOT/wealthdb/wealthdb-go" "$TREE/wealthdb/"
 cp "$ROOT/shared/wrappers/wrapper-lib.sh" "$ROOT/shared/wrappers/image-tag.sh" \
+    "$ROOT/shared/wrappers/engine-mode.sh" \
     "$ROOT/shared/wrappers/envfile-lib.sh" "$ROOT/shared/wrappers/demo-root.sh" \
     "$ROOT/shared/wrappers/paths-lib.sh" "$ROOT/shared/wrappers/service-lib.sh" \
     "$TREE/shared/wrappers/"

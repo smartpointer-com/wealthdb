@@ -59,6 +59,13 @@ wealthdb_from_ref() {
     printf '%s\n' "$_wfrom" | sed "s/\${WEALTHDB_IMAGE_TAG}/${WEALTHDB_IMAGE_TAG}/g"
 }
 
+# wealthdb_dockerfile_arg DOCKERFILE NAME prints the default the file
+# gives `ARG NAME=`, or nothing: the place a pinned version or checksum
+# is read from by everything that is not `docker build`.
+wealthdb_dockerfile_arg() {
+    sed -n "s/^ARG $2=//p" "$1" 2>/dev/null | sed -n '1p'
+}
+
 # wealthdb_from_id DOCKERFILE prints the id of that image, or "missing"
 # when it is not local.
 wealthdb_from_id() {

@@ -4,13 +4,27 @@
 # required. Run via `make test-mcp` or directly. Sources mcp/mcp (which
 # only runs mcp_main when executed, not sourced) against a stubbed
 # engine and a stubbed docker, and checks the container geometry, the
-# token, the auth gate and the outdated-image check. bash 3.2
-# compatible (macOS).
+# token, the auth gate and the outdated-image check. Then the same
+# script in a tree of the native engine: the server's argv, its
+# LaunchAgent, and a start, status and stop of a stand-in server, as a
+# background process and under a stubbed launchd. bash 3.2 compatible
+# (macOS).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+
+# Nothing here reads a real env file or reaches launchd. The secrets
+# folder is an empty one under $tmp, the servers are plain processes,
+# and `launchctl` is a stub that records its calls (as `docker` below).
+mkdir -p "$tmp/secrets" "$tmp/bin"
+export WEALTHDB_SECRETS_DIR="$tmp/secrets" WEALTHDB_NO_LAUNCHD=1
+cat > "$tmp/bin/launchctl" <<EOF
+#!/bin/sh
+echo "\$*" >> "$tmp/launchctl-calls"
+EOF
+chmod +x "$tmp/bin/launchctl"
 
 # Engine stub: records its argv (one arg per line) and prints the
 # `config-env mcp` lines in $tmp/config-env-mcp. mcp/mcp resolves
@@ -23,15 +37,22 @@ cat "$tmp/config-env-mcp"
 EOF
 chmod +x "$tmp/engine-stub"
 export WEALTHDB_BIN="$tmp/engine-stub"
+# The script under test runs the container engine, whatever ./configure
+# recorded for this checkout. The native cases name a record of their own.
+export WEALTHDB_BUILD_CONFIG=/dev/null
 
-# Docker stub: records each call's argv (one arg per line) and answers
-# the queries from STUB_* variables.
-mkdir -p "$tmp/bin"
+# Docker stub: records each call's argv (one arg per line; every call as
+# one line of docker-calls) and answers the queries from STUB_*
+# variables. With STUB_HANG it is a daemon that does not answer.
 cat > "$tmp/bin/docker" <<EOF
 #!/bin/sh
 printf '%s\n' "\$@" > "$tmp/docker-args"
+echo "\$*" >> "$tmp/docker-calls"
+[ -z "\${STUB_HANG:-}" ] || exec sleep 30
 case "\$1 \$2" in
     "ps -q"|"ps -aq") [ -n "\${STUB_RUNNING:-}" ] && echo abc123 ;;
+    "container inspect") [ -n "\${STUB_RUNNING:-}" ] || exit 1
+                         [ "\$3" != -f ] || printf '%s\n' /cfg/wealthdb.cfg "\${STUB_MOUNT:-/elsewhere/mcp/token}" ;;
     "inspect -f")     echo "\${STUB_RUNNING_IMAGE:-sha256:one}" ;;
     "image inspect")  [ -n "\${STUB_NO_IMAGE:-}" ] && { echo "Error response from daemon: No such image: \$3" >&2; exit 1; }; echo "\${STUB_CURRENT_IMAGE:-sha256:one}" ;;
 esac
@@ -143,8 +164,9 @@ unset WEALTHDB_MCP_TOKEN
 _ensure_token 2>/dev/null
 tok="$(cat "$TOKEN_FILE")"
 if [ "${#tok}" -eq 64 ]; then pass "generated token is 32 bytes of hex"; else fail "generated token length ${#tok}"; fi
-mode="$(stat -f '%Lp' "$TOKEN_FILE" 2>/dev/null || stat -c '%a' "$TOKEN_FILE")"
-check     "token file mode 600"    "600"                                          "$mode"
+# GNU's form first: BSD's -f means something else to GNU stat.
+mode="$(stat -c '%a' "$TOKEN_FILE" 2>/dev/null || stat -f '%Lp' "$TOKEN_FILE")"
+if [ "$mode" = 600 ]; then pass "token file mode 600"; else fail "token file mode is $mode, not 600"; fi
 _ensure_token 2>/dev/null
 if [ "$(cat "$TOKEN_FILE")" = "$tok" ]; then pass "token kept across starts"; else fail "token kept across starts"; fi
 WEALTHDB_MCP_TOKEN="from-the-environment-0123456789" _ensure_token
@@ -198,6 +220,24 @@ out="$(STUB_RUNNING=1 STUB_RUNNING_IMAGE=sha256:same STUB_CURRENT_IMAGE=sha256:s
 check     "current image"          "image: current"                               "$out"
 check_not "no warning with a token" "INSECURE"                                    "$out"
 
+echo "== mcp_stop (the container, and a server the native engine left) =="
+: > "$tmp/docker-calls"
+out="$(STUB_RUNNING=1 mcp_stop 2>&1)"
+check     "stops the container"    "mcp: stopped wealthdb-mcp (the token is kept in $TOKEN_FILE)" "$out"
+calls="$(tr '\n' '|' < "$tmp/docker-calls")"
+check     "with docker stop, then rm" "|stop wealthdb-mcp|rm wealthdb-mcp|"       "$calls"
+out="$(mcp_stop 2>&1)"
+check     "no container: says so"  "mcp: no container 'wealthdb-mcp' to stop"     "$out"
+# A stand-in for a native server that ran when ./configure chose the
+# container engine: a process the pid file names.
+standin="$(sleep 30 >/dev/null 2>&1 & echo $!)"
+echo "$standin" > "$DATA_DIR/mcp.pid"
+out="$(SERVICE_PROC=sleep mcp_stop 2>&1)"
+check     "stop ends a native server too" "mcp: stopped the native engine's server" "$out"
+check_not "and has no line on a container that is not there" "no container"      "$out"
+if kill -0 "$standin" 2>/dev/null; then fail "the native server still runs"; kill "$standin"; else pass "the native server is gone"; fi
+if [ -e "$DATA_DIR/mcp.pid" ]; then fail "its pid file is left"; else pass "and so is its pid file"; fi
+
 echo "== mcp_url =="
 config 1 3300 token 0
 printf 'tok-0123456789abcdef\n' > "$TOKEN_FILE"
@@ -229,6 +269,316 @@ esac
 echo "== _resolve_knobs (image tag) =="
 WEALTHDB_IMAGE_TAG=feature _resolve_knobs
 check     "image follows the tag"  "wealthdb:feature"                             "$IMAGE"
+
+# ---- the native server -------------------------------------------------
+# The same script in a tree of the native engine: mcp is sourced again
+# with a record that says so, in a subshell, and with launchd out of
+# reach so that nothing is started on this computer.
+native_cases() {
+    printf 'ENGINE=native\n' > "$tmp/native.mk"
+    export WEALTHDB_BUILD_CONFIG="$tmp/native.mk" WEALTHDB_NO_LAUNCHD=1
+    # A home of its own: an agent file is written under it.
+    export HOME="$tmp/home"
+    # shellcheck source=/dev/null
+    source "$HERE/mcp"
+    XDG_DATA_HOME= XDG_CONFIG_HOME=/cfg WEALTHDB_DATA_ROOT=/data WEALTHDB_CONFIG= \
+        WEALTHDB_MCP_DATA_DIR="$tmp/native-data" _resolve_knobs
+    ENGINE_BIN="$tmp/native-engine"
+
+    echo "== native: the server's argv =="
+    PORT=3300 BIND=both AUTH=token CHARS=4000 ALLOW_HOSTS=box
+    _native_serve_args
+    joined="${SERVE_ARGS[*]}"
+    check     "serves HTTP on IPv4 loopback, with the token file" \
+        "-c /cfg/wealthdb.cfg mcp-serve --http 127.0.0.1:3300 --token-file $tmp/native-data/token" "$joined"
+    check_not "never beyond loopback"   "--all-interfaces"     "$joined"
+    check     "character budget"        "--chars 4000"         "$joined"
+    check     "allowed hosts"           "--allow-host box"     "$joined"
+    BIND=v6 AUTH=none CHARS= ALLOW_HOSTS=
+    _native_serve_args
+    joined="${SERVE_ARGS[*]}"
+    check     "v6 → IPv6 loopback"      "--http [::1]:3300"    "$joined"
+    check     "auth none flags"         "--auth none --insecure" "$joined"
+    check_not "auth none: no token file" "--token-file"        "$joined"
+    check     "both and v4 → the IPv4 loopback address" "127.0.0.1 127.0.0.1" "$(_loopback_host both) $(_loopback_host v4)"
+    check     "v6 → the IPv6 one"       "::1"                  "$(_loopback_host v6)"
+    BIND=ipv6
+    if out="$(_native_serve_args 2>&1)"; then fail "a BIND that is no address family is refused"
+    else pass "a BIND that is no address family is refused"; fi
+    check     "and the message names it" "invalid WEALTHDB_MCP_BIND 'ipv6' (want both|v4|v6)" "$out"
+    BIND=both
+
+    echo "== native: names, and the LaunchAgent =="
+    CONTAINER=wealthdb-mcp
+    check     "the label"               "com.smartpointer.wealthdb.mcp" "$(_service_label)"
+    CONTAINER=wealthdb-mcp-demo
+    check     "a second instance's label" "com.smartpointer.wealthdb.mcp-demo" "$(_service_label)"
+    check     "its agent file"          "$tmp/home/Library/LaunchAgents/com.smartpointer.wealthdb.mcp-demo.plist" "$(_service_plist)"
+    check     "the pid file"            "$tmp/native-data/mcp.pid" "$(_service_pidfile)"
+    mkdir -p "$tmp/home"
+    out="$(cd "$tmp/home" && WEALTHDB_ENTRY='/opt/x & y/bin/wealthdb' WEALTHDB_MCP_CHARS=4000 WEALTHDB_MCP_BIND=v4 \
+        WEALTHDB_MCP_TOKEN=synthetic-token-marker WEALTHDB_CONFIG='/cfg/a<b>.cfg' WEALTHDB_DATA_ROOT=rel/data \
+        _write_plist && cat "$(_service_plist)")"
+    check     "the agent runs the entry command, escaped" "<string>/opt/x &amp; y/bin/wealthdb</string>" "$out"
+    check     "with mcp serve"          "<string>mcp</string>" "$out"
+    check     "(serve)"                 "<string>serve</string>" "$out"
+    check     "it starts at login"      "<key>RunAtLoad</key>" "$out"
+    check     "and again when it exits" "<key>KeepAlive</key>" "$out"
+    check     "a relative path is handed on absolute" "<string>$tmp/home/rel/data</string>" "$out"
+    check_not "and the agent depends on no working directory" "WorkingDirectory" "$out"
+    check_not "as a job of the standard kind" "ProcessType"    "$out"
+    check     "it hands on the config path, escaped" "<string>/cfg/a&lt;b&gt;.cfg</string>" "$out"
+    check     "the knobs both servers have" "<key>WEALTHDB_MCP_BIND</key>" "$out"
+    check     "and the MCP server's own" "<key>WEALTHDB_MCP_CHARS</key>" "$out"
+    check_not "and never the token"     "synthetic-token-marker" "$out"
+    check_not "nor its variable"        "WEALTHDB_MCP_TOKEN"   "$out"
+    if command -v plutil >/dev/null 2>&1; then
+        if plutil -lint "$(_service_plist)" >/dev/null 2>&1; then pass "the agent file is a valid property list"
+        else fail "the agent file is not a valid property list"; fi
+    fi
+
+    echo "== native: lifecycle without a server =="
+    CONTAINER=wealthdb-mcp
+    rm -f "$(_service_plist)"
+    config 1 3300 token false
+    out="$(mcp_status 2>&1)"
+    check     "status: not running"     "mcp: not running"     "$out"
+    check_not "status names no container" "container"          "$out"
+    out="$(mcp_stop 2>&1)"
+    check     "stop: nothing to stop"   "mcp: no server to stop" "$out"
+
+    echo "== native: stop ends a container the other engine left =="
+    : > "$tmp/docker-calls"
+    out="$(STUB_RUNNING=1 STUB_MOUNT="$TOKEN_FILE" mcp_stop 2>&1)"
+    check     "stop says which container it stopped" "mcp: stopped container wealthdb-mcp, the container engine's server" "$out"
+    check_not "and has no line on a server that is not there" "no server to stop" "$out"
+    calls="$(tr '\n' '|' < "$tmp/docker-calls")"
+    check     "docker is asked, then stops and removes it" "|stop wealthdb-mcp|rm wealthdb-mcp|" "$calls"
+    : > "$tmp/docker-calls"
+    out="$(STUB_RUNNING=1 mcp_stop 2>&1)"
+    check     "a container of that name that serves another data folder is left alone" "mcp: no server to stop" "$out"
+    check_not "docker stops nothing of it" "stop wealthdb-mcp" "$(cat "$tmp/docker-calls")"
+    : > "$tmp/docker-calls"
+    out="$(mcp_stop 2>&1)"
+    check_not "with no container, docker stops nothing" "stop wealthdb-mcp" "$(cat "$tmp/docker-calls")"
+    t0=$SECONDS
+    out="$(STUB_HANG=1 SERVICE_DOCKER_WAIT=1 mcp_stop 2>&1)"; rc=$?
+    check     "a docker that does not answer fails no stop" "0" "$rc"
+    check     "which says what it found" "mcp: no server to stop" "$out"
+    if [ $((SECONDS - t0)) -lt 10 ]; then pass "and waits for it a moment only"; else fail "stop waited $((SECONDS - t0))s for docker"; fi
+
+    echo "== native: with no engine built =="
+    out="$(mcp_start 2>&1)"; rc=$?
+    check     "start with no engine built fails" "1"           "$rc"
+    check     "and says how to build it" "Run: make all"       "$out"
+    out="$(mcp_serve 2>&1)"
+    check     "serve with no engine built fails too" "Run: make all" "$out"
+
+    echo "== native: serve becomes the engine =="
+    # An engine that records how it was run.
+    cat > "$tmp/native-engine" <<EOS
+#!/bin/sh
+case "\$*" in
+    *config-env*) cat "$tmp/config-env-mcp" ;;
+    *) { printf '%s\n' "\$@"; echo "kind=\$WEALTHDB_ENGINE root=\$WEALTHDB_DATA_ROOT pid=\$\$"; } > "$tmp/native-served" ;;
+esac
+EOS
+    chmod +x "$tmp/native-engine"
+    # serve is a command of its own, whose process the engine becomes:
+    # it runs here from a tree of the native engine, with the stub as
+    # that tree's engine.
+    tree="$tmp/tree"
+    mkdir -p "$tree/mcp" "$tree/shared/wrappers" "$tree/wealthdb"
+    cp "$HERE/mcp" "$tree/mcp/"
+    cp "$HERE"/../shared/wrappers/*.sh "$tree/shared/wrappers/"
+    cp "$tmp/native-engine" "$tree/wealthdb/wealthdb-engine"
+    printf 'ENGINE=native\n' > "$tree/config.mk"
+    ( unset WEALTHDB_BUILD_CONFIG
+      XDG_DATA_HOME='' XDG_CONFIG_HOME=/cfg WEALTHDB_DATA_ROOT=/data WEALTHDB_CONFIG='' \
+          WEALTHDB_MCP_DATA_DIR="$tmp/native-data" WEALTHDB_BIN="$tmp/native-engine" \
+          "$tree/mcp/mcp" serve ) > "$tmp/serve.out" 2>&1; rc=$?
+    [ "$rc" = 0 ] || sed "s/^/       serve: /" "$tmp/serve.out"
+    check     "serve runs the engine"   "0"                    "$rc"
+    out="$(cat "$tmp/native-served" 2>/dev/null)"
+    check     "as the HTTP server"      "mcp-serve"            "$out"
+    check     "on loopback"             "127.0.0.1:3300"       "$out"
+    check     "told its kind and the data root" "kind=native root=/data" "$out"
+    check     "under the pid the pid file names" "pid=$(cat "$(_service_pidfile)" 2>/dev/null)" "$out"
+    [ -s "$TOKEN_FILE" ] && pass "serve made the token" || fail "serve made no token"
+    check     "serve recorded the engine it runs" "$(_file_id "$tree/wealthdb/wealthdb-engine")" "$(cat "$SERVING_FILE" 2>/dev/null)"
+    rm -f "$(_service_pidfile)"
+    _file_id "$ENGINE_BIN" > "$SERVING_FILE"
+
+    echo "== native: start, status and stop of a stand-in server =="
+    # start runs `<entry> mcp serve` in the background. A stand-in for
+    # that command records its pid, as serve does, and sleeps.
+    printf '#!/bin/sh\necho $$ > "%s"\nexec sleep 30\n' "$(_service_pidfile)" > "$tmp/entry"
+    chmod +x "$tmp/entry"
+    export WEALTHDB_ENTRY="$tmp/entry"
+    out="$(SERVICE_PROC=sleep mcp_start 2>&1)"; rc=$?
+    check     "start succeeds"          "0"                    "$rc"
+    check     "start says the server is up" "mcp: the server is up" "$out"
+    check     "and what follows an upgrade" "After an upgrade, run 'wealthdb mcp restart'" "$out"
+    check_not "a plain process promises no start at login" "at login" "$out"
+    SERVICE_PROC=sleep
+    if _is_running; then pass "the server runs"; else fail "the server does not run: $(cat "$(_service_logfile)" 2>/dev/null)"; fi
+    # serve while a server runs: refused, and the pid file stays the
+    # running server's.
+    pid="$(_native_pid)"
+    out="$( (mcp_serve) 2>&1)"; rc=$?
+    check     "serve is refused while a server runs" "1"         "$rc"
+    check     "and says that one runs"  "mcp: already running" "$out"
+    out="$( (_serve_here) 2>&1)"; rc=$?
+    check     "the pid file is not taken over" "1 mcp: already running (pid $pid)" "$rc $out"
+    check     "it still names the running server" "$pid"       "$(cat "$(_service_pidfile)")"
+    out="$(mcp_status 2>&1)"
+    check     "status: running, with its pid" "mcp: running   pid=$(_native_pid)" "$out"
+    check     "status: the engine is current" "engine: current"  "$out"
+    check     "status names the log"    "log: $tmp/native-data/mcp.log" "$out"
+    echo changed >> "$tmp/native-engine"
+    out="$(mcp_status 2>&1)"
+    check     "a rebuilt engine reads as outdated" "engine: outdated" "$out"
+    out="$(mcp_start 2>&1)"; rc=$?
+    check     "a second start is refused" "already running (the server)" "$out"
+    pid="$(_native_pid)"
+    out="$(mcp_stop 2>&1)"
+    check     "stop says so"            "mcp: stopped the server" "$out"
+    if kill -0 "$pid" 2>/dev/null; then fail "the server still runs after stop"; else pass "the server is gone after stop"; fi
+    [ ! -e "$(_service_pidfile)" ] && pass "stop removed the pid file" || fail "the pid file is left"
+    [ -s "$TOKEN_FILE" ] && pass "stop kept the token" || fail "stop removed the token"
+    BIND=ipv6
+    out="$(mcp_start 2>&1)"; rc=$?
+    check     "a start with a BIND that is no address family fails" "1 mcp: invalid WEALTHDB_MCP_BIND" "$rc $out"
+    BIND=both
+
+    # A pid file that names another program, or no process at all, names
+    # no server: nothing runs, and a stop ends no one.
+    other="$(sleep 30 >/dev/null 2>&1 & echo $!)"
+    echo "$other" > "$(_service_pidfile)"
+    SERVICE_PROC=no-such-marker
+    if _is_running; then fail "another program's pid reads as the server"; else pass "another program's pid is not the server"; fi
+    out="$(mcp_stop 2>&1)"
+    if kill -0 "$other" 2>/dev/null; then pass "and stop leaves that program alone"; else fail "stop ended another program"; fi
+    [ ! -e "$(_service_pidfile)" ] && pass "stop removes the pid file all the same" || fail "the stale pid file is left"
+    kill "$other" 2>/dev/null
+    echo not-a-number > "$(_service_pidfile)"
+    if _is_running; then fail "a pid file with no number reads as the server"; else pass "a pid file with no number names no server"; fi
+    rm -f "$(_service_pidfile)"
+    SERVICE_PROC=sleep
+    # ps cuts a command line at COLUMNS where it is not told otherwise:
+    # a marker far along the line is still read.
+    other="$(sh -c 'while :; do sleep 1; done' padding-padding-padding-padding-padding-padding far-marker >/dev/null 2>&1 & echo $!)"
+    out="$(export COLUMNS=20; _pid_command "$other")"
+    check     "a process's whole command line is read" "far-marker" "$out"
+    kill "$other" 2>/dev/null
+
+    echo "== native: stdio =="
+    rm -f "$tmp/native-served"
+    out="$( (CHARS=4000 mcp_stdio --privacy) 2>&1)"
+    served="$(tr '\n' ' ' < "$tmp/native-served" 2>/dev/null)"
+    check     "stdio runs the engine, and passes --privacy on" "-c /cfg/wealthdb.cfg mcp-serve --stdio --chars 4000 --privacy" "$served"
+    check     "told its kind and the data root" "kind=native root=/data" "$served"
+
+    echo "== native: serve of a server that is off =="
+    # serve with the server turned off: outside launchd it only says so.
+    config 0 3300 token false
+    out="$(XPC_SERVICE_NAME=0 mcp_serve 2>&1)"; rc=$?
+    check     "serve of a server that is off fails" "1" "$rc"
+    check     "and names the setup" "wealthdb config mcp-server" "$out"
+    check_not "outside launchd it removes no agent" "removing the server from launchd" "$out"
+    config 1 3300 token false
+
+    # A start moves a log that has grown large aside.
+    printf '%s\n' old-log-line > "$(_service_logfile)"
+    SERVICE_LOG_MAX=5 _rotate_log "$(_service_logfile)"
+    check     "a large log is moved aside at a start" "old-log-line" "$(cat "$(_service_logfile).1" 2>/dev/null)"
+    [ ! -e "$(_service_logfile)" ] && pass "and a new one begins" || fail "the large log is still in place"
+    printf 'x\n' > "$(_service_logfile)"
+    _rotate_log "$(_service_logfile)"
+    [ -e "$(_service_logfile)" ] && pass "a small log stays" || fail "a small log was moved"
+
+    echo "== native: a server that cannot start =="
+    # One that dies at once: start fails without its whole wait, shows
+    # the log and leaves nothing behind.
+    printf '#!/bin/sh\necho "the engine says no" >&2\nexit 3\n' > "$tmp/entry"
+    t0=$SECONDS
+    out="$(mcp_start 2>&1)"; rc=$?
+    check     "a server that dies at once fails the start" "1" "$rc"
+    if [ $((SECONDS - t0)) -lt 20 ]; then pass "at once, not after the wait a slow start gets"
+    else fail "the start waited $((SECONDS - t0))s for a process that was gone"; fi
+    check     "the start shows the end of its log" "the engine says no" "$out"
+    [ ! -e "$(_service_pidfile)" ] && pass "and leaves no pid file" || fail "a pid file is left"
+    # One that lives and never becomes the server: start gives up after
+    # its wait, and ends the process it started.
+    printf '#!/bin/sh\necho $$ > "%s"\nexec sleep 30\n' "$tmp/entry-pid" > "$tmp/entry"
+    out="$(SERVICE_START_WAIT=1 mcp_start 2>&1)"; rc=$?
+    check     "a server that never comes up fails the start" "1 mcp: the server did not start" "$rc $out"
+    if kill -0 "$(cat "$tmp/entry-pid")" 2>/dev/null; then fail "the process it started still runs"; kill "$(cat "$tmp/entry-pid")"
+    else pass "and the process it started is ended"; fi
+
+    echo "== native: under launchd (a stub) =="
+    (
+        # launchd is a function that records its calls. On `bootstrap`
+        # it runs the agent: a stand-in that records its pid, as serve
+        # does.
+        _uses_launchd() { return 0; }
+        launchctl() {
+            echo "$*" >> "$tmp/launchctl-calls"
+            case "$1" in
+                bootstrap)
+                    [ -z "${STUB_REFUSE:-}" ] || return 5
+                    sleep 30 >/dev/null 2>&1 &
+                    echo $! > "$(_service_pidfile)" ;;
+            esac
+        }
+        domain="gui/$(id -u)" label=com.smartpointer.wealthdb.mcp
+        plist="$tmp/home/Library/LaunchAgents/$label.plist"
+        log="$tmp/home/Library/Logs/wealthdb/mcp.log"
+        : > "$tmp/launchctl-calls"
+        out="$(mcp_start 2>&1)"; rc=$?
+        check     "start succeeds"          "0"                    "$rc"
+        check     "the agent file is written, with its log under the account's Logs" "<string>$log</string>" "$(cat "$plist" 2>/dev/null)"
+        check     "an agent of that label is booted out, then this one in" \
+            "bootout $domain/$label|bootstrap $domain $plist|" "$(tr '\n' '|' < "$tmp/launchctl-calls")"
+        check     "the banner says it starts again at login" "It starts again at login. After an upgrade" "$out"
+        out="$(mcp_status 2>&1)"
+        check     "status names that log"   "log: $log"            "$out"
+        pid="$(_native_pid)"
+        : > "$tmp/launchctl-calls"
+        out="$(mcp_stop 2>&1)"
+        check     "stop says so"            "mcp: stopped the server" "$out"
+        check     "stop boots the agent out" "bootout $domain/$label" "$(cat "$tmp/launchctl-calls")"
+        [ ! -e "$plist" ] && pass "and removes its file, so the server stays stopped" || fail "the agent file is left"
+        if kill -0 "$pid" 2>/dev/null; then fail "the server still runs after stop"; kill "$pid"; else pass "the server is gone after stop"; fi
+
+        out="$(STUB_REFUSE=1 mcp_start 2>&1)"; rc=$?
+        check     "a start launchd refuses fails" "1 mcp: launchd did not take the server" "$rc $out"
+        [ ! -e "$plist" ] && pass "and leaves no agent file" || fail "a refused start left its agent file"
+
+        # serve of a server the config has turned off, in a process
+        # launchd started under this label: the agent goes.
+        _write_plist
+        echo 1 > "$(_service_pidfile)"
+        : > "$tmp/launchctl-calls"
+        config 0 3300 token false
+        out="$(XPC_SERVICE_NAME="$label" mcp_serve 2>&1)"; rc=$?
+        check     "serve of a server that is off fails" "1"        "$rc"
+        check     "under launchd it says that it leaves" "removing the server from launchd" "$out"
+        check     "and boots its agent out" "bootout $domain/$label" "$(cat "$tmp/launchctl-calls")"
+        [ ! -e "$plist" ] && [ ! -e "$(_service_pidfile)" ] && pass "its agent file and pid file are gone" ||
+            fail "serve left the agent file or the pid file"
+        config 1 3300 token false
+        exit "$fails"
+    )
+    fails=$?
+}
+( native_cases; exit "$fails" )
+fails=$?
+
+echo "== serve is the native server's =="
+out="$(mcp_main serve 2>&1)"; rc=$?
+check     "serve in a tree of the container engine exits 2" "2" "$rc"
+check     "and names the command that tree has" "wealthdb mcp start" "$out"
 
 echo
 if [ "$fails" -gt 0 ]; then

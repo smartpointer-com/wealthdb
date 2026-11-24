@@ -21,6 +21,26 @@
 # `make test` also runs the shared collectorkit library's own suite
 # (test-collectorkit), which otherwise runs nowhere.
 
+# The tree's root: this file's folder. It is read before any include,
+# while this file is the last one make has read.
+ROOT_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+
+# The kind of engine a tree builds and runs is ./configure's choice,
+# recorded in config.mk with the tools it found: ENGINE (container, or
+# native), PYTHON, GO, JAVA, and PREFIX and BINDIR for `make install`.
+# Without a config.mk the engine is the container one, and no target
+# needs ./configure first. The wrappers read the same file
+# (shared/wrappers/engine-mode.sh), so make and a wrapper never disagree:
+# ENGINE and PREFIX are emptied first, so a variable of that name in the
+# environment sets neither. Only config.mk and the make command line do.
+ENGINE :=
+PREFIX :=
+-include config.mk
+ENGINE := $(or $(strip $(ENGINE)),container)
+ifeq ($(filter $(ENGINE),container native),)
+$(error config.mk: ENGINE=$(ENGINE) is no kind of engine; run ./configure again)
+endif
+
 # Auto-discover collectors: immediate subdirectories of collectors/.
 # The `/.` matches directories only (files like collectors/README.md
 # have no `.` entry), so non-collector files don't leak into the list.
@@ -30,7 +50,6 @@ COLLECTORS := $(sort $(notdir $(patsubst %/.,%,$(wildcard collectors/*/.))))
 # it for every wrapper. override: an empty WEALTHDB_IMAGE_TAG= on the
 # command line resolves like an unset one. Exported, so the wrappers the
 # targets call read the same tag.
-ROOT_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 override WEALTHDB_IMAGE_TAG := $(shell WEALTHDB_IMAGE_TAG='$(WEALTHDB_IMAGE_TAG)' sh -c \
 	'. "$$1/shared/wrappers/image-tag.sh" && wealthdb_image_tag "$$1"' sh '$(ROOT_DIR)')
 ifeq ($(WEALTHDB_IMAGE_TAG),)
@@ -61,10 +80,14 @@ WEALTHDB_GO   := wealthdb/wealthdb-go
 # and `make` may resolve a bare `python3` to it. Prefer a versioned
 # python3.X from PATH, then a Homebrew install, then plain python3.
 # Override explicitly:  make build-schwab-api PYTHON=python3.12
+# A PYTHON that ./configure recorded stands. ./configure tries the same
+# versions: a new one is added to both lists.
+ifneq ($(origin PYTHON),file)
 PYTHON := $(or \
-  $(shell for p in python3.14 python3.13 python3.12 python3.11 python3.10; do command -v $$p && break; done 2>/dev/null),\
+  $(shell for p in python3.15 python3.14 python3.13 python3.12 python3.11 python3.10; do command -v $$p && break; done 2>/dev/null),\
   $(firstword $(wildcard /opt/homebrew/bin/python3.1[0-9] /usr/local/bin/python3.1[0-9])),\
   python3)
+endif
 
 # ENSURE_VENV dir,label,target — create the venv at dir from $(PYTHON),
 # unless one on Python >=3.10 is there. label names what needs it in the
@@ -113,7 +136,7 @@ endef
         lint lint-go lint-python cleanall-lint \
         demo demo-roll demo-web demo-web-stop demo-mcp demo-mcp-stop test-demo \
         clean-demo site-shots site-images site-publish test-site \
-        clean-site cleanall-site
+        clean-site cleanall-site test-native cleanall-native
 
 # ---- aggregates --------------------------------------------------------
 
@@ -147,16 +170,62 @@ list-collectors:
 	@printf '%s\n' $(COLLECTORS)
 
 # ---- install -----------------------------------------------------------
-# Symlink the two top-level entry points onto PATH so they work from any
-# directory, without the repo dir on PATH:
+# Put the two top-level entry points on PATH so they work from any
+# directory:
 #   wealthdb         the gold-engine wrapper (wealthdb/wealthdb)
 #   wealthdb-collect the collector dispatcher (bin/wealthdb-collect)
 # BINDIR defaults to ~/.local/bin (the XDG-conventional user bin dir,
 # matching the config default under ~/.config); override e.g.
 # `make install BINDIR=/usr/local/bin`.
-# Per-collector wrappers stay in the repo (the dispatcher resolves them).
+#
+# Without a prefix, they are symlinks into this checkout, and the
+# per-collector wrappers stay in the repo (the dispatcher resolves
+# them). With ./configure --prefix=DIR, install copies what a run needs
+# to DIR/libexec/wealthdb, in the checkout's layout, and links the two
+# entry points from DIR/bin. The copy holds:
+#   - of INSTALL_TREE, in a git checkout, the files git tracks: nothing
+#     git ignores (a session file, a log, a download) leaves the tree.
+#     A tree with no .git, such as a source archive, has no such list,
+#     and gives every file but a browser's core file and a log;
+#   - INSTALL_BUILT: config.mk, .image-tag when there is one, and the
+#     engine of a native tree; and the dashboards' two files when they
+#     are there;
+#   - no test, venv or source of the engine (INSTALL_SKIP).
+# The copy runs the engine, both servers and the collectors in plain
+# Python that need no package. It builds nothing: a collector in a
+# container runs the image the checkout built, under the same tag, and
+# a collector that needs Python packages runs from the checkout only.
+# An install extracts beside the copy that is there, then takes its
+# place as a whole, so a file the tree dropped is gone from the copy.
+# uninstall removes the copy. In a native tree it first stops both
+# servers, when the command in BINDIR is this tree's: a server's
+# LaunchAgent runs that command, and would keep starting a program that
+# is gone.
 BINDIR ?= $(HOME)/.local/bin
+LIBEXEC = $(PREFIX)/libexec/wealthdb
+INSTALL_TREE  = LICENSE README.md bin/wealthdb-collect wealthdb/wealthdb \
+                mcp/mcp web shared/wrappers shared/collectorkit collectors demo skills
+INSTALL_BUILT = config.mk $(wildcard .image-tag) \
+                $(if $(filter native,$(ENGINE)),wealthdb/wealthdb-engine)
+INSTALL_SKIP  = .venv __pycache__ .pytest_cache tests test_* *.egg-info
+INSTALL_SKIP_UNTRACKED = core *.log
+# TAR_SKIP names: tar's option that leaves out each of names, at any depth.
+TAR_SKIP = $(foreach x,$(1),--exclude='$(x)')
 
+# STOP_SERVERS launcher: stop both servers when the command in BINDIR is
+# launcher. A stop that fails does not fail the uninstall.
+ifeq ($(ENGINE),native)
+define STOP_SERVERS
+if [ "$(BINDIR)/wealthdb" -ef "$(1)" ]; then \
+	"$(BINDIR)/wealthdb" mcp stop || true; \
+	"$(BINDIR)/wealthdb" web stop || true; \
+fi
+endef
+else
+STOP_SERVERS = :
+endif
+
+ifeq ($(PREFIX),)
 install: hooks
 	@mkdir -p "$(BINDIR)"
 	@ln -sf "$(ROOT_DIR)/wealthdb/wealthdb"     "$(BINDIR)/wealthdb"
@@ -167,12 +236,55 @@ install: hooks
 	  *) echo "  note: $(BINDIR) is not on your PATH — add it to run these bare";; esac
 
 uninstall:
+	@$(call STOP_SERVERS,$(ROOT_DIR)/wealthdb/wealthdb)
 	@rm -f "$(BINDIR)/wealthdb" "$(BINDIR)/wealthdb-collect"
 	@echo "  removed $(BINDIR)/wealthdb and $(BINDIR)/wealthdb-collect"
 	@if [ "$$(git config --get core.hooksPath)" = .githooks ]; then \
 		git config --unset core.hooksPath; \
 		echo "  removed the git hooks (core.hooksPath)"; \
 	fi
+else
+# The new copy is checked before it takes the old one's place, so a copy
+# that came out short (git or tar failed) replaces nothing.
+install:
+	@for f in $(INSTALL_BUILT) $(INSTALL_TREE); do \
+		[ -e "$$f" ] && continue; \
+		case "$$f" in \
+			config.mk) echo "install: config.mk is missing; run ./configure and make all first" >&2 ;; \
+			*) echo "install: $$f is missing; run make all first" >&2 ;; \
+		esac; \
+		exit 1; \
+	done
+	@mkdir -p "$(PREFIX)/libexec" "$(BINDIR)"
+	@rm -rf "$(PREFIX)/libexec/wealthdb.new"
+	@mkdir "$(PREFIX)/libexec/wealthdb.new"
+	@if [ -e .git ]; then \
+		{ git ls-files -z -- $(INSTALL_TREE) && \
+			printf '%s\0' $(INSTALL_BUILT) $(wildcard web/lib/*.jar); } | \
+			tar -cf - $(call TAR_SKIP,$(INSTALL_SKIP)) --null -T -; \
+	else \
+		tar -cf - $(call TAR_SKIP,$(INSTALL_SKIP) $(INSTALL_SKIP_UNTRACKED)) \
+			$(INSTALL_BUILT) $(INSTALL_TREE); \
+	fi | tar -C "$(PREFIX)/libexec/wealthdb.new" -xf -
+	@for f in $(INSTALL_BUILT) $(INSTALL_TREE); do \
+		[ -e "$(PREFIX)/libexec/wealthdb.new/$$f" ] || \
+			{ echo "install: the copy lacks $$f; $(LIBEXEC) is left as it was" >&2; exit 1; }; \
+	done
+	@rm -rf "$(PREFIX)/libexec/wealthdb.old"
+	@if [ -e "$(LIBEXEC)" ]; then mv "$(LIBEXEC)" "$(PREFIX)/libexec/wealthdb.old"; fi
+	@mv "$(PREFIX)/libexec/wealthdb.new" "$(LIBEXEC)"
+	@rm -rf "$(PREFIX)/libexec/wealthdb.old"
+	@ln -sf "$(LIBEXEC)/wealthdb/wealthdb"    "$(BINDIR)/wealthdb"
+	@ln -sf "$(LIBEXEC)/bin/wealthdb-collect" "$(BINDIR)/wealthdb-collect"
+	@echo "  installed $(LIBEXEC)"
+	@echo "  linked $(BINDIR)/wealthdb and $(BINDIR)/wealthdb-collect"
+
+uninstall:
+	@$(call STOP_SERVERS,$(LIBEXEC)/wealthdb/wealthdb)
+	@rm -f "$(BINDIR)/wealthdb" "$(BINDIR)/wealthdb-collect"
+	@rm -rf "$(PREFIX)/libexec/wealthdb" "$(PREFIX)/libexec/wealthdb.new" "$(PREFIX)/libexec/wealthdb.old"
+	@echo "  removed $(LIBEXEC), $(BINDIR)/wealthdb and $(BINDIR)/wealthdb-collect"
+endif
 
 # The repo's git hooks live in .githooks/, tracked, and git runs them once
 # core.hooksPath names that dir. The pre-commit hook runs the privacy check
@@ -316,13 +428,15 @@ camoufox-archive:
 
 # clean    = build artefacts (pycache, pytest and ruff caches, Go build cache,
 #            test-demo's scratch roots, the build locks)
-# cleanall = clean + the heavy outputs (docker images, venvs)
+# cleanall = clean + the heavy outputs (docker images, venvs, the native
+#            program, the dashboards' downloaded files, test-native's
+#            image and cache)
 clean:    clean-wealthdb clean-web clean-collectors clean-collectorkit clean-demo \
           clean-site clean-build-locks
 	@$(call CLEAN_PYCACHE,shared/update shared/pii)
 	@rm -rf .pytest_cache .ruff_cache
 cleanall: clean cleanall-wealthdb cleanall-web cleanall-collectors cleanall-bases \
-          cleanall-collectorkit cleanall-lint cleanall-site
+          cleanall-collectorkit cleanall-lint cleanall-site cleanall-native
 
 clean-collectors:    $(addprefix clean-,$(COLLECTORS))
 cleanall-collectors: $(addprefix cleanall-,$(COLLECTORS))
@@ -409,7 +523,8 @@ cleanall-lint:
 # (gofmt as `go run cmd/gofmt`, since the wrapper's entrypoint is `go`).
 # They read the bind-mounted source, so the image only has to exist — it is
 # built when missing, never rebuilt here, and linting never touches the
-# image the nightly runs.
+# image the nightly runs. A tree of the native engine runs both on the Go
+# that ./configure recorded.
 #
 # ruff comes from a venv of its own, pinned in shared/lint/requirements.txt
 # and refreshed by update-venvs; the rule set is /ruff.toml, which covers
@@ -421,7 +536,9 @@ lint: lint-go lint-python
 
 lint-go:
 	@echo "==> lint wealthdb (gofmt, go vet)"
+ifeq ($(ENGINE),container)
 	@docker image inspect wealthdb:$(TAG) >/dev/null 2>&1 || { $(call LOCKED,wealthdb) $(WEALTHDB) build; }
+endif
 	@out="$$($(WEALTHDB_GO) run cmd/gofmt -l .)" || exit 1; \
 	if [ -n "$$out" ]; then \
 		echo "    gofmt: not formatted:" >&2; echo "$$out" | sed 's/^/      /' >&2; exit 1; \
@@ -439,9 +556,10 @@ lint-python:
 
 # ---- wealthdb gold engine ---------------------------------------------
 
+# The engine: the image, or the native program wealthdb/wealthdb-engine.
 build-wealthdb:
 	@$(call LOCKED,wealthdb) \
-	echo "==> build wealthdb (docker image)"; \
+	echo "==> build wealthdb ($(if $(filter native,$(ENGINE)),native program,docker image))"; \
 	$(WEALTHDB) build
 
 # WEALTHDB_PKGS narrows the packages, and GO_TEST_FLAGS adds go test
@@ -480,8 +598,9 @@ clean-wealthdb:
 	@rm -rf $(GO_CACHE)/go-build
 
 cleanall-wealthdb: clean-wealthdb
-	@echo "==> cleanall wealthdb (image + go caches)"
+	@echo "==> cleanall wealthdb (image, native program, go caches)"
 	@docker image rm -f wealthdb:$(TAG) >/dev/null 2>&1 || true
+	@rm -f wealthdb/wealthdb-engine
 	@chmod -R u+w $(GO_CACHE) 2>/dev/null || true
 	@rm -rf $(GO_CACHE)
 
@@ -667,9 +786,50 @@ cleanall-site: clean-site
 	@echo "==> cleanall site (site tools venv)"
 	@rm -rf $(SITE_VENV)
 
+# ---- the native engine, tested in a container ---------------------------
+# `make test-native` runs a tree of the native engine through its tests
+# without installing Go, Java or anything else on this computer, and
+# without touching this checkout's own kind of engine. The image
+# wealthdb/native-test holds the tools (shared/images/native-test.Dockerfile),
+# at the versions the engine's, the dashboards' and the Python
+# collectors' Dockerfiles name. A run mounts the checkout read-only,
+# copies it, and inside the container: configures the copy with
+# --engine=native, builds it, runs NATIVE_SUITES of `make test`,
+# installs to a prefix, walks the installed tree end to end with both
+# servers started (shared/native/e2e.sh), and uninstalls. Go's caches
+# and the dashboards' two files are kept in NATIVE_CACHE between runs.
+# --init gives the container a first process that passes a Ctrl-C on,
+# so a run can be interrupted.
+NATIVE_TEST_IMAGE := wealthdb/native-test:$(TAG)
+NATIVE_CACHE := $(CACHE_ROOT)/native-test
+NATIVE_SUITES = wealthdb demo web mcp wrappers collectorkit pii
+
+test-native:
+	@echo "==> build $(NATIVE_TEST_IMAGE)"
+	@$(call LOCKED,native-test) \
+	docker build --quiet --provenance=false \
+		--build-arg GO_IMAGE="$$(wealthdb_from_ref wealthdb/Dockerfile)" \
+		--build-arg JAVA_IMAGE="$$(wealthdb_from_ref web/Dockerfile)" \
+		--build-arg PYTHON_IMAGE="$$(wealthdb_from_ref shared/images/base-python.Dockerfile)" \
+		-t "$(NATIVE_TEST_IMAGE)" - < shared/images/native-test.Dockerfile >/dev/null
+	@mkdir -p "$(NATIVE_CACHE)"
+	@echo "==> test the native engine in a container ($(NATIVE_SUITES), then end to end)"
+	@docker run --rm --init --pull=never --user "$$(id -u):$$(id -g)" \
+		-v "$(ROOT_DIR):/src:ro" -v "$(NATIVE_CACHE):/cache" \
+		"$(NATIVE_TEST_IMAGE)" /src/shared/native/test-in-container.sh $(NATIVE_SUITES)
+
+# The image, and the cache folder. Go's module cache is read-only, so it
+# is made writable first.
+cleanall-native:
+	@echo "==> cleanall native (test-native's image and cache)"
+	@docker image rm -f "$(NATIVE_TEST_IMAGE)" >/dev/null 2>&1 || true
+	@chmod -R u+w "$(NATIVE_CACHE)" 2>/dev/null || true
+	@rm -rf "$(NATIVE_CACHE)"
+
 # ---- mcp (optional MCP server) ----------------------------------------
-# The server is the engine image, so there is nothing to build; the
-# lifecycle script has pure-bash unit tests, no Docker needed.
+# The server is the engine itself, its image or the native program, so
+# there is nothing to build; the lifecycle script has pure-bash unit
+# tests, no Docker needed.
 test-mcp:
 	@echo "==> test mcp (mcp/test_mcp.sh)"
 	@mcp/test_mcp.sh
@@ -677,7 +837,7 @@ test-mcp:
 # ---- web (optional Metabase BI server) --------------------------------
 
 build-web:
-	@echo "==> build web (metabase image)"
+	@echo "==> build web ($(if $(filter native,$(ENGINE)),metabase and its driver,metabase image))"
 	@$(call LOCKED,web) web/web build
 
 # Pure-bash unit tests for the lifecycle script, then provision.py's
@@ -698,9 +858,9 @@ clean-web:
 	@$(call CLEAN_PYCACHE,web)
 
 cleanall-web: clean-web
-	@echo "==> cleanall web (image, test venv)"
+	@echo "==> cleanall web (image, downloaded files, test venv)"
 	@docker image rm -f wealthdb/metabase:$(TAG) >/dev/null 2>&1 || true
-	@rm -rf $(WEB_VENV)
+	@rm -rf web/lib $(WEB_VENV)
 
 # ---- host venvs ---------------------------------------------------------
 # VENVS is every host venv the Makefile installs, and <dir>_PIP what pip
@@ -840,14 +1000,6 @@ $(1)/bin/python -m pip install --upgrade pip setuptools wheel || exit 1; \
 $(1)/bin/python -m pip install --upgrade $(2) || exit 1
 endef
 
-# The base rebuild follows the Playwright bump in one recipe, so a
-# parallel make cannot build the base on the old tag.
-update: update-venvs update-wealthdb
-	@$(MAKE) --no-print-directory update-playwright
-	@$(MAKE) --no-print-directory update-bases
-	@echo ""
-	@echo "==> update done. Run \`make all\` to rebuild collector images on top of the refreshed bases."
-
 update-venvs:
 	@if $(foreach v,$(VENVS),[ ! -x $(v)/bin/python ] &&) true; then \
 		echo "==> no host venvs to update"; \
@@ -855,6 +1007,23 @@ update-venvs:
 	@$(foreach v,$(VENVS),if [ -x $(v)/bin/python ]; then \
 		$(call UPDATE_VENV,$(v),$($(v)_PIP)); \
 	fi;) true
+
+# A tree of the native engine has no image whose Go resolves the
+# modules. update-wealthdb refuses there, and so does update, as a whole
+# and before any layer moves.
+ifeq ($(ENGINE),native)
+update update-wealthdb:
+	@echo "$@: the image's Go resolves the modules, and this tree runs the native engine." >&2
+	@echo "$@: run make update in a tree of the container engine (./configure)." >&2
+	@exit 1
+else
+# The base rebuild follows the Playwright bump in one recipe, so a
+# parallel make cannot build the base on the old tag.
+update: update-venvs update-wealthdb
+	@$(MAKE) --no-print-directory update-playwright
+	@$(MAKE) --no-print-directory update-bases
+	@echo ""
+	@echo "==> update done. Run \`make all\` to rebuild collector images on top of the refreshed bases."
 
 # The module graph is refreshed by the IMAGE's Go toolchain, never the
 # host's: build first so the pinned toolchain exists, resolve against it,
@@ -871,6 +1040,7 @@ update-wealthdb:
 	$(WEALTHDB_GO) mod tidy
 	@echo "==> rebuild wealthdb image so the refreshed modules land in the build cache"
 	@$(call LOCKED,wealthdb) $(WEALTHDB) build
+endif
 
 # The newest vX.Y.Z-noble tag of mcr.microsoft.com/playwright/python,
 # with the Chrome major its Chromium reports, written to the base
@@ -890,14 +1060,18 @@ update-bases:
 help:
 	@echo "wealthdb build/test — run from the repo root:"
 	@echo ""
+	@echo "  ./configure             choose the kind of engine: --engine=native runs the engine,"
+	@echo "                          the dashboards and the MCP server as programs here, not as"
+	@echo "                          containers (wealthdb/docs/NATIVE.md). Optional."
 	@echo "  make all                build everything (engine + web + all collectors)"
 	@echo "  make test               test everything; the suites run together"
 	@echo "                          (SUITES=\"a b\" runs some of them)"
 	@echo "  make list-suites        the suites make test runs (list-collectors: the collectors)"
-	@echo "  make build-wealthdb     build the Go gold-engine image"
-	@echo "  make test-wealthdb      run go test ./... in the wealthdb container"
+	@echo "  make build-wealthdb     build the Go gold engine: its image, or the native program"
+	@echo "  make test-wealthdb      run go test ./... on the engine's toolchain"
 	@echo "                          (WEALTHDB_PKGS=, GO_TEST_FLAGS=)"
-	@echo "  make build-web          build the optional Metabase BI image"
+	@echo "  make build-web          build the optional Metabase BI image, or download Metabase"
+	@echo "                          for a native tree"
 	@echo "  make test-web           run the web unit tests (lifecycle script, provision.py)"
 	@echo "  make test-mcp           run the MCP server lifecycle unit tests"
 	@echo "  make build-collectors   build every collector"
@@ -905,6 +1079,9 @@ help:
 	@echo "  make test-collectorkit  run the shared collectorkit test suite"
 	@echo "  make test-wrappers      run the shared wrapper tests and the Playwright pin check"
 	@echo "  make test-pii           run the privacy check's unit tests"
+	@echo "  make test-native        test the native engine in a container that holds its tools:"
+	@echo "                          NATIVE_SUITES of make test, then an install and a walk end"
+	@echo "                          to end with both servers"
 	@echo "  make pii                privacy check of the unpushed commits and the index"
 	@echo "                          (PII_BASE=, default origin/main; SHOW=1 prints the values)"
 	@echo "  make pii-history        privacy check of every commit"
@@ -918,16 +1095,19 @@ help:
 	@echo "  make camoufox-archive   write the local Camoufox browser archive from the image"
 	@echo "                          wealthdb/base-camoufox:keep-<build> (CAMOUFOX_KEEP=)"
 	@echo ""
-	@echo "  make install            symlink wealthdb + wealthdb-collect into BINDIR (~/.local/bin)"
+	@echo "  make install            symlink wealthdb + wealthdb-collect into BINDIR (~/.local/bin);"
+	@echo "                          after ./configure --prefix=DIR, copy the tree under DIR"
 	@echo "  make hooks              run the privacy check and make lint on every commit (install runs it too)"
-	@echo "  make uninstall          remove those symlinks and the hooks"
+	@echo "  make uninstall          remove those symlinks and the hooks; with a prefix, the links"
+	@echo "                          and the copy. A native tree's servers are stopped first"
 	@echo ""
 	@echo "  make clean              remove build artefacts (pycache, caches, demo test roots,"
 	@echo "                          build locks)"
-	@echo "  make cleanall           also remove docker images + venvs"
+	@echo "  make cleanall           also remove docker images + venvs, the native program,"
+	@echo "                          the dashboards' downloaded files, test-native's cache"
 	@echo "  make clean-<name> / cleanall-<name>   (incl. -wealthdb, -web, -collectorkit,"
 	@echo "                          -collectors, -site; clean-demo, clean-build-locks,"
-	@echo "                          cleanall-bases, cleanall-lint)"
+	@echo "                          cleanall-bases, cleanall-lint, cleanall-native)"
 	@echo ""
 	@echo "  make demo               build the synthetic demo household (WEALTHDB_DEMO_ROOT,"
 	@echo "                          default .demo-root's first line, else ~/wealthdb-demo;"

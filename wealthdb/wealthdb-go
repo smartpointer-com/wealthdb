@@ -1,20 +1,46 @@
 #!/bin/sh
-# wealthdb-go — run a `go` subcommand inside the wealthdb container.
-# Argv is handed to `go` verbatim. See docs/DESIGN.md §12.5.
+# wealthdb-go — run a `go` subcommand on the engine's toolchain: in the
+# wealthdb container, or, in a tree of the native engine, on the Go that
+# ./configure recorded. Argv is handed to `go` verbatim. See
+# docs/DESIGN.md §12.5.
 #
-# The image's toolchain is the only Go that ever touches this module:
-# the repo is bind-mounted read-write, so `go get -u` / `go mod tidy`
-# write go.mod and go.sum from inside the container, and the image
-# ships GOTOOLCHAIN=local. A dependency needing a newer Go therefore
-# fails loudly here ("go.mod requires go >= X; GOTOOLCHAIN=local")
-# instead of raising the `go` directive past the version the Dockerfile
-# pins — which would leave the module graph unbuildable in the image
-# that has to build it. Whatever Go the host happens to have is
-# irrelevant to the result.
+# In a tree of the container engine, the image's toolchain is the only
+# Go that ever touches this module: the repo is bind-mounted read-write,
+# so `go get -u` / `go mod tidy` write go.mod and go.sum from inside the
+# container, and the image ships GOTOOLCHAIN=local. A dependency needing
+# a newer Go therefore fails loudly here ("go.mod requires go >= X;
+# GOTOOLCHAIN=local") instead of raising the `go` directive past the
+# version the Dockerfile pins — which would leave the module graph
+# unbuildable in the image that has to build it. Whatever Go the host
+# happens to have is irrelevant to the result.
 set -eu
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 . "$REPO/../shared/wrappers/image-tag.sh"
+. "$REPO/../shared/wrappers/engine-mode.sh"
+
+# Harnesses that read gold outside the repo (TestTaxonomyInvariants, and
+# TestReportCorpus or TestCanonicalDumpTool over a demo root; docs/DESIGN.md
+# §12.5) name it in these variables. Each is made an absolute path
+# against the caller's working directory, which is not the one a Go test
+# runs in.
+for var in WEALTHDB_GOLD_VERIFY WEALTHDB_GOLD_BEFORE; do
+    eval "val=\${$var:-}"
+    [ -n "$val" ] || continue
+    dir="$(cd "$(dirname "$val")" && pwd)" || { echo "wealthdb-go: $var: no directory for $val" >&2; exit 2; }
+    eval "$var=\$dir/\$(basename \"\$val\")"
+    export "$var"
+done
+
+# A tree configured for the native engine runs the Go that ./configure
+# recorded, here, with Go's own caches.
+MODE="$(wealthdb_engine_mode "$REPO/..")" || exit 2
+if [ "$MODE" = native ]; then
+    GO="$(wealthdb_tool "$REPO/.." GO go)"
+    cd "$REPO"
+    exec "$GO" "$@"
+fi
+
 wealthdb_export_image_tag "$REPO/.." || exit 2
 IMAGE="wealthdb:$WEALTHDB_IMAGE_TAG"
 # Go toolchain caches under the XDG cache dir, namespaced with the
@@ -23,20 +49,16 @@ CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/go"
 
 mkdir -p "$CACHE/go-build" "$CACHE/go-mod" "$CACHE/gopath"
 
-# Harnesses that read gold outside the repo (TestTaxonomyInvariants, and
-# TestReportCorpus or TestCanonicalDumpTool over a demo root; docs/DESIGN.md
-# §12.5) name it in these variables. Each is forwarded as an absolute path,
-# and its file's directory is mounted read-only at the same path. The
-# image and the go argv end the positional list; docker's own options go
-# in front of them.
+# Each harness variable that is set is forwarded, and its file's
+# directory is mounted read-only at the same path. The image and the go
+# argv end the positional list; docker's own options go in front of
+# them.
 set -- "$IMAGE" "$@"
 mounted=""
 for var in WEALTHDB_GOLD_VERIFY WEALTHDB_GOLD_BEFORE; do
     eval "val=\${$var:-}"
     [ -n "$val" ] || continue
-    dir="$(cd "$(dirname "$val")" && pwd)" || { echo "wealthdb-go: $var: no directory for $val" >&2; exit 2; }
-    eval "$var=\$dir/\$(basename \"\$val\")"
-    export "$var"
+    dir="$(dirname "$val")"
     set -- -e "$var" "$@"
     # One mount per directory: docker refuses a target mounted twice.
     case "|$mounted|" in

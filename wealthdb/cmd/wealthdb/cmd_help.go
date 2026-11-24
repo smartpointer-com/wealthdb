@@ -115,6 +115,9 @@ var commandHelps = []commandHelp{
 	{name: "mcp", args: "<verb>", hostSide: true, group: "other",
 		short: "manage the optional MCP server that serves the reports to AI agents (host-side wrapper)",
 		long:  "Manage the optional MCP server that serves the read-only reports to AI agents: start, stop, status, restart, logs, stdio, url. Served by the host-side `wealthdb` wrapper rather than this binary — see mcp/README.md."},
+	{name: "collect", args: "<source> <verb>", hostSide: true, group: "other",
+		short: "collect a bank's or a broker's data: login, download, load (host-side wrapper)",
+		long:  "Run a collector: `wealthdb collect <source> login`, then `download` and `load`; `wealthdb collect list` names the sources. The same command as `wealthdb-collect`. Served by the host-side `wealthdb` wrapper rather than this binary — see collectors/README.md."},
 	{name: "mcp-serve", args: "--stdio | --http ADDR", group: "other",
 		short: "the MCP server itself; 'wealthdb mcp' runs and manages it"},
 	{name: "version", group: "other", short: "print the wealthdb version"},
@@ -139,11 +142,14 @@ func hostSideCommand(name string) (commandHelp, bool) {
 // `config-env` emits resolved settings for the host-side scripts;
 // `web-materialize` rewrites the serving tables and the report tables
 // (returns, gains, exposure, yield) before the wrapper snapshots gold;
-// `refdata-wanted` prints the wanted list the refdata collector reads.
+// `refdata-wanted` prints the wanted list the refdata collector reads;
+// `hold-lock` runs a collector's container with the lock on its
+// database held (silverlock.go).
 var hiddenSubcommands = map[string]bool{
 	"web-materialize": true,
 	"config-env":      true,
 	"refdata-wanted":  true,
+	"hold-lock":       true,
 }
 
 func cmdHelp(ctx context.Context, g globalFlags, subargs []string, stdin io.Reader, stdout, stderr io.Writer) error {

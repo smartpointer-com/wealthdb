@@ -23,7 +23,8 @@ const defaultMissingGoldMsg = "gold database %q does not exist. Run 'wealthdb in
 // schema, so reads run beside one another and beside the MCP server.
 // A gold with a migration or a derived set still to apply is opened
 // read-write instead, which applies them, where the filesystem allows
-// it; with -r or an unwritable path it stays read-only. Returns a
+// it; with -r, an unwritable path or a database the other kind of
+// engine writes (goldengine.go) it stays read-only. Returns a
 // clear ExitMissingDB error when the DB doesn't exist yet.
 // missingDBMsg optionally overrides the ExitMissingDB message (a
 // format string taking the DB path) for commands whose wording
@@ -60,7 +61,7 @@ func openGoldForRead(g globalFlags, cfg *config.Config, missingDBMsg ...string) 
 		_ = db.Close()
 		return nil, errs.Wrap(errs.ExitOpenFailed, err)
 	}
-	if !pending {
+	if !pending || otherEngineWrites(cfg.GoldDB) {
 		return db, nil
 	}
 	if err := db.Close(); err != nil {

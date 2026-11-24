@@ -28,6 +28,9 @@ func TestMain(m *testing.M) {
 	if path := os.Getenv(holdGoldEnv); path != "" {
 		os.Exit(holdGoldReadOnly(path, os.Getenv(holdGoldForEnv)))
 	}
+	if os.Getenv(holdLockEnv) != "" {
+		os.Exit(runAsEngine())
+	}
 	os.Exit(m.Run())
 }
 

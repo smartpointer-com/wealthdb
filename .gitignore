@@ -41,6 +41,12 @@ collectors/**/core
 /.image-tag
 /.demo-root
 
+# What ./configure recorded for a checkout, and what a native build
+# makes: the engine, and the dashboards' two downloaded files.
+/config.mk
+/wealthdb/wealthdb-engine
+/web/lib/
+
 # The project page's screenshots: a GitHub release holds them, not git
 # (site/images.py, `make site-shots`).
 /site/public/shots/

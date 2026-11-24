@@ -135,6 +135,7 @@ wealthdb categorizations [spending|income] (RO) Dump the model-derived verdict s
 wealthdb mcp-serve --stdio | --http ADDR (RO) Serve the read-only reports to AI agents over MCP (mcp/DESIGN.md).
 wealthdb web <verb>                   (host)  The dashboards (web/README.md).
 wealthdb mcp <verb>                   (host)  The MCP server (mcp/README.md).
+wealthdb collect <source> <verb>      (host)  A collector: login, download, load (collectors/README.md).
 wealthdb version                      (RO)    Print the version: a release tag, or `<last release> nightly <commit>`.
 wealthdb help [<subcommand> | filter | benchmarks]
 ```
@@ -142,7 +143,7 @@ wealthdb help [<subcommand> | filter | benchmarks]
 `(host)` marks a command the host-side `wealthdb` wrapper serves, not
 the engine binary.
 
-Three hidden commands serve the host scripts and the collectors.
+Four hidden commands serve the host scripts and the collectors.
 `help` does not list them.
 
 - `config-env web|mcp|sources` prints one block of the resolved config
@@ -153,6 +154,8 @@ Three hidden commands serve the host scripts and the collectors.
   ([web/DESIGN.md §8](../../web/DESIGN.md#8-materialized-returns-gains-exposure-yield-and-serving-tables)).
 - `refdata-wanted` prints the wanted list
   ([adapters/refdata.md §5](adapters/refdata.md#5-the-wanted-list)).
+- `hold-lock FILE -- COMMAND` runs a collector's container with the
+  lock on its database held ([NATIVE.md](NATIVE.md)).
 
 `-a` means "all configured silver sources". `<id>` is the
 `silver_source_id` the config file defines.
@@ -833,9 +836,11 @@ crash.
 | Usage error: an unknown subcommand, a bad flag or argument | 2 | the `flag` package's own message; `wealthdb: unknown subcommand "<cmd>"` with the usage; or the subcommand's own `wealthdb: <cmd>: <reason>` |
 | RO subcommand on non-existent DB | 3 | `wealthdb: gold database '<path>' does not exist. Run 'wealthdb init' first (requires write access).` |
 | (retired) | 4 | not emitted: `init` on an existing gold file exits 0 (§4.3), and `config` edits an existing config (§4.9). The code stays reserved |
-| DuckDB open fails mid-run | 5 | the driver's own error, passed through whole and prefixed by the stage that hit it: `wealthdb: ping duckdb "<path>": <driver error>` (or `open duckdb` / `migrate gold`) |
+| DuckDB open fails mid-run | 5 | the driver's own error, passed through whole and prefixed by the stage that hit it: `wealthdb: open duckdb "<path>": <driver error>` (or `ping duckdb` / `migrate gold`) |
 | Gold written by a newer wealthdb, or at a newer schema | 5 | `wealthdb: gold "<path>": binary is older than the database's last writer` with both commits and the rebuild command, or `wealthdb: gold "<path>": binary is older than the database's last writer: the database is at schema <N>, and this binary knows schema <M> at most` |
 | Write subcommand while another holds the write mutex | 5 | `wealthdb: '<cmd>' cannot write '<path>': another wealthdb write command (load / reset / reload / compact / lots / categorize / categorizations --forget / resolve-symbols / web-materialize) is running and holds '<path>.wealthdb.lock'. Wait for it to finish and re-run.` |
+| Write subcommand on a database the other kind of engine writes | 5 | `wealthdb: '<cmd>' cannot write "<path>": the <kind> engine writes this database, and this is the <kind> engine.` with the way to move it ([NATIVE.md](NATIVE.md)) |
+| `load` or `reload` of a source whose collector is writing (native engine) | 1 | `<cmd>: <id>: its collector is writing its data right now; skipped. Load it again when the collector has finished`; the other sources load |
 | `load` of a loaded source whose silver file is missing | 1 | `wealthdb: <id>: its data file is missing: <path>`; with `-a`, that line per source on stderr, then `wealthdb: load: the data file of <id> is missing` |
 | Silver DB unreadable during load | 6 (reserved) | not emitted: a silver open failure returns a plain error and exits 1 |
 
@@ -4035,7 +4040,7 @@ wealthdb/
 ├── README.md                       — what the engine does, with examples
 ├── Dockerfile                      — single-stage; Go toolchain + binary in one image (ENTRYPOINT is the binary)
 ├── wealthdb                        — host-side wrapper around `docker run` (production binary)
-├── wealthdb-go                     — host-side wrapper around `docker run go ...` (§12.5)
+├── wealthdb-go                     — runs `go` on the engine's toolchain (§12.5)
 ├── wealthdb-test                   — thin alias: `wealthdb-go test ...` (§12.5)
 ├── go.mod / go.sum
 ├── docs/
@@ -4102,6 +4107,11 @@ wealthdb is an application, not a library.
 Single-stage Dockerfile, one image (`wealthdb:latest` by default),
 used unchanged for development, testing, and production. See §12.4
 for why there are no separate stages.
+
+This section is the container engine, which a tree builds and runs
+unless `./configure --engine=native` chose the other kind. The native
+engine is the same program built and run on the host, with the
+dashboards and the MCP server beside it: [NATIVE.md](NATIVE.md).
 
 The image tag replaces `latest` in every image name the tree builds,
 runs and removes: the engine, the collectors, their shared bases and
@@ -4424,7 +4434,9 @@ container geometry and runs any `go` subcommand in the image.
 `./wealthdb-go` runs `docker run --entrypoint go` on the engine image
 (§12). It mounts the repo and the Go caches under
 `${XDG_CACHE_HOME:-~/.cache}/wealthdb/go` at the same paths inside, and
-runs in the repo directory. The script is `wealthdb/wealthdb-go`.
+runs in the repo directory. The script is `wealthdb/wealthdb-go`. In a
+tree of the native engine it runs the Go that `./configure` recorded,
+with nothing mounted ([NATIVE.md](NATIVE.md)).
 
 #### The image toolchain owns the module graph
 

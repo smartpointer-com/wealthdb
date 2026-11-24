@@ -6,3 +6,8 @@
 # Source CSVs captured from a provider are bronze and live outside the
 # repo, so nothing here rewrites what a bank actually sent.
 *.csv text eol=lf
+
+# `git archive` writes the commit's hash and its description into this
+# file, so an engine built from a source archive states its version
+# (`wealthdb build` reads it where there is no .git).
+/wealthdb/.archive-version export-subst

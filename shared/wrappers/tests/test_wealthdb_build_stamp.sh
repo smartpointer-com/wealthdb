@@ -31,12 +31,13 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
 
-# The wrapper reads its image tag through the shared helper beside it.
+# The wrapper reads its image tag and its kind of engine through the
+# shared helpers beside it.
 HELPER="$(dirname "$WRAPPER")/../shared/wrappers/image-tag.sh"
 REPO="$TMP/repo"
 mkdir -p "$REPO/wealthdb" "$REPO/shared/wrappers"
 cp "$WRAPPER" "$REPO/wealthdb/wealthdb"
-cp "$HELPER" "$REPO/shared/wrappers/"
+cp "$HELPER" "$(dirname "$HELPER")/engine-mode.sh" "$REPO/shared/wrappers/"
 printf '# context\ndocs\n**/*.md\n' > "$REPO/wealthdb/.dockerignore"
 mkdir -p "$REPO/wealthdb/docs"
 echo "doc" > "$REPO/wealthdb/docs/DESIGN.md"

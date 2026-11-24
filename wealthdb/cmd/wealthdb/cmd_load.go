@@ -282,21 +282,14 @@ func (r loadRun) sources(ctx context.Context, ld *loader.Loader, specs []loader.
 		}
 	}
 	for _, spec := range specs {
-		if reset {
-			// Reset is best-effort per source: surface failures but
-			// keep going so '-a' isn't blocked by a single bad source.
-			if err := ld.Reset(ctx, spec.ID); err != nil {
-				fmt.Fprintf(r.stderr, "%s: %s: reset: %s\n", r.verb, spec.ID, err.Error())
-				failed(err)
-				continue
-			}
-		}
-		res, err := ld.Load(ctx, spec)
+		// Reset is best-effort per source: surface failures but keep
+		// going so '-a' isn't blocked by a single bad source.
+		res, stage, err := r.loadLocked(ctx, ld, spec, reset)
 		if err != nil {
-			if r.verb == "load" {
-				fmt.Fprintf(r.stderr, "load: %s: %s\n", spec.ID, err.Error())
+			if stage == "" || (stage == "load" && r.verb == "load") {
+				fmt.Fprintf(r.stderr, "%s: %s: %s\n", r.verb, spec.ID, err.Error())
 			} else {
-				fmt.Fprintf(r.stderr, "%s: %s: load: %s\n", r.verb, spec.ID, err.Error())
+				fmt.Fprintf(r.stderr, "%s: %s: %s: %s\n", r.verb, spec.ID, stage, err.Error())
 			}
 			failed(err)
 			continue
@@ -304,6 +297,31 @@ func (r loadRun) sources(ctx context.Context, ld *loader.Loader, specs []loader.
 		r.printResult(res, reset)
 	}
 	return firstErr
+}
+
+// loadLocked loads one source, after a reset when reset is set, with
+// its collectors' locks held, where a native engine takes them
+// (lockSilverForRead). The locks come first: a source whose collector
+// writes is skipped with its rows in gold as they were, never reset and
+// then left empty. stage names what failed, "reset" or "load", and is
+// empty for the locks.
+func (r loadRun) loadLocked(ctx context.Context, ld *loader.Loader, spec loader.SourceSpec, reset bool) (res *loader.LoadResult, stage string, err error) {
+	paths := []string{spec.Path}
+	for _, sub := range spec.Subsources {
+		paths = append(paths, sub.Path)
+	}
+	unlock, err := lockSilverForRead(ctx, paths, silverLockWait)
+	if err != nil {
+		return nil, "", err
+	}
+	defer unlock()
+	if reset {
+		if err := ld.Reset(ctx, spec.ID); err != nil {
+			return nil, "reset", err
+		}
+	}
+	res, err = ld.Load(ctx, spec)
+	return res, "load", err
 }
 
 // printResult prints one source's line: a load's, an in-place reload's

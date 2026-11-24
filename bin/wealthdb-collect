@@ -96,13 +96,16 @@ case "${1:-}" in
         ;;
     dedup)
         # Host-side sweep over every collector subtree. collectorkit lives at
-        # $REPO/shared/collectorkit; expose it on PYTHONPATH so host python3
+        # $REPO/shared/collectorkit; expose it on PYTHONPATH so the host
+        # Python (the one ./configure recorded, else python3 on PATH)
         # finds it with no install step (mirrors the wrappers' host-side
         # prune invocation). The clone/hardlink operations act on the host
         # filesystem, so this sweep never runs in a container.
         shift
+        # shellcheck disable=SC1091
+        . "$REPO/shared/wrappers/engine-mode.sh"
         exec env PYTHONPATH="$REPO/shared/collectorkit:${PYTHONPATH:-}" \
-            python3 -m collectorkit.dedup "$@"
+            "$(wealthdb_tool "$REPO" PYTHON python3)" -m collectorkit.dedup "$@"
         ;;
 esac
 

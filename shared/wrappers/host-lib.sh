@@ -33,22 +33,52 @@
 #
 # bash 3.2 compatibility: avoids namerefs / associative arrays.
 
+_HOST_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/envfile-lib.sh"
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/engine-mode.sh"
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/paths-lib.sh"
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/setup-lib.sh"
 
-# host_python — the interpreter to run the collector's .py with. Prefers the
-# collector's own .venv (built by `make build-<name>`); falls back to a
-# system python3 for an un-built checkout.
+# host_python — the interpreter to run the collector's .py with: the
+# collector's own .venv (built by `make build-<name>`), else the Python
+# ./configure recorded, else the one on PATH.
 host_python() {
     if [[ -x "$HERE/.venv/bin/python" ]]; then
         echo "$HERE/.venv/bin/python"
     else
-        command -v python3 || command -v python
+        wealthdb_tool "$_HOST_ROOT" PYTHON "$(command -v python3 || command -v python)"
     fi
+}
+
+# host_needs_packages — does the collector's requirements.txt name a
+# package its scripts import? pytest is there for the tests alone.
+host_needs_packages() {
+    [[ -f "$HERE/requirements.txt" ]] || return 1
+    grep -vE '^[[:space:]]*(#|$)' "$HERE/requirements.txt" | grep -qvE '^[[:space:]]*pytest([^A-Za-z0-9_.-]|$)'
+}
+
+# host_without_venv — get a collector with no .venv ready to run on a
+# bare interpreter. One that needs only the standard library runs as it
+# is, with the shared library found in the tree; a copy installed with a
+# prefix has no .venv. One that needs packages stops here, where its
+# first import would have failed. In a checkout it says how to build
+# them. An installed copy has no Makefile and builds nothing, so there
+# it names the checkout.
+host_without_venv() {
+    [[ -x "$HERE/.venv/bin/python" ]] && return 0
+    if host_needs_packages; then
+        if [[ -f "$_HOST_ROOT/Makefile" ]]; then
+            echo "$NAME: its Python packages are not installed. In a checkout, run: make build-$NAME" >&2
+        else
+            echo "$NAME: its Python packages are not installed, and an installed copy has none. Run this collector from a checkout." >&2
+        fi
+        exit 2
+    fi
+    export PYTHONPATH="$_HOST_ROOT/shared/collectorkit${PYTHONPATH:+:$PYTHONPATH}"
 }
 
 # host_resolve_dirs VERB [args...] — resolve the secrets / data / silver
@@ -115,6 +145,7 @@ host_run() {
     local py script="$1"
     shift
     py="$(host_python)"
+    host_without_venv
     setup_exec "$py" "$HERE/$script" "$@" ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
 }
 

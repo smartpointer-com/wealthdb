@@ -1,5 +1,5 @@
 #!/bin/sh
-# wealthdb-test — run `go test` inside the wealthdb container.
+# wealthdb-test — run `go test` on the engine's toolchain (wealthdb-go).
 # Argv is handed to `go test` verbatim. See docs/DESIGN.md §12.5.
 # Thin alias over wealthdb-go, which owns the container geometry.
 set -eu

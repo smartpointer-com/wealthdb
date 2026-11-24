@@ -90,4 +90,36 @@ check "login --check runs the probe" \
     "$(col login --check --secrets-dir "$TMP/s" | tr '\n' ' ')" \
     "$TMP/col/probe.py --key $TMP/s/k --check "
 
+echo "a collector with no .venv:"
+# The interpreter is the one ./configure recorded: a stub that prints
+# the folder it would import the shared library from, then its argv.
+rm -rf "$TMP/col/.venv"
+printf '#!/bin/sh\necho "path=$PYTHONPATH"\nprintf "%%s\\n" "$@"\n' > "$TMP/py"
+chmod +x "$TMP/py"
+printf 'ENGINE=native\nPYTHON=%s\n' "$TMP/py" > "$TMP/native.mk"
+ROOT="$(cd "$HERE/../../.." && pwd)"
+printf '# the tests\npytest>=8,<9\n' > "$TMP/col/requirements.txt"
+out="$(WEALTHDB_BUILD_CONFIG="$TMP/native.mk" PYTHONPATH= col load --data-dir "$TMP/d" | tr '\n' ' ')"
+check "one that needs the standard library alone runs on the recorded Python, with the shared library found" \
+    "$out" "path=$ROOT/shared/collectorkit $TMP/col/load.py --bronze-dir $TMP/d "
+out="$(WEALTHDB_BUILD_CONFIG="$TMP/native.mk" PYTHONPATH=/mine col load --data-dir "$TMP/d" | sed -n '1p')"
+check "a PYTHONPATH that is set comes after the shared library" "$out" "path=$ROOT/shared/collectorkit:/mine"
+printf 'pytest>=8,<9\nparamiko>=4.0\n' > "$TMP/col/requirements.txt"
+out="$(WEALTHDB_BUILD_CONFIG="$TMP/native.mk" col load --data-dir "$TMP/d")"
+check "one that needs a package says how to build it" "$out" \
+    "col: its Python packages are not installed. In a checkout, run: make build-col"
+WEALTHDB_BUILD_CONFIG="$TMP/native.mk" col load >/dev/null; check "and exits 2" "$?" 2
+# An installed copy: the same wrapper on helpers in a tree with no Makefile.
+mkdir -p "$TMP/copy/shared/wrappers" "$TMP/copy/collectors"
+cp "$HERE"/../*.sh "$TMP/copy/shared/wrappers/"
+cp -R "$TMP/col" "$TMP/copy/collectors/col"
+sed "s#$HERE/../host-lib.sh#$TMP/copy/shared/wrappers/host-lib.sh#" "$TMP/col/col" > "$TMP/copy/collectors/col/col"
+out="$(WEALTHDB_BUILD_CONFIG="$TMP/native.mk" "$TMP/copy/collectors/col/col" load --data-dir "$TMP/d" 2>&1)"
+check "in an installed copy it names the checkout, and no make target" "$out" \
+    "col: its Python packages are not installed, and an installed copy has none. Run this collector from a checkout."
+WEALTHDB_BUILD_CONFIG="$TMP/native.mk" "$TMP/copy/collectors/col/col" load >/dev/null 2>&1; check "and exits 2" "$?" 2
+rm -f "$TMP/col/requirements.txt"
+out="$(WEALTHDB_BUILD_CONFIG="$TMP/native.mk" col load --data-dir "$TMP/d" | sed -n '2p')"
+check "one with no requirements file runs" "$out" "$TMP/col/load.py"
+
 summary "host helper tests"

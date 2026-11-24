@@ -1,8 +1,22 @@
 #!/bin/sh
-# wealthdb — host-side wrapper around `docker run wealthdb:<tag>`, the
-# tag shared/wrappers/image-tag.sh resolves (latest by default).
-# See docs/DESIGN.md §12.2 for the mount geometry.
+# wealthdb — the engine's launcher. A tree runs one kind of engine, the
+# one ./configure recorded (shared/wrappers/engine-mode.sh):
+#   container  `docker run wealthdb:<tag>`, the tag
+#              shared/wrappers/image-tag.sh resolves (latest by default).
+#              See docs/DESIGN.md §12.2 for the mount geometry.
+#   native     the program wealthdb-engine beside this script, built by
+#              `wealthdb build`.
 set -eu
+
+# The command this run was started by, as an absolute path: the name on
+# PATH, which stays in place when a newer version is installed. A
+# server's LaunchAgent runs it (shared/wrappers/service-lib.sh).
+case "$0" in
+    /*)  entry="$0" ;;
+    */*) entry="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")" ;;
+    *)   entry="$(command -v "$0" 2>/dev/null || printf '%s' "$0")" ;;
+esac
+export WEALTHDB_ENTRY="${WEALTHDB_ENTRY:-$entry}"
 
 # Resolve $0 through symlinks (macOS has no `readlink -f`) so this
 # works when run via the ~/.local/bin/wealthdb symlink `make install` creates
@@ -17,17 +31,22 @@ while [ -L "$SELF" ]; do
     esac
 done
 REPO="$(cd "$(dirname "$SELF")" && pwd)"
-. "$REPO/../shared/wrappers/image-tag.sh"
-wealthdb_export_image_tag "$REPO/.." || exit 2
+ROOT="$(cd "$REPO/.." && pwd)"
+. "$ROOT/shared/wrappers/image-tag.sh"
+. "$ROOT/shared/wrappers/engine-mode.sh"
+wealthdb_export_image_tag "$ROOT" || exit 2
 IMAGE="wealthdb:$WEALTHDB_IMAGE_TAG"
+MODE="$(wealthdb_engine_mode "$ROOT")" || exit 2
 
-# `build`, `web` and `mcp` are wrapper-handled host-side, not container
-# subcommands. `build` runs `docker build`, or skips it when the image
-# was built from the same inputs and no extra argument is given. `web`
-# and `mcp` delegate to the web/ and mcp/ components' lifecycle
-# scripts. Docker isn't reachable from inside the engine container, so
-# the Metabase server and the MCP server are orchestrated on the host.
-# (web/ and mcp/ are siblings of this inner wealthdb/ dir.)
+# `build`, `web`, `mcp` and `collect` are handled here, not by the
+# engine. `build` builds the engine: the image with `docker build`, which
+# it skips when the image was built from the same inputs and no extra
+# argument is given, or the native program with `go build`. `web` and
+# `mcp` delegate to the web/ and mcp/ components' lifecycle scripts, and
+# `collect` to the collectors' dispatcher. Docker isn't reachable from
+# inside the engine container, so the servers and the collectors are
+# orchestrated on the host. (web/, mcp/ and bin/ are siblings of this
+# inner wealthdb/ dir.)
 case "${1:-}" in
     build)
         shift
@@ -38,8 +57,28 @@ case "${1:-}" in
         # engine tree has changes. What .dockerignore leaves out of the
         # build context is no change. Outside a git checkout all three
         # stay empty, and the binary never claims a release.
-        tag="" base="" commit=""
-        if git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+        #
+        # An archive git made of a commit states its own version, and is
+        # read first: .archive-version then holds that commit's hash and
+        # its description, which git wrote in (export-subst,
+        # .gitattributes). A git repository around the unpacked archive
+        # is another project's, and is not asked. A checkout holds the
+        # file as git did not fill it in, which is no hash.
+        tag="" base="" commit="" from_archive=0
+        archived="$(sed -n 's/^commit: //p' "$REPO/.archive-version" 2>/dev/null || true)"
+        case "$archived" in
+            *[!0-9a-f]* | '') ;;
+            *)
+                from_archive=1
+                commit="$(printf '%s' "$archived" | cut -c1-7)"
+                desc="$(sed -n 's/^describe: //p' "$REPO/.archive-version")"
+                case "$desc" in
+                    v[0-9]*-[0-9]*-g*) base="${desc%-*-g*}" ;;
+                    v[0-9]*) tag="$desc" base="$desc" ;;
+                esac
+                ;;
+        esac
+        if [ "$from_archive" = 0 ] && git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
             commit="$(git -C "$REPO" rev-parse --short=7 HEAD)"
             base="$(git -C "$REPO" describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
             # A subshell, so the pathspecs leave the build's arguments alone.
@@ -57,6 +96,15 @@ case "${1:-}" in
             else
                 tag="$(git -C "$REPO" describe --tags --exact-match --match 'v[0-9]*' HEAD 2>/dev/null || true)"
             fi
+        fi
+        v=github.com/smartpointer-com/wealthdb/wealthdb/internal/version
+        if [ "$MODE" = native ]; then
+            # Go's own build cache makes an unchanged build a relink.
+            GO="$(wealthdb_tool "$ROOT" GO go)"
+            cd "$REPO"
+            exec "$GO" build \
+                -ldflags "-X $v.Tag=$tag -X $v.Base=$base -X $v.Commit=$commit" \
+                -o "$(wealthdb_native_engine "$ROOT")" "$@" ./cmd/wealthdb
         fi
         # The inputs: this tree less what .dockerignore leaves out, the
         # stamp and the base image's id. A hash that fails (no python3 on
@@ -77,11 +125,15 @@ case "${1:-}" in
         ;;
     web)
         shift
-        exec "$(cd "$REPO/.." && pwd)/web/web" "$@"
+        exec "$ROOT/web/web" "$@"
         ;;
     mcp)
         shift
-        exec "$(cd "$REPO/.." && pwd)/mcp/mcp" "$@"
+        exec "$ROOT/mcp/mcp" "$@"
+        ;;
+    collect)
+        shift
+        exec "$ROOT/bin/wealthdb-collect" "$@"
         ;;
 esac
 
@@ -154,22 +206,37 @@ if [ ! -d "$(dirname "$CFG_TARGET")" ]; then
 fi
 CFG_TARGET_DIR="$(cd "$(dirname "$CFG_TARGET")" && pwd)"
 
+# `config` gets the host's locale, whose region guesses the currency.
+locale=
+if [ "$sub" = config ]; then
+    if [ "$(uname -s)" = Darwin ]; then
+        locale="$(defaults read -g AppleLocale 2>/dev/null || true)"
+    fi
+    locale="${locale:-${LC_ALL:-${LC_MONETARY:-${LANG:-}}}}"
+fi
+
+# The native engine reads the same files under the same names, with
+# nothing to mount. It is told the paths the container engine is told,
+# and its kind, which it holds a database to (claimGoldForEngine).
+if [ "$MODE" = native ]; then
+    wealthdb_require_native_engine wealthdb "$ROOT" || exit 2
+    export WEALTHDB_DATA_ROOT="$DATA_ROOT" XDG_CONFIG_HOME="$XDG_CFG" WEALTHDB_ENGINE=native
+    if [ -n "$ENV_CFG" ]; then export WEALTHDB_CONFIG="$ENV_CFG"; fi
+    if [ "$sub" = config ]; then export WEALTHDB_LOCALE="$locale"; fi
+    exec "$(wealthdb_native_engine "$ROOT")" "$@"
+fi
+
 # Every subcommand but `config` mounts the config FILE (Docker follows a
 # link to its file), made empty when there is none: Docker would make a
 # folder in its place. `config` saves by renaming a temporary file over
 # the config, which a file mount refuses, so it mounts the config's
 # folder instead, and the folder of the file a link names. It creates
 # the file itself, so `config validate` on a path with no file leaves
-# none. It also gets the host's locale, whose region guesses the
-# currency, and TERM, so a terminal that cannot do raw mode gets the
-# numbered menu.
+# none. It also gets TERM, so a terminal that cannot do raw mode gets
+# the numbered menu.
 CFG_MOUNT="$CFG:$CFG" MOUNTS="$CFG"
 if [ "$sub" = config ]; then
     CFG_MOUNT="$CFG_DIR:$CFG_DIR" MOUNTS="$CFG_DIR"
-    if [ "$(uname -s)" = Darwin ]; then
-        locale="$(defaults read -g AppleLocale 2>/dev/null || true)"
-    fi
-    locale="${locale:-${LC_ALL:-${LC_MONETARY:-${LANG:-}}}}"
     set -- -e WEALTHDB_LOCALE="$locale" -e TERM="${TERM:-dumb}" "$IMAGE" "$@"
     if [ "$CFG_TARGET_DIR" != "$(cd "$CFG_DIR" && pwd)" ]; then
         set -- -v "$CFG_TARGET_DIR:$CFG_TARGET_DIR" "$@"
@@ -197,6 +264,9 @@ fi
 # (checkSharedMounts): such a mount takes what is saved into the machine
 # alone. ':' separates them; a mount path cannot hold one.
 set -- -e WEALTHDB_HOST_OS="$(uname -s)" -e WEALTHDB_MOUNTS="$MOUNTS:$DATA_ROOT" "$@"
+
+# The engine's kind, which it holds a database to (claimGoldForEngine).
+set -- -e WEALTHDB_ENGINE=container "$@"
 
 # Allocate a TTY only when the host shell has one. `wealthdb config`
 # requires this; the other subcommands work either way. Cron / piped

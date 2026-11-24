@@ -26,9 +26,38 @@ chmod +x "$tmp/engine-stub"
 export WEALTHDB_BIN="$tmp/engine-stub"
 # The knobs resolve under $tmp, never in a real web data directory.
 export WEALTHDB_WEB_DATA_DIR="$tmp/web-data"
+# Nothing here reads a real env file, or reaches launchd or a real
+# Docker. The secrets folder is an empty one under $tmp, and the servers
+# are plain processes. `launchctl` and `docker` on PATH are stubs that
+# record their calls: this docker has a container only with
+# STUB_CONTAINER set. A test that needs more of Docker defines a
+# function of its own.
+mkdir -p "$tmp/secrets" "$tmp/bin"
+export WEALTHDB_SECRETS_DIR="$tmp/secrets" WEALTHDB_NO_LAUNCHD=1
+cat > "$tmp/bin/launchctl" <<EOF
+#!/bin/sh
+echo "\$*" >> "$tmp/launchctl-calls"
+EOF
+cat > "$tmp/bin/docker" <<EOF
+#!/bin/sh
+echo "\$*" >> "$tmp/docker-stub-calls"
+case "\$1 \$2" in
+    "container inspect") [ -n "\${STUB_CONTAINER:-}" ] || exit 1
+                         [ "\$3" != -f ] || printf '%s\n' "\${STUB_MOUNT:-/elsewhere/web/metabase}" ;;
+esac
+exit 0
+EOF
+chmod +x "$tmp/bin/launchctl" "$tmp/bin/docker"
+export PATH="$tmp/bin:$PATH"
 
 # shellcheck source=/dev/null
+# The script under test runs the container engine, whatever ./configure
+# recorded for this checkout. The native cases name a record of their own.
+export WEALTHDB_BUILD_CONFIG=/dev/null
 source "$HERE/web"
+# The stubs below stand in for `python3`, whatever Python a ./configure
+# of this checkout recorded.
+PYTHON3=python3
 
 fails=0
 pass()  { printf '  ok   %s\n' "$1"; }
@@ -433,14 +462,14 @@ for case in "1 0" "0 0"; do
     out="$(swap_refresh $case)"
     check "provision ($case): the container is stopped" "STOPPED" "$out"
     check "...and started"                 "STARTED" "$out"
-    check "...saying why"                  "did not confirm it reads the new snapshot" "$out"
+    check "...saying why"                  "did not confirm it reads the new snapshot; recreating $CONTAINER" "$out"
     check_not "...leaving the login to start's banner" "web: http://127.0.0.1:3100/" "$out"
 done
 echo "== a serving name that cannot be linked keeps the running container =="
 out="$(swap_refresh link 0)"
 check_not "the container is not stopped" "STOPPED" "$out"
 check_not "...nor started"               "STARTED" "$out"
-check     "...saying what serves"        "keeps serving the previous snapshot" "$out"
+check     "...saying what serves"        "web: $CONTAINER keeps serving the previous snapshot." "$out"
 check     "...and refresh fails"         "rc=1"    "$out"
 check_eq  "...with the marker on the old snapshot, so the next refresh tries again" \
           "$(cat "$tmp/swap/wealthdb.db.served")" \
@@ -829,6 +858,255 @@ check_eq "the start banner names every base dashboard, in DASHBOARDS' order" "$w
 check_eq "web/web's provision statuses are provision.py's" \
     "$("$prov_python" -c 'import sys; sys.path.insert(0, sys.argv[1]); import provision as p; print(p.EXIT_STALE_SNAPSHOT, p.EXIT_UNVERIFIED)' "$HERE" 2>&1)" \
     "$PROV_STALE_SNAPSHOT $PROV_UNVERIFIED"
+
+# ---- the native server -------------------------------------------------
+# The same script in a tree of the native engine: web is sourced again
+# with a record that says so, in a subshell, with a home of its own and
+# launchd out of reach, so that nothing is started on this computer.
+native_cases() {
+    printf 'ENGINE=native\nJAVA=%s\n' "$tmp/java" > "$tmp/native.mk"
+    export WEALTHDB_BUILD_CONFIG="$tmp/native.mk" WEALTHDB_NO_LAUNCHD=1 HOME="$tmp/home"
+    # shellcheck source=/dev/null
+    source "$HERE/web"
+    PYTHON3=python3
+    WEALTHDB_WEB_DATA_DIR="$tmp/nweb" _resolve_knobs
+    LIB_DIR="$tmp/nlib" MB_JAR="$tmp/nlib/metabase.jar" DRIVER_JAR="$tmp/nlib/duckdb.metabase-driver.jar"
+
+    echo "== native: Metabase's two files, held to their pins =="
+    check_re  "the Dockerfile pins a Metabase version"  '^v[0-9.]+$'      "$(_dockerfile_arg MB_VERSION)"
+    check_re  "and its checksum"                        '^[0-9a-f]{64}$'  "$(_dockerfile_arg MB_SHA256)"
+    check_re  "the driver's address"                    '^https://'       "$(_dockerfile_arg DRIVER_URL)"
+    check     "(the driver's releases)" "metabase_duckdb_driver/releases/download" "$(_dockerfile_arg DRIVER_URL)"
+    check_re  "and the driver's checksum"               '^[0-9a-f]{64}$'  "$(_dockerfile_arg DRIVER_SHA256)"
+    # The two downloads are the image's: the address of the Dockerfile's
+    # ADD line with the pinned version in it, and the pinned checksums.
+    (
+        _fetch_pinned() { printf '%s\n' "$2 $3 $4" >> "$tmp/fetched"; }
+        _fetch_metabase
+    )
+    add="$(sed -n 's/^ADD .*\(https:[^ ]*metabase\.jar\) .*/\1/p' "$HERE/Dockerfile")"
+    check_eq  "Metabase comes from the address the image adds it from, to its pin" \
+        "${add/\$\{MB_VERSION\}/$(_dockerfile_arg MB_VERSION)} $(_dockerfile_arg MB_SHA256) $MB_JAR" "$(sed -n '1p' "$tmp/fetched")"
+    check_eq  "and the driver from its address, to its pin" \
+        "$(_dockerfile_arg DRIVER_URL) $(_dockerfile_arg DRIVER_SHA256) $DRIVER_JAR" "$(sed -n '2p' "$tmp/fetched")"
+    printf 'a jar\n' > "$tmp/src.jar"
+    sum="$(_sha256 "$tmp/src.jar")"
+    out="$(_fetch_pinned "the file" "file://$tmp/src.jar" "$sum" "$tmp/nlib/one.jar" 2>&1)"; rc=$?
+    check_eq  "a download that matches its pin is kept" "0 a jar" "$rc $(cat "$tmp/nlib/one.jar" 2>/dev/null)"
+    check_eq  "with its checksum beside it" "$sum" "$(cat "$tmp/nlib/one.jar.sha256" 2>/dev/null)"
+    rm -f "$tmp/src.jar"
+    out="$(_fetch_pinned "the file" "file://$tmp/src.jar" "$sum" "$tmp/nlib/one.jar" 2>&1)"; rc=$?
+    check_eq  "a file that passed is not downloaded again" "0" "$rc"
+    printf 'another jar\n' > "$tmp/src.jar"
+    out="$(_fetch_pinned "the file" "file://$tmp/src.jar" "$sum" "$tmp/nlib/two.jar" 2>&1)"; rc=$?
+    check_eq  "a download that does not match its pin fails" "1" "$rc"
+    check     "and says which checksum it has" "has the checksum $(_sha256 "$tmp/src.jar")" "$out"
+    [ ! -e "$tmp/nlib/two.jar" ] && pass "and leaves no file" || fail "a file with a wrong checksum was kept"
+    out="$(_fetch_pinned "the file" "file://$tmp/none.jar" "$sum" "$tmp/nlib/three.jar" 2>&1)"; rc=$?
+    check_eq  "a download that fails, fails" "1" "$rc"
+    # A download that is cut off: a curl that writes part of the file,
+    # then ends the shell that runs it.
+    out="$(
+        curl() { while [ "$1" != -o ]; do shift; done; printf 'part' > "$2"; exit 130; }
+        _fetch_pinned "the file" "file://$tmp/src.jar" "$sum" "$tmp/nlib/four.jar" 2>&1
+    )"
+    check_eq  "a download that is cut off leaves no file behind" "one.jar one.jar.sha256" "$(ls "$tmp/nlib" | tr '\n' ' ' | sed 's/ $//')"
+    : > "$tmp/nlib/five.jar"
+    out="$(_fetch_pinned "the file" "file://$tmp/src.jar" "" "$tmp/nlib/five.jar" 2>&1)"; rc=$?
+    check_eq  "a pin with no checksum is refused, with a file in place too" "1" "$rc"
+    check     "and the message says what is missing" "web/Dockerfile pins no checksum for the file" "$out"
+    rm -f "$tmp/nlib/five.jar"
+
+    echo "== native: what the server needs =="
+    out="$(_require_native_web 2>&1)"; rc=$?
+    check_eq  "no Java: refused" "1" "$rc"
+    check     "and says what to install" "need Java 21 or later" "$out"
+    printf '#!/bin/sh\n{ printf "%%s\\n" "$@"; env | grep -E "^(MB_|TZ=|MALLOC_)" | sort; echo "cwd=$(pwd)"; echo "pid=$$"; } > "%s"\n' \
+        "$tmp/java-ran" > "$tmp/java"
+    chmod +x "$tmp/java"
+    WEALTHDB_WEB_DATA_DIR="$tmp/nweb" _resolve_knobs
+    LIB_DIR="$tmp/nlib" MB_JAR="$tmp/nlib/metabase.jar" DRIVER_JAR="$tmp/nlib/duckdb.metabase-driver.jar"
+    out="$(_require_native_web 2>&1)"; rc=$?
+    check     "no files yet: names the command that downloads them" "Run: wealthdb web build" "$out"
+    : > "$MB_JAR"; : > "$DRIVER_JAR"
+    if _require_native_web 2>/dev/null; then pass "Java and both files: ready"; else fail "Java and both files: not ready"; fi
+
+    echo "== native: the paths provisioning gives Metabase =="
+    mkdir -p "$tmp/nweb/snapshot" && : > "$tmp/nweb/snapshot/wealthdb.db"
+    (
+        python3() {
+            case "$1" in *provision.py) ;; *) command python3 "$@"; return ;; esac
+            printf '%s\n' "$@" > "$tmp/nprov-args"
+        }
+        PORT=3111 BIND=both WEALTHDB_WEB_ADMIN_PASSWORD="Synthetic-pw-1!"
+        _provision 2>/dev/null
+    )
+    nargs="$(tr '\n' ' ' < "$tmp/nprov-args" 2>/dev/null)"
+    nname="$(_serving_name)"
+    check     "the snapshot under its own path" "--gold-path $tmp/nweb/snapshot/$nname " "$nargs"
+    check     "the spill directory under its own path" "--spill-dir $tmp/nweb/spill " "$nargs"
+    check     "Metabase on loopback" "--base http://127.0.0.1:3111 " "$nargs"
+
+    echo "== native: lifecycle without a server =="
+    CONTAINER=wealthdb-metabase
+    check_eq  "the label" "com.smartpointer.wealthdb.metabase" "$(_service_label)"
+    printf 'WEALTHDB_WEB_ENABLED=1\nWEALTHDB_WEB_PORT=3111\nWEALTHDB_GOLD_DB=%s\n' "'$tmp/gold.db'" > "$tmp/engine-out"
+    out="$(web_status 2>&1)"
+    check     "status: not running" "web: not running" "$out"
+    check_not "status names no container" "container" "$out"
+    out="$(web_stop 2>&1)"
+    check     "stop: nothing to stop" "web: no server to stop" "$out"
+    out="$(PORT=3111 BIND=v6 _base_url)"
+    check_eq  "v6 → the IPv6 loopback address" "http://[::1]:3111" "$out"
+    out="$(PORT=3111 BIND=both PROV_LOGIN= _start_banner 2>&1)"
+    check     "the banner says where to open the dashboards" "web: the dashboards are up → http://127.0.0.1:3111/" "$out"
+    check_not "a plain process promises no start at login" "at login" "$out"
+
+    echo "== native: a refresh names the server, not a container =="
+    out="$(swap_refresh 1 0)"
+    check     "an unconfirmed swap restarts the server" "did not confirm it reads the new snapshot; restarting the server" "$out"
+    out="$(swap_refresh link 0)"
+    check     "a serving name that cannot be linked keeps the server" "web: the server keeps serving the previous snapshot." "$out"
+
+    echo "== native: stop ends a container the other engine left =="
+    : > "$tmp/docker-stub-calls"
+    out="$(STUB_CONTAINER=1 STUB_MOUNT="$H2_DIR" web_stop 2>&1)"
+    check     "stop says which container it stopped" "web: stopped container wealthdb-metabase, the container engine's server" "$out"
+    check_not "and has no line on a server that is not there" "no server to stop" "$out"
+    check     "docker is asked, then stops and removes it" \
+        "|stop wealthdb-metabase|rm wealthdb-metabase|" "$(tr '\n' '|' < "$tmp/docker-stub-calls")"
+    : > "$tmp/docker-stub-calls"
+    out="$(STUB_CONTAINER=1 web_stop 2>&1)"
+    check     "a container of that name that serves another data folder is left alone" "web: no server to stop" "$out"
+    check_not "docker stops nothing of it" "stop wealthdb-metabase" "$(cat "$tmp/docker-stub-calls")"
+
+    echo "== native: start, status and stop of a stand-in server =="
+    # start runs `<entry> web serve` in the background, then provisions.
+    # A stand-in for that command records its pid, as serve does, and
+    # sleeps. Provisioning is a stub.
+    printf '#!/bin/sh\necho $$ > "%s"\nexec sleep 30\n' "$tmp/nweb/web.pid" > "$tmp/nentry"
+    chmod +x "$tmp/nentry"
+    export WEALTHDB_ENTRY="$tmp/nentry"
+    SERVICE_PROC=sleep
+    _provision() { PROV_RC=0 PROV_SERVED=1 PROV_LINKED=1 PROV_LOGIN="log in as a stand-in"; }
+    out="$(web_start 2>&1)"; rc=$?
+    check_eq  "start succeeds" "0" "$rc"
+    check_re  "it times the server's start" "web: timing: server start [0-9]+\.[0-9]{3}s" "$out"
+    check     "and says the dashboards are up" "web: the dashboards are up → http://127.0.0.1:3111/" "$out"
+    check     "with the login" "log in as a stand-in" "$out"
+    if _is_running; then pass "the server runs"; else fail "the server does not run: $(cat "$(_service_logfile)" 2>/dev/null)"; fi
+    pid="$(_native_pid)"
+    out="$(web_status 2>&1)"
+    check     "status: running, with its pid" "web: running   pid=$pid" "$out"
+    check     "status names the log" "log: $tmp/nweb/web.log" "$out"
+    out="$(web_start 2>&1)"; rc=$?
+    check     "a second start is refused" "1 web: already running (the server)" "$rc $(printf '%s\n' "$out" | grep already)"
+    # serve while a server runs: refused, and the pid file stays the
+    # running server's.
+    out="$( (web_serve) 2>&1)"; rc=$?
+    check     "serve is refused while a server runs" "1 web: already running (pid $pid)" "$rc $out"
+    check_eq  "and the pid file still names the running server" "$pid" "$(cat "$tmp/nweb/web.pid")"
+    out="$(web_stop 2>&1)"
+    check     "stop says so" "web: stopped the server (Metabase metadata kept in $tmp/nweb/metabase)" "$out"
+    if kill -0 "$pid" 2>/dev/null; then fail "the server still runs after stop"; else pass "the server is gone after stop"; fi
+    out="$(BIND=ipv6 web_start 2>&1)"; rc=$?
+    check     "a start with a BIND that is no address family fails" "1 web: invalid WEALTHDB_WEB_BIND 'ipv6'" "$rc $(printf '%s\n' "$out" | grep invalid)"
+    SERVICE_PROC=metabase.jar
+
+    echo "== native: serve of dashboards that are off =="
+    printf 'WEALTHDB_WEB_ENABLED=0\nWEALTHDB_WEB_PORT=3111\nWEALTHDB_GOLD_DB=%s\n' "'$tmp/gold.db'" > "$tmp/engine-out"
+    out="$(XPC_SERVICE_NAME=0 web_serve 2>&1)"; rc=$?
+    check     "serve fails, and names the setup" "1 web: the dashboards are off. Run: wealthdb config dashboards" "$rc $out"
+    check_not "outside launchd it removes no agent" "removing the server from launchd" "$out"
+    (
+        # Under launchd, which is a function that records its calls: in
+        # a process launchd started under this label, the agent goes.
+        _uses_launchd() { return 0; }
+        launchctl() { echo "$*" >> "$tmp/launchctl-calls"; }
+        label="$(_service_label)"
+        _write_plist
+        echo 1 > "$(_service_pidfile)"
+        : > "$tmp/launchctl-calls"
+        out="$(XPC_SERVICE_NAME="$label" web_serve 2>&1)"; rc=$?
+        check     "under launchd serve fails too" "1 web: the dashboards are off" "$rc $out"
+        check     "and says that it leaves" "web: turned off in the config; removing the server from launchd" "$out"
+        check_eq  "it boots its agent out" "bootout gui/$(id -u)/$label" "$(cat "$tmp/launchctl-calls")"
+        [ ! -e "$(_service_plist)" ] && [ ! -e "$(_service_pidfile)" ] && pass "its agent file and pid file are gone" ||
+            fail "serve left the agent file or the pid file"
+        out="$(PORT=3111 BIND=both PROV_LOGIN= _start_banner 2>&1)"
+        check     "under launchd the banner says the server starts again at login" \
+            "Open that address in a browser on this computer. The server starts again at login." "$out"
+        exit "$fails"
+    )
+    fails=$?
+    printf 'WEALTHDB_WEB_ENABLED=1\nWEALTHDB_WEB_PORT=3111\nWEALTHDB_GOLD_DB=%s\n' "'$tmp/gold.db'" > "$tmp/engine-out"
+
+    echo "== native: serve becomes Metabase =="
+    # serve is a command of its own, whose process Java becomes: it runs
+    # from a tree of the native engine, with the stub as that tree's Java.
+    tree="$tmp/ntree"
+    mkdir -p "$tree/web/lib" "$tree/shared/wrappers"
+    cp "$HERE/web" "$HERE/Dockerfile" "$tree/web/"
+    cp "$HERE"/../shared/wrappers/*.sh "$tree/shared/wrappers/"
+    : > "$tree/web/lib/metabase.jar"; : > "$tree/web/lib/duckdb.metabase-driver.jar"
+    printf 'ENGINE=native\nJAVA=%s\n' "$tmp/java" > "$tree/config.mk"
+    ( unset WEALTHDB_BUILD_CONFIG
+      WEALTHDB_WEB_DATA_DIR="$tmp/nweb" WEALTHDB_BIN="$tmp/engine-stub" WEALTHDB_WEB_BIND=both TZ=Europe/Zurich \
+          "$tree/web/web" serve ) > "$tmp/nserve.out" 2>&1; rc=$?
+    [ "$rc" = 0 ] || sed "s/^/       serve: /" "$tmp/nserve.out"
+    check_eq  "serve runs Java" "0" "$rc"
+    ran="$(cat "$tmp/java-ran" 2>/dev/null)"
+    check     "on the Metabase file" "$tree/web/lib/metabase.jar" "$ran"
+    check     "with the heap capped" "-Xmx2g" "$ran"
+    check     "in UTC" "-Duser.timezone=UTC" "$ran"
+    check     "(the process too)" "TZ=UTC" "$ran"
+    check     "on loopback" "MB_JETTY_HOST=127.0.0.1" "$ran"
+    check     "on the configured port" "MB_JETTY_PORT=3111" "$ran"
+    check     "its own database under the web data" "MB_DB_FILE=$tmp/nweb/metabase/metabase.db" "$ran"
+    check     "its drivers from a folder it may write" "MB_PLUGINS_DIR=$tmp/nweb/plugins" "$ran"
+    check     "the row limits" "MB_UNAGGREGATED_QUERY_ROW_LIMIT=100000" "$ran"
+    check     "under the pid the pid file names" "pid=$(cat "$tmp/nweb/web.pid" 2>/dev/null)" "$ran"
+    [ -L "$tmp/nweb/plugins/duckdb.metabase-driver.jar" ] && pass "the driver is linked into that folder" ||
+        fail "the driver is not linked into the plugins folder"
+    ( unset WEALTHDB_BUILD_CONFIG
+      WEALTHDB_WEB_DATA_DIR="$tmp/nweb" WEALTHDB_BIN="$tmp/engine-stub" WEALTHDB_WEB_BIND=v6 \
+          "$tree/web/web" serve ) > "$tmp/nserve.out" 2>&1; rc=$?
+    check     "v6 → Metabase on the IPv6 loopback address" "0 MB_JETTY_HOST=::1" "$rc $(grep MB_JETTY_HOST "$tmp/java-ran" 2>/dev/null)"
+    rm -f "$tmp/java-ran"
+    ( unset WEALTHDB_BUILD_CONFIG
+      WEALTHDB_WEB_DATA_DIR="$tmp/nweb" WEALTHDB_BIN="$tmp/engine-stub" WEALTHDB_WEB_BIND=ipv6 \
+          "$tree/web/web" serve ) > "$tmp/nserve.out" 2>&1; rc=$?
+    check     "a BIND that is no address family fails serve" "1 web: invalid WEALTHDB_WEB_BIND 'ipv6' (want both|v4|v6)" "$rc $(cat "$tmp/nserve.out")"
+    [ ! -e "$tmp/java-ran" ] && pass "before Java runs" || fail "Java ran with a BIND that is no address family"
+}
+( native_cases; exit "$fails" )
+fails=$?
+
+echo "== serve is the native server's =="
+out="$(web_main serve 2>&1)"; rc=$?
+check_eq  "serve in a tree of the container engine exits 2" "2" "$rc"
+check     "and names the command that tree has" "wealthdb web start" "$out"
+
+echo "== stop ends a server the native engine left =="
+# In this tree of the container engine: a stand-in for a native server
+# that ran when ./configure chose the container engine, which the pid
+# file names. No container is there.
+standin="$(sleep 30 >/dev/null 2>&1 & echo $!)"
+out="$(
+    _resolve_knobs
+    mkdir -p "$DATA_DIR" && echo "$standin" > "$DATA_DIR/web.pid"
+    SERVICE_PROC=sleep
+    web_stop 2>&1
+    [ -e "$DATA_DIR/web.pid" ] && echo PID-FILE-LEFT
+    web_stop 2>&1
+)"
+check     "stop says which server it stopped" "web: stopped the native engine's server (Metabase metadata kept in $tmp/web-data/metabase)" "$out"
+check_not "its pid file is gone" "PID-FILE-LEFT" "$out"
+if kill -0 "$standin" 2>/dev/null; then fail "the native server still runs"; kill "$standin"; else pass "the native server is gone"; fi
+check_eq  "a stop with neither kind there says so" "web: no container 'wealthdb-metabase' to stop" "$(printf '%s\n' "$out" | tail -n 1)"
+out="$(METABASE_HEAP=-Xmx2g; _resolve_knobs; PORT=3000 BIND=v4 H2_DIR=/h SNAP=/s/wealthdb.db SPILL_DIR=/sp; _docker_run_args; printf '%s\n' "${DOCKER_ARGS[@]}")"
+check     "the container gets the same settings as the native server" "MB_UNAGGREGATED_QUERY_ROW_LIMIT=100000" "$out"
+check     "and the same heap" "JAVA_TOOL_OPTIONS=-Xmx2g" "$out"
 
 # Everything provisioning builds before it talks to the API is a pure
 # function of its declarations, so it asserts statically. The

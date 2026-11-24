@@ -1,10 +1,12 @@
 # web — Metabase BI server (optional)
 
-A local, dockerized [Metabase](https://www.metabase.com/) for running
-and visualizing analytics over the **gold** DuckDB database. It is
-optional and fully dockerized (no host Java or Metabase). It only reads
-the data, and it is reachable only over an SSH tunnel plus Metabase's
-own login.
+A local [Metabase](https://www.metabase.com/) for running and
+visualizing analytics over the **gold** DuckDB database. It is optional.
+It runs in a container (no host Java or Metabase), or, where the engine
+is a program on the computer, as a Java program beside it
+([NATIVE.md](../wealthdb/docs/NATIVE.md)). It only reads the data. It
+listens on this computer only: from another one it is reached over an
+SSH tunnel, and always through Metabase's own login.
 
 It comes with eleven dashboards: Wealth Overview, Allocation, Returns,
 Gains, Spending, Income, Cash Flow, Exposure, Yield, Data Freshness and
@@ -18,7 +20,7 @@ Part of the **wealthdb** suite — see [the architecture
 overview](../DESIGN.md). Run it via the main wrapper:
 
 ```sh
-wealthdb web start | stop | status | restart | refresh | logs
+wealthdb web start | stop | status | restart | refresh | logs | serve
 ```
 
 ## Why a snapshot
@@ -52,7 +54,8 @@ admin login. `wealthdb web help` lists them.
 ## Quick start
 
 ```sh
-# 1. Build the image (Metabase-from-JAR on glibc + pinned DuckDB driver).
+# 1. Build the image (Metabase-from-JAR on glibc + pinned DuckDB driver),
+#    or download Metabase for a native server.
 wealthdb web build         # or: make build-web
 
 # 2. Enable it in wealthdb.cfg (see above), then start it. This snapshots
@@ -76,16 +79,16 @@ wealthdb load -a && wealthdb web refresh
 
 ## Security
 
-- Published on loopback only (`127.0.0.1:PORT` and `[::1]:PORT` →
-  container `:3000`) — never on a public interface. Reach it via an
-  SSH port-forward.
+- It listens on loopback only (`127.0.0.1:PORT`; a container also on
+  `[::1]:PORT`) — never on a public interface. Reach it via an SSH
+  port-forward.
 - Authentication is Metabase's own login. `web start` auto-creates the
   admin on first run, so the unauthenticated first-run wizard never sits
   exposed. Set `WEALTHDB_WEB_ADMIN_PASSWORD` (e.g. in
   `~/.secrets/wealthdb-web.env`) or use the generated one saved to
   `admin-password.txt` (chmod 600); change it in the UI anytime.
-- The gold snapshot is mounted **read-only**; Metabase cannot write to
-  the data.
+- Metabase opens the snapshot **read-only**. In a container the
+  snapshot is also mounted read-only.
 
 ## Layout
 
@@ -103,6 +106,7 @@ web/
 ├── dashboards/    # one file per dashboard's cards; __init__.py declares the dashboards
 ├── tile_timings.py  # times each tile's query on the DuckDB the driver bundles
 ├── Dockerfile     # Metabase (from JAR, glibc base) + pinned DuckDB driver → /plugins
+├── lib/           # the same two files, downloaded by `web build` for the native server (git-ignored)
 ├── test_web.sh    # unit tests: lifecycle script, then provision.py (make test-web)
 ├── test_provision.py  # unit tests: provisioning definitions, client, tile timings (no Metabase)
 ├── requirements-test.txt  # their duckdb module, in the web/.venv make test-web builds
@@ -122,7 +126,10 @@ $XDG_DATA_HOME/wealthdb/web/
 ├── snapshot/wealthdb-<n>.db   # the same file, under the name Metabase reads it by
 ├── spill/                     # DuckDB spill space for capped queries
 ├── source-colors.json         # each source's chart colour, kept across refreshes
-└── admin-password.txt         # generated admin password (chmod 600), unless set via env
+├── admin-password.txt         # generated admin password (chmod 600), unless set via env
+├── plugins/                   # the folder Metabase loads its drivers from (native server)
+├── web.pid                    # the server's process (native server)
+└── web.log                    # its log, where launchd does not keep it (native server)
 ```
 
 ## Privacy

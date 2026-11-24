@@ -9,7 +9,7 @@ to use it; [AGENTS.md](AGENTS.md) holds the rules for changing it.
 | --- | --- | --- |
 | Server | `wealthdb/cmd/wealthdb/mcp_*.go`, `cmd_mcp_serve.go` | the `mcp-serve` subcommand: protocol, tools, rows, rendering, auth |
 | Settings | `cmd_config_env.go`, `internal/config` | the `mcp` block, read back by the hidden `config-env mcp` |
-| Lifecycle | `mcp/mcp` | `docker run` geometry, token, status, the stdio launcher |
+| Lifecycle | `mcp/mcp` | `docker run` geometry or the native server, token, status, the stdio launcher |
 
 The server is a second front-end over the reports the CLI runs. Each
 report family is one declaration (`families.go`): its views, its
@@ -29,6 +29,10 @@ wealthdb/docs/DESIGN.md §12) already holds DuckDB, the adapters and the
 binary; the MCP container is that image with a different command. The
 official Go SDK (`github.com/modelcontextprotocol/go-sdk`) supplies the
 protocol and both transports.
+
+In a tree of the native engine the server is a program on the computer,
+started by the same script
+([NATIVE.md](../wealthdb/docs/NATIVE.md)).
 
 ## 2. Live gold, not a snapshot
 

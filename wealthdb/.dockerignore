@@ -4,3 +4,4 @@
 # edit to them alone does not rebuild the image.
 docs
 **/*.md
+wealthdb-engine

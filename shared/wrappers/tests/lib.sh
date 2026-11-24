@@ -4,6 +4,11 @@
 PASS=0
 FAIL=0
 
+# The wrappers under test run the container engine, whatever ./configure
+# recorded for this checkout (engine-mode.sh). A test of the native
+# engine names a record of its own.
+export WEALTHDB_BUILD_CONFIG=/dev/null
+
 ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
 bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
 

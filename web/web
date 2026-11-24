@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 #
-# web — host-side lifecycle for the optional dockerized Metabase BI
-# server. Reached as `wealthdb web <subcommand>`: the wealthdb wrapper
-# delegates the `web` verb here because Docker isn't reachable from
-# inside the engine container, so the server is orchestrated on the
-# host. See README.md / DESIGN.md.
+# web — host-side lifecycle for the optional Metabase BI server.
+# Reached as `wealthdb web <subcommand>`: the wealthdb wrapper delegates
+# the `web` verb here because Docker isn't reachable from inside the
+# engine container, so the server is orchestrated on the host. See
+# README.md / DESIGN.md.
 #
 # Metabase reads a read-only SNAPSHOT of the gold DB (never the live
 # file), so it never contends with `wealthdb load` for the engine's
-# write mutex. It is published on loopback only (127.0.0.1 + [::1]);
-# reach it over an SSH port-forward + Metabase's own login.
+# write mutex. It listens on loopback only; from another computer, reach
+# it over an SSH port-forward + Metabase's own login.
+#
+# In a tree of the container engine, Metabase is a container
+# (web/Dockerfile). In a tree of the native engine it is a Java program
+# on this computer, from the same two files the image holds: `serve`
+# runs it in the foreground and `start` keeps it running in the
+# background (shared/wrappers/service-lib.sh).
 #
 # Functions are defined at top level; web_main runs only when this
 # file is executed (not sourced), so test_web.sh can source it and
@@ -25,8 +31,12 @@ WEALTHDB="${WEALTHDB_BIN:-$ROOT/wealthdb/wealthdb}"
 # container.
 SERVICE=web
 SERVICE_CPORT=3000
+SERVICE_PROC=metabase.jar
 # shellcheck disable=SC1091
 . "$ROOT/shared/wrappers/service-lib.sh"
+# The Python of the host-side steps: the one ./configure recorded, else
+# the one on PATH.
+PYTHON3="$(wealthdb_tool "$ROOT" PYTHON python3)"
 
 # ---- settings ---------------------------------------------------------
 
@@ -43,7 +53,37 @@ _resolve_knobs() {
     # a directory under it as the connection's temp_directory, so
     # memory-capped queries spill to disk instead of dying.
     SPILL_DIR="$DATA_DIR/spill"
+    # The native server: the Java ./configure recorded, the two files
+    # `web build` downloads, and the directory Metabase loads its
+    # drivers from, which it also writes to.
+    JAVA="$(wealthdb_tool "$ROOT" JAVA "")"
+    LIB_DIR="$HERE/lib"
+    MB_JAR="$LIB_DIR/metabase.jar"
+    DRIVER_JAR="$LIB_DIR/duckdb.metabase-driver.jar"
+    PLUGINS_DIR="$DATA_DIR/plugins"
 }
+
+# What Metabase is told in either kind of server.
+#
+# Query row limits. Metabase's defaults (10k aggregated, 2k
+# un-aggregated — and native SQL always counts as un-aggregated)
+# silently truncate the daily day × source history charts, which
+# already exceed both; the truncated series then renders as a
+# misleading partial chart with no warning. 100k gives that grain
+# decades of headroom.
+#
+# Memory discipline. DuckDB runs in-process, so the JVM process holds
+# heap + DuckDB native memory. DuckDB's own memory_limit is set on the
+# connection by provision.py; the explicit -Xmx stops the heap from
+# auto-sizing against the machine, and MALLOC_ARENA_MAX curbs glibc
+# arena hoarding under DuckDB's thread pool.
+METABASE_ENV=(
+    MB_ANON_TRACKING_ENABLED=false
+    MB_AGGREGATED_QUERY_ROW_LIMIT=100000
+    MB_UNAGGREGATED_QUERY_ROW_LIMIT=100000
+    MALLOC_ARENA_MAX=2
+)
+METABASE_HEAP=-Xmx2g
 
 # _load_config reads the resolved `web` settings (enabled, port), the
 # gold DB path, the default currency and the default reading of a
@@ -65,7 +105,7 @@ _load_config() {
 # start and refresh time their steps and read the snapshot's mtime,
 # inode and storage format through python3, and provisioning runs on it.
 _require_python3() {
-    command -v python3 >/dev/null 2>&1 || { echo "web: python3 not found on PATH (start and refresh need it)" >&2; return 1; }
+    command -v "$PYTHON3" >/dev/null 2>&1 || { echo "web: $PYTHON3 not found (start and refresh need Python)" >&2; return 1; }
 }
 
 # ---- pure helpers (unit-tested) ---------------------------------------
@@ -82,33 +122,22 @@ _docker_run_args() {
     DOCKER_ARGS=(
         run -d --pull=never
         --name "$CONTAINER"
-        # Memory discipline. DuckDB runs in-process, so the JVM process
-        # holds heap + DuckDB native memory: the container cap keeps a
-        # runaway from taking the whole Docker VM to global OOM (DuckDB's
-        # own memory_limit is set on the connection by provision.py), the
-        # explicit -Xmx stops the heap from auto-sizing against the cap,
-        # and MALLOC_ARENA_MAX curbs glibc arena hoarding under DuckDB's
-        # thread pool. If the backstop ever fires anyway, restart rather
+        # The container cap keeps a runaway from taking the whole Docker
+        # VM to global OOM (METABASE_ENV has the rest of the memory
+        # discipline). If the backstop ever fires anyway, restart rather
         # than staying down (metadata lives on the H2 volume).
         --memory 8g
         --restart unless-stopped
-        -e JAVA_TOOL_OPTIONS=-Xmx2g
-        -e MALLOC_ARENA_MAX=2
+        -e JAVA_TOOL_OPTIONS="$METABASE_HEAP"
         -e MB_DB_FILE=/metabase-data/metabase.db
-        -e MB_ANON_TRACKING_ENABLED=false
-        # Query row limits. Metabase's defaults (10k aggregated, 2k
-        # un-aggregated — and native SQL always counts as un-aggregated)
-        # silently truncate the daily day × source history charts, which
-        # already exceed both; the truncated series then renders as a
-        # misleading partial chart with no warning. 100k gives that
-        # grain decades of headroom.
-        -e MB_AGGREGATED_QUERY_ROW_LIMIT=100000
-        -e MB_UNAGGREGATED_QUERY_ROW_LIMIT=100000
         -v "${H2_DIR}:/metabase-data"
         -v "$(dirname "$SNAP"):/gold:ro"
         -v "${SPILL_DIR}:/spill"
     )
     local tok
+    for tok in "${METABASE_ENV[@]}"; do
+        DOCKER_ARGS+=(-e "$tok")
+    done
     while IFS= read -r tok; do
         DOCKER_ARGS+=("$tok")
     done < <(_publish_args "$PORT" "$BIND")
@@ -124,7 +153,7 @@ SNAPSHOT_MAX_STORAGE=68
 # bytes 12..20, little-endian, after the "DUCK" magic at byte 8. It
 # prints nothing for a file that is no DuckDB file.
 _storage_number() {
-    python3 -c 'import struct, sys
+    "$PYTHON3" -c 'import struct, sys
 with open(sys.argv[1], "rb") as f:
     b = f.read(20)
 if len(b) == 20 and b[8:12] == b"DUCK":
@@ -196,6 +225,10 @@ _mtime()      { date -r "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || echo unknown; }
 # --provenance=false: buildx's default attestation embeds build metadata,
 # so the image digest would change on every build even when fully cached.
 web_build() {
+    if [ "$SERVICE_MODE" = native ]; then
+        _fetch_metabase
+        return
+    fi
     local whash label=()
     whash="$(wealthdb_inputs_hash "$HERE/Dockerfile" -- "$(wealthdb_from_id "$HERE/Dockerfile")")" || whash=
     if wealthdb_build_unchanged "$IMAGE" "$whash" "$#"; then return 0; fi
@@ -204,24 +237,128 @@ web_build() {
         -t "$IMAGE" "$HERE" "$@"
 }
 
+# _dockerfile_arg NAME prints the default the Dockerfile gives ARG NAME:
+# the one place Metabase's and the driver's versions and checksums are
+# pinned.
+_dockerfile_arg() { wealthdb_dockerfile_arg "$HERE/Dockerfile" "$1"; }
+
+_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1
+}
+
+# _fetch_pinned NAME URL SHA256 DEST downloads URL to DEST and holds it
+# to the checksum. A file that passed keeps its checksum beside it, and
+# is not downloaded or read again while the pin stands. A pin with no
+# checksum is refused: it would hold a file to nothing.
+_fetch_pinned() {
+    local name="$1" url="$2" sha="$3" dest="$4" tmp got
+    [ -n "$sha" ] || { echo "web: web/Dockerfile pins no checksum for $name" >&2; return 1; }
+    if [ -f "$dest" ] && [ "$(cat "$dest.sha256" 2>/dev/null)" = "$sha" ]; then return 0; fi
+    echo "web: downloading $name …" >&2
+    mkdir -p "$(dirname "$dest")" || return 1
+    tmp="$dest.tmp.$$"
+    # The download runs in a subshell with an exit trap of its own, so
+    # the temp file goes on any exit, an interrupted download's too. The
+    # trap holds the path itself: bash 3.2 can run it with this
+    # function's variables out of reach.
+    (
+        # shellcheck disable=SC2064
+        trap "rm -f -- $(printf '%q' "$tmp")" EXIT
+        if ! curl -fL --retry 3 --progress-bar -o "$tmp" "$url"; then
+            echo "web: could not download $url" >&2
+            exit 1
+        fi
+        got="$(_sha256 "$tmp")"
+        if [ "$got" != "$sha" ]; then
+            echo "web: $name from $url has the checksum $got, and web/Dockerfile pins $sha" >&2
+            exit 1
+        fi
+        mv "$tmp" "$dest"
+    ) || return 1
+    printf '%s\n' "$sha" > "$dest.sha256"
+}
+
+# _fetch_metabase downloads the native server's two files, the ones the
+# image holds, at the Dockerfile's pins.
+_fetch_metabase() {
+    local version
+    version="$(_dockerfile_arg MB_VERSION)"
+    _fetch_pinned "Metabase $version" "https://downloads.metabase.com/$version/metabase.jar" \
+        "$(_dockerfile_arg MB_SHA256)" "$MB_JAR" || return 1
+    _fetch_pinned "the DuckDB driver" "$(_dockerfile_arg DRIVER_URL)" \
+        "$(_dockerfile_arg DRIVER_SHA256)" "$DRIVER_JAR"
+}
+
+# _require_native_web checks what the native server runs on: Java, and
+# the two files.
+_require_native_web() {
+    if [ -z "$JAVA" ] || [ ! -x "$JAVA" ]; then
+        echo "web: the dashboards need Java 21 or later, and ./configure found none." >&2
+        echo "     Install it, then run ./configure --engine=native again." >&2
+        return 1
+    fi
+    if [ ! -f "$MB_JAR" ] || [ ! -f "$DRIVER_JAR" ]; then
+        echo "web: the dashboards' program is not downloaded yet. Run: wealthdb web build" >&2
+        return 1
+    fi
+}
+
+_require_enabled() {
+    if [ "$ENABLED" != 1 ]; then
+        echo "web: the dashboards are off. Run: wealthdb config dashboards" >&2
+        return 1
+    fi
+}
+
+# web_serve runs the native Metabase in the foreground: what `start`
+# keeps running in the background, and what a system service runs on a
+# computer where no one is signed in. Metabase runs in UTC, as its
+# container does, so a day in a dashboard is the engine's day.
+web_serve() {
+    if [ "$SERVICE_MODE" != native ]; then
+        echo "web: 'serve' runs the native server. This tree runs Metabase in a container: wealthdb web start" >&2
+        return 2
+    fi
+    _load_config || return 1
+    _require_enabled || { _retire_agent; return 1; }
+    _require_native_web || return 1
+    local host tok
+    host="$(_loopback_host "$BIND")" || return 1
+    mkdir -p "$H2_DIR" "$(dirname "$SNAP")" "$SPILL_DIR" "$PLUGINS_DIR" || return 1
+    ln -sf "$DRIVER_JAR" "$PLUGINS_DIR/duckdb.metabase-driver.jar" || return 1
+    for tok in "${METABASE_ENV[@]}"; do
+        export "$tok"
+    done
+    export MB_DB_FILE="$H2_DIR/metabase.db" MB_PLUGINS_DIR="$PLUGINS_DIR" \
+        MB_JETTY_HOST="$host" MB_JETTY_PORT="$PORT" TZ=UTC
+    _serve_here || return 1
+    cd "$DATA_DIR" || return 1
+    exec "$JAVA" "$METABASE_HEAP" -Djava.awt.headless=true -Duser.timezone=UTC -jar "$MB_JAR"
+}
+
 web_start() {
     _require_python3
     if [ "${CONFIG_LOADED:-0}" != 1 ]; then
         _timed config _load_config || return 1
     fi
-    if [ "$ENABLED" != 1 ]; then
-        echo "web: the dashboards are off. Run: wealthdb config dashboards" >&2
-        return 1
-    fi
+    _require_enabled || return 1
     if _is_running; then
-        echo "web: already running (container $CONTAINER). Use 'wealthdb web restart'." >&2
+        echo "web: already running ($(_where)). Use 'wealthdb web restart'." >&2
         return 1
     fi
-    _exists && docker rm "$CONTAINER" >/dev/null 2>&1 || true
+    # What a server that died left behind goes first: its container, or
+    # its pid file and LaunchAgent.
+    if [ "$SERVICE_MODE" = native ]; then
+        _require_native_web || return 1
+        _loopback_host "$BIND" >/dev/null || return 1
+        _native_stop
+    else
+        _exists && docker rm "$CONTAINER" >/dev/null 2>&1 || true
+    fi
     mkdir -p "$H2_DIR" "$(dirname "$SNAP")" "$SPILL_DIR"
     # A DuckDB that was killed leaves its spill files behind, and no
     # later one reuses a directory named after another file. With no
-    # container left, no DuckDB has one open.
+    # server left, no DuckDB has one open.
     if ! _exists; then rm -rf "$SPILL_DIR"/wealthdb-*.db.tmp; fi
     if [ ! -f "$SNAP" ]; then
         _timed materialize _materialize
@@ -230,17 +367,21 @@ web_start() {
     fi
     _relink_snapshots || { echo "web: could not link the snapshot's serving names" >&2; return 1; }
 
-    wealthdb_require_image web "$IMAGE" "wealthdb web build" || return 1
-    _docker_run_args
-    if ! _timed "container start" docker "${DOCKER_ARGS[@]}" >/dev/null; then
-        if [ "$BIND" = both ]; then
-            echo "web: dual-stack publish failed; retrying IPv4-only (set WEALTHDB_WEB_BIND=v4 to silence)." >&2
-            docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-            BIND=v4
-            _docker_run_args
-            _timed "container start" docker "${DOCKER_ARGS[@]}" >/dev/null
-        else
-            return 1
+    if [ "$SERVICE_MODE" = native ]; then
+        _timed "server start" _native_start || return 1
+    else
+        wealthdb_require_image web "$IMAGE" "wealthdb web build" || return 1
+        _docker_run_args
+        if ! _timed "container start" docker "${DOCKER_ARGS[@]}" >/dev/null; then
+            if [ "$BIND" = both ]; then
+                echo "web: dual-stack publish failed; retrying IPv4-only (set WEALTHDB_WEB_BIND=v4 to silence)." >&2
+                docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+                BIND=v4
+                _docker_run_args
+                _timed "container start" docker "${DOCKER_ARGS[@]}" >/dev/null
+            else
+                return 1
+            fi
         fi
     fi
     # Every serving name links the snapshot of this start. A later
@@ -259,19 +400,21 @@ web_start() {
     fi
 }
 
-web_stop() {
-    if _exists; then
-        docker stop "$CONTAINER" >/dev/null 2>&1 || true
-        docker rm   "$CONTAINER" >/dev/null 2>&1 || true
-        echo "web: stopped $CONTAINER (Metabase metadata kept in $H2_DIR)"
-    else
-        echo "web: no container '$CONTAINER' to stop"
-    fi
-}
+web_stop() { _service_stop "Metabase metadata kept in $H2_DIR"; }
 
 web_status() {
     _load_config
-    if _is_running; then
+    if [ "$SERVICE_MODE" = native ]; then
+        if _is_running; then
+            echo "web: running   pid=$(_native_pid)   port=$PORT (bind=$BIND)"
+            echo "     url: $(_base_url)/"
+            echo "     log: $(_service_logfile)"
+        elif _exists; then
+            echo "web: stopped   (it was started, and is not running; see $(_service_logfile))"
+        else
+            echo "web: not running"
+        fi
+    elif _is_running; then
         echo "web: running   container=$CONTAINER   port=$PORT (bind=$BIND)"
         echo "     url: http://127.0.0.1:$PORT/   (and http://[::1]:$PORT/ if IPv6 published)"
     elif _exists; then
@@ -289,7 +432,7 @@ web_status() {
 }
 
 # _epoch is seconds since the epoch, with a fraction. macOS date has no %N.
-_epoch() { python3 -c 'import time; print(f"{time.time():.3f}")'; }
+_epoch() { "$PYTHON3" -c 'import time; print(f"{time.time():.3f}")'; }
 
 # _timed LABEL CMD... runs CMD and prints its wall time on stderr.
 # The command runs with set -e off so a failure still prints the
@@ -304,7 +447,7 @@ _timed() {
     "$@"
     rc=$?
     [ "$errexit" -eq 1 ] && set -e
-    python3 -c 'import sys, time; print(f"web: timing: {sys.argv[1]} {time.time() - float(sys.argv[2]):.3f}s", file=sys.stderr)' \
+    "$PYTHON3" -c 'import sys, time; print(f"web: timing: {sys.argv[1]} {time.time() - float(sys.argv[2]):.3f}s", file=sys.stderr)' \
         "$label" "$start"
     return "$rc"
 }
@@ -312,7 +455,7 @@ _timed() {
 # _stat FIELD PATH prints os.stat(PATH).FIELD (st_mtime_ns, st_ino), or
 # 0 for a missing file.
 _stat() {
-    python3 -c 'import os, sys
+    "$PYTHON3" -c 'import os, sys
 p = sys.argv[2]
 print(getattr(os.stat(p), sys.argv[1]) if os.path.exists(p) else 0)' "$1" "$2"
 }
@@ -322,7 +465,7 @@ print(getattr(os.stat(p), sys.argv[1]) if os.path.exists(p) else 0)' "$1" "$2"
 # confirmed refresh, the new one. The snapshot keeps gold's mtime, so
 # mtime alone cannot tell a file the server reads from one swapped in
 # after it started. A marker in any other form matches no name, so a
-# container started by another version is recreated.
+# server started by another version is started anew.
 _mark_snapshot_served() {
     _serving_name > "${SNAP}.served"
 }
@@ -389,11 +532,15 @@ web_refresh() {
     _timed config _load_config
     _timed materialize _materialize
     # Copy when the snapshot is missing or older than gold. A missing
-    # gold file is stale too: the copy reports it. A running container
-    # is current only when it serves this snapshot's inode, so a
-    # refresh that died after the copy and before the server took it up
-    # still takes it up the next time.
+    # gold file is stale too: the copy reports it. A running server is
+    # current only when it serves this snapshot's inode, so a refresh
+    # that died after the copy and before the server took it up still
+    # takes it up the next time.
     local stale=1 running=0
+    # What the messages below call the server, and its start anew: a
+    # container is removed and run again, a native server restarted.
+    local serving="$CONTAINER" anew="recreating $CONTAINER"
+    if [ "$SERVICE_MODE" = native ]; then serving="the server" anew="restarting the server"; fi
     if [ -f "$GOLD_DB" ] && [ -f "$SNAP" ] \
         && [ "$(_stat st_mtime_ns "$SNAP")" -ge "$(_stat st_mtime_ns "$GOLD_DB")" ]; then
         stale=0
@@ -415,11 +562,12 @@ web_refresh() {
         echo "web: snapshot updated (as of $(_mtime "$SNAP"))"
     fi
     if [ "$running" -eq 1 ]; then
-        # The running server sees the new snapshot through the mounted
-        # directory. Provisioning points the database at its serving
-        # name, which makes Metabase close the connections to the old
-        # file, and confirms that the server reads the new one. It also
-        # converges the cards, so new or renamed report models show up.
+        # The running server sees the new snapshot in the snapshot
+        # directory (mounted, in a container). Provisioning points the
+        # database at its serving name, which makes Metabase close the
+        # connections to the old file, and confirms that the server
+        # reads the new one. It also converges the cards, so new or
+        # renamed report models show up.
         if [ "${WEALTHDB_WEB_NO_PROVISION:-0}" != 1 ]; then
             _timed provision _provision
             if [ "$PROV_SERVED" = 1 ]; then
@@ -428,26 +576,26 @@ web_refresh() {
                 _login_line
                 return "$PROV_RC"
             fi
-            # A new container could not link the snapshot either, so
-            # the running one keeps serving. Its marker still names the
-            # old snapshot, and the next refresh tries again.
+            # A new server could not link the snapshot either, so the
+            # running one keeps serving. Its marker still names the old
+            # snapshot, and the next refresh tries again.
             if [ "${PROV_LINKED:-0}" != 1 ]; then
-                echo "web: $CONTAINER keeps serving the previous snapshot." >&2
+                echo "web: $serving keeps serving the previous snapshot." >&2
                 return 1
             fi
         fi
-        # Without that confirmation the container is recreated, and the
+        # Without that confirmation the server is started anew, and the
         # new one reads the current snapshot under every name. A
         # container that mounts the snapshot file rather than its
         # directory takes this path too: its marker names no serving
         # name, so even an unchanged snapshot comes this way.
-        echo "web: Metabase did not confirm it reads the new snapshot; recreating $CONTAINER" >&2
+        echo "web: Metabase did not confirm it reads the new snapshot; $anew" >&2
         _timed stop web_stop >/dev/null
         web_start
     fi
 }
 
-web_logs() { _require_docker; exec docker logs -f "$CONTAINER"; }
+web_logs() { _service_logs; }
 
 # _gen_password makes a random password meeting Metabase's complexity
 # rule (>=1 lower/upper/digit/special). It fails, printing nothing, when
@@ -550,11 +698,17 @@ _provision() {
         pwhint="generated, saved to $pwfile"
     fi
     echo "web: provisioning Metabase (admin + gold database + report models + dashboards)…" >&2
+    # The paths as the server sees them: its mounts in a container, the
+    # directories themselves for the native server.
+    local gold_dir=/gold spill_dir=/spill
+    if [ "$SERVICE_MODE" = native ]; then
+        gold_dir="$(dirname "$SNAP")" spill_dir="$SPILL_DIR"
+    fi
     # The password travels in the environment, never in argv, where any
     # process on the host could read it from `ps`.
-    WEALTHDB_WEB_ADMIN_PASSWORD="$pw" python3 "$HERE/provision.py" \
-         --base "http://127.0.0.1:$PORT" \
-         --email "$email" --gold-path "/gold/$name" --spill-dir /spill --db-name gold \
+    WEALTHDB_WEB_ADMIN_PASSWORD="$pw" "$PYTHON3" "$HERE/provision.py" \
+         --base "$(_base_url)" \
+         --email "$email" --gold-path "$gold_dir/$name" --spill-dir "$spill_dir" --db-name gold \
          --default-currency "${WEALTHDB_DEFAULT_CURRENCY:-USD}" \
          --missing-basis "${WEALTHDB_MISSING_BASIS:-ignore}" \
          --source-colors "$DATA_DIR/source-colors.json" || PROV_RC=$?
@@ -568,14 +722,41 @@ _provision() {
     esac
 }
 
+# _base_url prints the server's address on this computer: IPv6 loopback
+# only for a native server asked to listen there.
+_base_url() {
+    if [ "$SERVICE_MODE" = native ] && [ "$BIND" = v6 ]; then
+        printf 'http://[::1]:%s\n' "$PORT"
+    else
+        printf 'http://127.0.0.1:%s\n' "$PORT"
+    fi
+}
+
 _start_banner() {
-    cat >&2 <<EOF
+    if [ "$SERVICE_MODE" = native ]; then
+        # A server under launchd starts again at login, and only its
+        # banner says so.
+        local login=
+        if _uses_launchd; then login=" The server starts again at login."; fi
+        cat >&2 <<EOF
+web: the dashboards are up → $(_base_url)/
+
+  Open that address in a browser on this computer.$login
+  From another computer, tunnel the port first:
+      ssh -L $PORT:127.0.0.1:$PORT <this-host>
+
+EOF
+    else
+        cat >&2 <<EOF
 web: $CONTAINER is up → Metabase on http://127.0.0.1:$PORT/
 
   From a laptop, tunnel the port and open it locally:
       ssh -L $PORT:127.0.0.1:$PORT <this-host>
       open http://127.0.0.1:$PORT/
 
+EOF
+    fi
+    cat >&2 <<EOF
   The gold DuckDB database is pre-added as a read-only snapshot, with
   report models mirroring the global / portfolios / accounts /
   positions / transactions / returns commands, plus pre-defined
@@ -595,33 +776,41 @@ EOF
 # provisioning there is no admin to name, and it prints nothing.
 _login_line() {
     if [ -n "${PROV_LOGIN:-}" ]; then
-        echo "web: http://127.0.0.1:$PORT/ — $PROV_LOGIN" >&2
+        echo "web: $(_base_url)/ — $PROV_LOGIN" >&2
     fi
 }
 
 web_help() {
     cat <<'EOF'
-wealthdb web — optional dockerized Metabase BI server (host-side)
+wealthdb web — the optional Metabase BI server: the dashboards
 
 usage:
   wealthdb web <subcommand>
 
 subcommands:
-  start      snapshot gold (if needed) and run Metabase, detached
-  stop       stop + remove the container (keeps dashboards/users in H2)
-  status     running state, published port, snapshot freshness
+  start      snapshot gold (if needed) and run Metabase in the background
+  stop       stop the server (keeps dashboards/users in H2)
+  status     running state, port, snapshot freshness
   restart    stop then start
   refresh    re-materialize the serving and report tables, copy gold to
              the read-only snapshot when gold changed, and point
              Metabase at a new snapshot (run after 'wealthdb load')
-  logs       follow the container logs
-  build      build the wealthdb/metabase image
+  logs       follow the server's log
+  build      build the wealthdb/metabase image, or download Metabase
+             where the engine is a program on this computer
+  serve      run the native server in the foreground, for launchd or
+             systemd on a computer where no one is signed in
   help       this message
 
 Metabase reads a read-only SNAPSHOT of gold (never the live file), so
-it never contends with 'wealthdb load'. Published on 127.0.0.1 + [::1] only;
-reach it via SSH port-forward + Metabase's own login. Turn it on with
+it never contends with 'wealthdb load'. It listens on 127.0.0.1 only
+(and [::1] as a container); from another computer, reach it via SSH
+port-forward + Metabase's own login. Turn it on with
 'wealthdb config dashboards', which writes the "web" block of wealthdb.cfg.
+
+Metabase is a container where the engine runs in one. Where the engine
+is a program on this computer, Metabase is a Java program here too: on
+a Mac it starts again at login and after a crash.
 
 Auto-provision (default on): creates the admin + pre-adds the gold DB,
 skipping the browser setup wizard. Credentials:
@@ -640,7 +829,8 @@ else latest), WEALTHDB_WEB_IMAGE,
 WEALTHDB_WEB_CONTAINER, WEALTHDB_WEB_DATA_DIR,
 WEALTHDB_WEB_BIND (both|v4|v6), WEALTHDB_WEB_ENV_FILE (default
 wealthdb-web.env in $WEALTHDB_SECRETS_DIR, else ~/.secrets, read for the
-variables above).
+variables above), WEALTHDB_NO_LAUNCHD=1 (on a Mac, the native server as
+a plain background process: no start at login, no restart).
 EOF
 }
 
@@ -659,6 +849,7 @@ web_main() {
         restart)          web_stop; web_start ;;
         refresh)          web_refresh ;;
         logs)             web_logs ;;
+        serve)            web_serve ;;
         help|-h|--help)   web_help ;;
         *) printf 'web: unknown subcommand %q\n\n' "$cmd" >&2; web_help >&2; return 2 ;;
     esac

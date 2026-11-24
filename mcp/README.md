@@ -20,11 +20,18 @@ Every call reads the live database, so answers are as fresh as the last
 a call waits a few seconds for it to finish, and so does a call that
 starts during a load.
 
+Where the engine is a program on the computer and not a container, the
+server is one too: the same commands, no Docker, and on a Mac it starts
+again at login. The first two points above still hold; the last two are
+the container's. [NATIVE.md](../wealthdb/docs/NATIVE.md) has the
+details, and how to run the server on a computer where no one is signed
+in.
+
 Part of the **wealthdb** suite: see [the architecture
 overview](../DESIGN.md). Run it via the main wrapper:
 
 ```sh
-wealthdb mcp start | stop | status | restart | logs | stdio | url
+wealthdb mcp start | stop | status | restart | logs | stdio | url | serve
 ```
 
 ## Enable it
@@ -108,7 +115,8 @@ A desktop app does not get the shell's environment, so the config
 passes it:
 
 - `command` is the full path to the `wealthdb` wrapper.
-- `PATH` must hold the directory `docker` is in.
+- `PATH` must hold the directory `docker` is in, where the server is a
+  container.
 - `WEALTHDB_DATA_ROOT` is needed only when the data root is not the
   default. The same holds for `XDG_CONFIG_HOME` and the config file.
 
@@ -189,7 +197,8 @@ the redacted stdio form.
 
 ## Security
 
-- Published on loopback only (`127.0.0.1` and `[::1]`). From another
+- It listens on `127.0.0.1` only, and on `[::1]` as a container.
+  `WEALTHDB_MCP_BIND=v6` moves a native server to `[::1]`. From another
   machine, use an SSH port-forward: `ssh -L 3300:127.0.0.1:3300
   <this-host>`.
 - Every HTTP request needs the bearer token. It is generated on first
@@ -220,8 +229,9 @@ ends with a line that says how many rows and characters it holds in
 all, the `offset` of the next page, and the `max_chars` that returns
 every row at once.
 
-After rebuilding the image, run `wealthdb mcp restart`: a running server
-keeps the old binary, and `wealthdb mcp status` says so.
+After rebuilding the image, or the native engine, run `wealthdb mcp
+restart`: a running server keeps the old binary, and `wealthdb mcp
+status` says so.
 
 ## Layout
 
@@ -234,7 +244,10 @@ mcp/
 └── AGENTS.md     rules for changing it
 
 $XDG_DATA_HOME/wealthdb/mcp/
-└── token         the bearer token (chmod 600)
+├── token         the bearer token (chmod 600)
+├── mcp.pid       the server's process (native server)
+├── serving       the engine program it runs (native server)
+└── mcp.log       its log, where launchd does not keep it (native server)
 ```
 
 The server's code is in the engine: `wealthdb/cmd/wealthdb/mcp_*.go`

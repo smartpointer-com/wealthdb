@@ -6,13 +6,18 @@
 # because Docker isn't reachable from inside the engine container. See
 # README.md / DESIGN.md.
 #
-# The server is the engine image itself (`wealthdb:<tag>`, the tag
-# shared/wrappers/image-tag.sh resolves) running
-# `mcp-serve`. It reads LIVE gold read-only, one short handle per call,
-# so there is no snapshot and nothing to refresh after a load. The data
-# root and the config are mounted read-only; the container has a
-# read-only root filesystem and no capabilities. It is published on
-# loopback only (127.0.0.1 + [::1]) and asks for a bearer token.
+# The server is the engine itself running `mcp-serve`. It reads LIVE
+# gold read-only, one short handle per call, so there is no snapshot and
+# nothing to refresh after a load. It listens on loopback only and asks
+# for a bearer token.
+#
+# In a tree of the container engine it is a container of the engine
+# image (`wealthdb:<tag>`, the tag shared/wrappers/image-tag.sh
+# resolves): the data root and the config are mounted read-only, and the
+# container has a read-only root filesystem and no capabilities. In a
+# tree of the native engine it is the engine program, which `serve` runs
+# in the foreground and `start` keeps running in the background
+# (shared/wrappers/service-lib.sh).
 #
 # Functions are defined at top level; mcp_main runs only when this
 # file is executed (not sourced), so test_mcp.sh can source it and
@@ -27,6 +32,8 @@ WEALTHDB="${WEALTHDB_BIN:-$ROOT/wealthdb/wealthdb}"
 # The helpers mcp shares with web; the server listens on the published
 # port in the container too.
 SERVICE=mcp
+SERVICE_PROC=mcp-serve
+SERVICE_ENV_KEEP="WEALTHDB_MCP_CHARS WEALTHDB_MCP_ALLOW_HOSTS WEALTHDB_MCP_AUTH WEALTHDB_MCP_INSECURE"
 # shellcheck disable=SC1091
 . "$ROOT/shared/wrappers/service-lib.sh"
 
@@ -48,6 +55,10 @@ _resolve_knobs() {
     wealthdb_engine_paths
     CHARS="${WEALTHDB_MCP_CHARS:-}"
     ALLOW_HOSTS="${WEALTHDB_MCP_ALLOW_HOSTS:-}"
+    ENGINE_BIN="$(wealthdb_native_engine "$ROOT")"
+    # The native server writes this beside the token when it starts: the
+    # engine program it runs, as _file_id prints it.
+    SERVING_FILE="$DATA_DIR/serving"
 }
 
 # _load_config reads the resolved `mcp` settings and the gold path via
@@ -159,6 +170,30 @@ _stdio_args() {
     DOCKER_ARGS+=("$@")
 }
 
+# _native_serve_args populates SERVE_ARGS, the native engine's argv for
+# the HTTP server. It listens on one loopback address (_loopback_host):
+# IPv6 when BIND is v6, else IPv4. It fails on a BIND that is neither.
+_native_serve_args() {
+    local host tok
+    host="$(_loopback_host "$BIND")" || return 1
+    case "$host" in *:*) host="[$host]" ;; esac
+    SERVE_ARGS=(-c "$CFG" mcp-serve --http "$host:$PORT")
+    if [ "$AUTH" = token ]; then
+        SERVE_ARGS+=(--token-file "$TOKEN_FILE")
+    else
+        SERVE_ARGS+=(--auth none --insecure)
+    fi
+    while IFS= read -r tok; do
+        SERVE_ARGS+=("$tok")
+    done < <(_serve_args)
+}
+
+# _native_env exports what the engine wrapper tells a native engine: the
+# data root and the config folder, as resolved here.
+_native_env() {
+    export WEALTHDB_DATA_ROOT="$DATA_ROOT" XDG_CONFIG_HOME="$XDG_CFG" WEALTHDB_ENGINE=native
+}
+
 # _ensure_token makes TOKEN_FILE hold the bearer token, mode 600:
 # WEALTHDB_MCP_TOKEN when set, else the token generated on first start
 # and kept across restarts.
@@ -188,11 +223,18 @@ _gen_token() {
     fi
 }
 
-# _image_outdated succeeds when the running container's image is not
-# the current engine image — after a rebuild, the server still runs
-# the old binary until it is restarted.
-_image_outdated() {
+# _engine_outdated succeeds when the running server is not the current
+# engine: after a rebuild or an upgrade, the server still runs the old
+# binary until it is restarted. A container is held to the engine
+# image's id, a native server to the engine program it recorded.
+_engine_outdated() {
     local running current
+    if [ "$SERVICE_MODE" = native ]; then
+        running="$(cat "$SERVING_FILE" 2>/dev/null)" || return 1
+        current="$(_file_id "$ENGINE_BIN")" || return 1
+        [ -n "$running" ] && [ -n "$current" ] && [ "$running" != "$current" ]
+        return
+    fi
     running="$(docker inspect -f '{{.Image}}' "$CONTAINER" 2>/dev/null)" || return 1
     current="$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null)" || return 1
     [ -n "$running" ] && [ -n "$current" ] && [ "$running" != "$current" ]
@@ -215,25 +257,50 @@ _require_enabled() {
     fi
 }
 
-_require_image() { wealthdb_require_image mcp "$IMAGE" "wealthdb build"; }
+# _require_engine checks that there is an engine to run: the engine
+# image, or the native engine's program.
+_require_engine() {
+    if [ "$SERVICE_MODE" = native ]; then
+        [ -x "$ENGINE_BIN" ] && return 0
+        echo "mcp: the engine is not built yet. Run: make all" >&2
+        return 1
+    fi
+    wealthdb_require_image mcp "$IMAGE" "wealthdb build"
+}
+
+# _ready is what `start` and `serve` do before a server runs, once the
+# config says the server is on. It checks the auth mode, the engine and
+# a native server's address, and refuses while a server runs. Then it
+# makes the token, or warns that there is none.
+_ready() {
+    _check_auth || return 1
+    _require_engine || return 1
+    if [ "$SERVICE_MODE" = native ]; then
+        _loopback_host "$BIND" >/dev/null || return 1
+    fi
+    if _is_running; then
+        echo "mcp: already running ($(_where)). Use 'wealthdb mcp restart'." >&2
+        return 1
+    fi
+    if [ "$AUTH" = token ]; then
+        _ensure_token || return 1
+    else
+        echo "mcp: $INSECURE_WARNING" >&2
+    fi
+}
 
 # ---- subcommands ------------------------------------------------------
 
 mcp_start() {
     _load_config || return 1
     _require_enabled || return 1
-    _check_auth || return 1
-    _require_image || return 1
-    if _is_running; then
-        echo "mcp: already running (container $CONTAINER). Use 'wealthdb mcp restart'." >&2
-        return 1
+    _ready || return 1
+    if [ "$SERVICE_MODE" = native ]; then
+        _native_start || return 1
+        _start_banner
+        return 0
     fi
     if _exists; then docker rm "$CONTAINER" >/dev/null 2>&1 || true; fi
-    if [ "$AUTH" = token ]; then
-        _ensure_token || return 1
-    else
-        echo "mcp: $INSECURE_WARNING" >&2
-    fi
 
     _docker_run_args
     if ! docker "${DOCKER_ARGS[@]}" >/dev/null; then
@@ -252,21 +319,30 @@ mcp_start() {
 
 mcp_stop() {
     _require_docker || return 1
-    if _exists; then
-        docker stop "$CONTAINER" >/dev/null 2>&1 || true
-        docker rm   "$CONTAINER" >/dev/null 2>&1 || true
-        echo "mcp: stopped $CONTAINER (the token is kept in $TOKEN_FILE)"
-    else
-        echo "mcp: no container '$CONTAINER' to stop"
-    fi
+    _service_stop "the token is kept in $TOKEN_FILE"
 }
 
 mcp_status() {
     _load_config || return 1
-    if _is_running; then
+    if [ "$SERVICE_MODE" = native ]; then
+        if _is_running; then
+            echo "mcp: running   pid=$(_native_pid)   port=$PORT (bind=$BIND)"
+            echo "     url: $(_base_url)/mcp   privacy: $(_base_url)/mcp/privacy"
+            if _engine_outdated; then
+                echo "     engine: outdated — it was rebuilt or upgraded; run 'wealthdb mcp restart'"
+            else
+                echo "     engine: current"
+            fi
+            echo "     log: $(_service_logfile)"
+        elif _exists; then
+            echo "mcp: stopped   (it was started, and is not running; see $(_service_logfile))"
+        else
+            echo "mcp: not running"
+        fi
+    elif _is_running; then
         echo "mcp: running   container=$CONTAINER   port=$PORT (bind=$BIND)"
         echo "     url: $(_base_url)/mcp   privacy: $(_base_url)/mcp/privacy"
-        if _image_outdated; then
+        if _engine_outdated; then
             echo "     image: outdated — $IMAGE was rebuilt; run 'wealthdb mcp restart'"
         else
             echo "     image: current"
@@ -316,16 +392,49 @@ mcp_url() {
 mcp_stdio() {
     _load_config || return 1
     _require_enabled || return 1
-    _require_image || return 1
+    _require_engine || return 1
+    if [ "$SERVICE_MODE" = native ]; then
+        local args=(-c "$CFG" mcp-serve --stdio) tok
+        while IFS= read -r tok; do
+            args+=("$tok")
+        done < <(_serve_args)
+        _native_env
+        exec "$ENGINE_BIN" "${args[@]}" "$@"
+    fi
     _stdio_args "$@"
     exec docker "${DOCKER_ARGS[@]}"
 }
 
-mcp_logs() { _require_docker || return 1; exec docker logs -f "$CONTAINER"; }
+# mcp_serve runs the native HTTP server in the foreground: what `start`
+# keeps running in the background, and what a system service runs on a
+# computer where no one is signed in.
+mcp_serve() {
+    if [ "$SERVICE_MODE" != native ]; then
+        echo "mcp: 'serve' runs the native engine's server. This tree runs the server in a container: wealthdb mcp start" >&2
+        return 2
+    fi
+    _load_config || return 1
+    _require_enabled || { _retire_agent; return 1; }
+    _ready || return 1
+    _native_serve_args || return 1
+    _native_env
+    _serve_here || return 1
+    _file_id "$ENGINE_BIN" > "$SERVING_FILE"
+    exec "$ENGINE_BIN" "${SERVE_ARGS[@]}"
+}
 
+mcp_logs() { _service_logs; }
+
+# _start_banner says where the server answers. A server under launchd
+# starts again at login, and only its banner says so.
 _start_banner() {
+    local name="$CONTAINER" after="After rebuilding the image"
+    if [ "$SERVICE_MODE" = native ]; then
+        name="the server" after="After an upgrade"
+        if _uses_launchd; then after="It starts again at login. $after"; fi
+    fi
     cat >&2 <<EOF
-mcp: $CONTAINER is up → MCP on $(_base_url)/mcp
+mcp: $name is up → MCP on $(_base_url)/mcp
      (redacted: $(_base_url)/mcp/privacy)
 
   Run 'wealthdb mcp url' for the URL and the Authorization header, ready
@@ -333,7 +442,7 @@ mcp: $CONTAINER is up → MCP on $(_base_url)/mcp
   'wealthdb mcp stdio' as the command instead.
 
   Calls read live gold read-only; nothing needs refreshing after a load.
-  After rebuilding the image, run 'wealthdb mcp restart'.
+  $after, run 'wealthdb mcp restart'.
 EOF
     if [ -n "${GOLD_DB:-}" ] && [ ! -f "$GOLD_DB" ]; then
         echo "  Note: there is no database at the configured path yet; calls say so" >&2
@@ -352,20 +461,28 @@ usage:
   wealthdb mcp <subcommand>
 
 subcommands:
-  start      run the server, detached (container wealthdb-mcp, image wealthdb:<tag>)
-  stop       stop and remove the container (the token is kept)
-  status     running state, URL, auth, whether the image is outdated
-  restart    stop, then start (after rebuilding the image)
-  logs       follow the container logs
+  start      run the server in the background
+  stop       stop the server (the token is kept)
+  status     running state, URL, auth, whether the engine is outdated
+  restart    stop, then start (after rebuilding or upgrading the engine)
+  logs       follow the server's log
   stdio      serve one MCP session on stdin/stdout, for clients that
              start the server themselves; --privacy redacts
   url        print the URL and the Authorization header, ready to paste
+  serve      run the native server in the foreground, for launchd or
+             systemd on a computer where no one is signed in
   help       this message
+
+The server is a container of the engine image (wealthdb-mcp, image
+wealthdb:<tag>) where the engine runs in a container. Where the engine is
+a program on this computer, the server is too: on a Mac it starts again
+at login and after a crash.
 
 Two endpoints: /mcp serves full data, /mcp/privacy redacts amounts,
 account numbers and the names taken off statements. Every call reads the
 live database read-only, so answers are as fresh as the last load.
-Published on 127.0.0.1 and [::1] only. Turn it on with
+It listens on 127.0.0.1 only (and [::1] as a container;
+WEALTHDB_MCP_BIND=v6 moves a native server to [::1]). Turn it on with
 'wealthdb config mcp-server', which writes the "mcp" block of wealthdb.cfg.
 
 HTTP asks for a bearer token, generated on first start (chmod 600).
@@ -381,7 +498,8 @@ WEALTHDB_MCP_INSECURE (the config fields' env forms), WEALTHDB_MCP_CHARS
 (characters per result, default 16000), WEALTHDB_MCP_ALLOW_HOSTS (Host
 names to answer besides loopback, comma-separated), WEALTHDB_MCP_ENV_FILE
 (default wealthdb-mcp.env in $WEALTHDB_SECRETS_DIR, else ~/.secrets, read
-for the variables above).
+for the variables above), WEALTHDB_NO_LAUNCHD=1 (on a Mac, the native
+server as a plain background process: no start at login, no restart).
 EOF
 }
 
@@ -398,6 +516,7 @@ mcp_main() {
         status)           mcp_status ;;
         restart)          mcp_stop; mcp_start ;;
         logs)             mcp_logs ;;
+        serve)            mcp_serve ;;
         stdio)            mcp_stdio "$@" ;;
         url)              mcp_url ;;
         help|-h|--help)   mcp_help ;;

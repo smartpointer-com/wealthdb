@@ -296,7 +296,10 @@ bronze → silver → gold model.
 ## Getting started
 
 Needs `git`, `make`, Docker and Python 3.10 or newer, on macOS or
-Linux. No Go toolchain: the engine builds inside its container.
+Linux. No Go toolchain: the engine builds inside its container. The
+engine, the dashboards and the MCP server can also run as programs on
+the computer, with Docker left to the collectors that drive a browser:
+[wealthdb/docs/NATIVE.md](wealthdb/docs/NATIVE.md).
 
 ```sh
 git clone <this repo> && cd wealthdb
@@ -378,6 +381,9 @@ describes the household and how to query it from the command line.
   the lot engine that rebuilds a cost basis no provider states;
   **[TAXONOMY.md](wealthdb/docs/TAXONOMY.md)** —
   the `asset_class` × `vehicle` classification.
+- **[NATIVE.md](wealthdb/docs/NATIVE.md)** — the engine, the
+  dashboards and the MCP server as programs on the computer, in place
+  of containers.
 - **[AGENTS.md](AGENTS.md)** — agent ground rules shared across
   every component (security, PII, read-only access).
 - **[skills/wealthdb-ro/SKILL.md](skills/wealthdb-ro/SKILL.md)** — a

@@ -115,13 +115,36 @@ def image_tag(root=REPO):
     return out.stdout.strip() if out.returncode == 0 else ""
 
 
+def native_engine():
+    """The native engine of this checkout, where ./configure chose that
+    kind (shared/wrappers/engine-mode.sh), else None."""
+    out = subprocess.run(["sh", "-c", '. "$1" && wealthdb_engine_mode "$2"', "_",
+                          str(REPO / "shared" / "wrappers" / "engine-mode.sh"), str(REPO)],
+                         capture_output=True, text=True, timeout=60)
+    if out.returncode != 0 or out.stdout.strip() != "native":
+        return None
+    return REPO / "wealthdb" / "wealthdb-engine"
+
+
 def engine_image_id():
-    """The id of the engine image this checkout runs, or empty when it cannot be read."""
+    """What tells the engine this checkout runs from another build of
+    it: the id of its image, or the native program's modification time
+    and size. Empty when it cannot be read."""
+    native = native_engine()
+    if native is not None:
+        try:
+            st = native.stat()
+        except OSError:
+            return ""
+        return f"native {st.st_mtime_ns} {st.st_size}"
     tag = image_tag()
     if not tag:
         return ""
-    out = subprocess.run(["docker", "image", "inspect", f"wealthdb:{tag}",
-                          "--format", "{{.Id}}"], capture_output=True, text=True, timeout=60)
+    try:
+        out = subprocess.run(["docker", "image", "inspect", f"wealthdb:{tag}",
+                              "--format", "{{.Id}}"], capture_output=True, text=True, timeout=60)
+    except OSError:
+        return ""
     if out.returncode != 0:
         return ""
     return out.stdout.strip()

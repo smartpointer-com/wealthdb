@@ -226,6 +226,15 @@ root, no `cd`-ing into subdirectories:
   images); commit any resulting `go.mod` / `go.sum` bump, never
   revert it. It also moves the Playwright base image and its pins in
   lockstep. Commit that rewrite the same way.
+- `./configure --engine=native` — make the tree build and run the
+  engine, the dashboards and the MCP server as programs on the host
+  instead of containers. `./configure` alone goes back.
+  [wealthdb/docs/NATIVE.md](wealthdb/docs/NATIVE.md) says what
+  changes.
+- `make test-native` — test the native engine in a container that
+  holds its tools, whatever kind of engine the checkout runs. Run it
+  after a change to a launcher, a server script, `configure` or the
+  Makefile's install.
 
 Underneath, each component also builds directly:
 
@@ -234,7 +243,11 @@ Underneath, each component also builds directly:
   other Go command via `./wealthdb-go <subcommand>`. Both run the
   image's toolchain — no host Go, and `make update` resolves the
   module graph there too, so the Dockerfile's base-image tag is the
-  only place the Go version is declared.
+  only place the Go version is declared. The one exception is a tree
+  configured for the native engine: there the three run the Go that
+  `./configure` recorded, and `make update` refuses the Go modules.
+  Install no toolchain on a machine to test that path: `make
+  test-native` brings its own.
   Gold's schema is SQL under `wealthdb/internal/gold/`. The tables
   and data moves are migrations in `migrations/`. Every macro and
   view lives once in `derived/`, and a change to one is an edit

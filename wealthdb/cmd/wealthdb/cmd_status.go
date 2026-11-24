@@ -317,12 +317,23 @@ func silverAhead(st *gold.SourceStatus, silver canonical.Status) bool {
 // probeSilverStatus opens the silver via the adapter and calls
 // Status(). Used both by overview and detailed views to flag
 // "silver has advanced past the stored watermark" without
-// requiring a load.
+// requiring a load. A silver whose collector writes it right now is not
+// read (lockSilverForRead, with no wait): the callers show no flag for
+// a probe that fails.
 func probeSilverStatus(ctx context.Context, src *config.SilverSource) (canonical.Status, error) {
 	adapter, err := silver.Get(src.Kind)
 	if err != nil {
 		return canonical.Status{}, err
 	}
+	var paths []string
+	for _, f := range src.Feeds() {
+		paths = append(paths, f.Path)
+	}
+	unlock, err := lockSilverForRead(ctx, paths, 0)
+	if err != nil {
+		return canonical.Status{}, err
+	}
+	defer unlock()
 	conn, err := adapter.Open(ctx, src.ToSilverOpenSpec())
 	if err != nil {
 		return canonical.Status{}, err

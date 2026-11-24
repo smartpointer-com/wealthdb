@@ -26,7 +26,7 @@ mkdir -p "$TREE/wealthdb" "$TREE/shared/wrappers" "$TMP/bin" "$TMP/home/cfg" "$T
 # Every run starts in a scratch folder, so a relative path lands there.
 cd "$TMP/work" || exit 1
 cp "$ROOT/wealthdb/wealthdb" "$TREE/wealthdb/"
-cp "$ROOT/shared/wrappers/image-tag.sh" "$TREE/shared/wrappers/"
+cp "$ROOT/shared/wrappers/image-tag.sh" "$ROOT/shared/wrappers/engine-mode.sh" "$TREE/shared/wrappers/"
 cat > "$TMP/bin/docker" <<'EOF'
 #!/bin/sh
 if [ "$1 $2" = "image inspect" ] && [ -n "${STUB_NO_IMAGE:-}" ]; then

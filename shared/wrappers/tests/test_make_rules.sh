@@ -49,7 +49,7 @@ mkdir -p "$TREE/shared/wrappers" "$TREE/wealthdb" "$TMP/bin"
 cp "$ROOT/Makefile" "$TREE/"
 cp "$ROOT/shared/wrappers/image-tag.sh" "$ROOT/shared/wrappers/demo-root.sh" \
    "$ROOT/shared/wrappers/envfile-lib.sh" "$ROOT/shared/wrappers/fanout.sh" \
-   "$TREE/shared/wrappers/"
+   "$ROOT/shared/wrappers/engine-mode.sh" "$TREE/shared/wrappers/"
 cp "$ROOT/wealthdb/wealthdb-go" "$TREE/wealthdb/"
 # One collector per runtime: Docker, host venv, and a hybrid.
 for c in dock host hyb; do mkdir -p "$TREE/collectors/$c/tests"; done
