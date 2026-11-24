@@ -298,20 +298,24 @@ git clone <this repo> && cd wealthdb
 make all                          # build the engine, the dashboards and every collector
 make install                      # put wealthdb and wealthdb-collect on PATH (~/.local/bin)
 
-wealthdb-collect list             # the collectors
-wealthdb-collect viac login       # sign in to one source; answer its MFA prompt in the terminal
+wealthdb config                   # pick the currency and the banks; each answer is saved at once
+wealthdb init                     # create the gold database
+wealthdb-collect viac login       # the collect commands the setup names, here for VIAC
 wealthdb-collect viac download    # fetch the raw data (bronze)
 wealthdb-collect viac load        # parse it into the source's database (silver)
-
-wealthdb config                   # setup wizard: gold path, currency, the sources to read
-wealthdb init                     # create the gold database
 wealthdb load -a                  # consolidate every source (gold)
 wealthdb holdings global          # the first report
 wealthdb web start                # the dashboards (optional; see web/README.md)
 wealthdb mcp start                # the reports for AI agents (optional; see mcp/README.md)
 ```
 
-Credentials go in `~/.secrets/<source>.env`; each collector's README
+`wealthdb config` asks a few questions and names the next command at
+each step. Ctrl+C stops it, and the next run starts from the saved
+answers. Once every step holds an answer, it is a menu that changes
+one part of the setup at a time, the AI model included. After an edit
+of the file by hand, `wealthdb config validate` checks it.
+
+Credentials go in `~/.secrets/<source>.env`; a collector's `login`
 names the variables. Data lands under `$XDG_DATA_HOME/wealthdb`, which
 defaults to `~/.local/share/wealthdb`. `make` alone lists every build
 and test target. [collectors/README.md](collectors/README.md) has the

@@ -7,7 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +22,7 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/loader"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/spending"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/wizard"
 )
 
 func init() {
@@ -67,8 +70,150 @@ See docs/DESIGN.md §8 for the load semantics.`)
 	defer lock.unlock()
 	defer db.Close()
 
-	firstErr := run.sources(ctx, loader.New(db), specs, false)
-	return errors.Join(firstErr, run.finish(ctx, db, nil))
+	ld := loader.New(db)
+	registered, err := ld.ListSourceIDs(ctx)
+	if err != nil {
+		return err
+	}
+	specs, missingErr := keepCollected(cfg, specs, registered, id != "", stdout, stderr)
+	if id == "" {
+		printUnlisted(cfg, setupCommand(g.ConfigPath), stdout)
+	}
+	if missingErr != nil && id != "" {
+		return missingErr
+	}
+	if run.priorTransactions, err = goldHasTransactions(ctx, db); err != nil {
+		return err
+	}
+	firstErr := run.sources(ctx, ld, specs, false)
+	return errors.Join(missingErr, firstErr, run.finish(ctx, db, nil))
+}
+
+// keepCollected leaves out of a load what has no data yet: a source
+// gold has never loaded, none of whose silver files exists, and a
+// subsource of such a source whose file does not exist. Each gets a line
+// that names the command collecting it. A source named alone (single)
+// with no data at all is an error.
+//
+// A source gold HAS loaded keeps every feed: a file of it that is
+// missing is an error, never data that is not there yet, because gold
+// does not record which subsources a load read, and loading the rest
+// would rebuild the source from part of its feeds. The other sources
+// still load; the error comes back once they have.
+func keepCollected(cfg *config.Config, specs []loader.SourceSpec, registered []string, single bool,
+	stdout, stderr io.Writer) ([]loader.SourceSpec, error) {
+	out := specs[:0:0]
+	var lost []string
+	for _, spec := range specs {
+		src, _ := cfg.Lookup(spec.ID)
+		missing := missingFeeds(src)
+		switch {
+		case len(missing) == 0:
+		case slices.Contains(registered, spec.ID):
+			msg := spec.ID + ": " + missingLine(missing)
+			if single {
+				return nil, errors.New(msg)
+			}
+			fmt.Fprintf(stderr, "load: %s\n", msg)
+			lost = append(lost, spec.ID)
+			continue
+		case len(missing) == len(src.Feeds()):
+			msg := spec.ID + ": " + noDataLine(missing)
+			if single {
+				return nil, errors.New(msg)
+			}
+			fmt.Fprintf(stdout, "load: %s\n", msg)
+			continue
+		default:
+			kept := spec.Subsources[:0:0]
+			for _, sub := range spec.Subsources {
+				if !slices.ContainsFunc(missing, func(f config.Feed) bool { return f.Path == sub.Path }) {
+					kept = append(kept, sub)
+				}
+			}
+			spec.Subsources = kept
+			for _, f := range missing {
+				fmt.Fprintf(stdout, "load: %s: %s: %s\n", spec.ID, f.Subsource, noDataLine([]config.Feed{f}))
+			}
+		}
+		out = append(out, spec)
+	}
+	if len(lost) > 0 {
+		return out, fmt.Errorf("load: the data file of %s is missing", strings.Join(lost, ", "))
+	}
+	return out, nil
+}
+
+// printUnlisted says which collected data the config does not name, for
+// the collectors it does name, and the command that adds it: a load
+// reads only what the config names, so a bank linked after the setup
+// would stay out in silence.
+func printUnlisted(cfg *config.Config, setup string, stdout io.Writer) {
+	feeds := make([][]config.Feed, len(cfg.SilverSources))
+	for i := range cfg.SilverSources {
+		feeds[i] = cfg.SilverSources[i].Feeds()
+	}
+	root, _ := dataRoot()
+	names := wizard.Unlisted(root, feeds)
+	if len(names) == 0 {
+		return
+	}
+	fmt.Fprintf(stdout, "load: collected, but not in the config, so not loaded: %s\n", strings.Join(names, ", "))
+	fmt.Fprintf(stdout, "load: to add it, run: %s banks\n", setup)
+}
+
+// missingFeeds are the feeds of src whose silver file does not exist.
+func missingFeeds(src *config.SilverSource) []config.Feed {
+	var out []config.Feed
+	for _, f := range src.Feeds() {
+		if _, err := os.Stat(f.Path); errors.Is(err, fs.ErrNotExist) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// missingLine says a loaded source's data file is missing, naming each
+// path.
+func missingLine(missing []config.Feed) string {
+	paths := make([]string, len(missing))
+	for i, f := range missing {
+		paths[i] = f.Path
+	}
+	if len(paths) == 1 {
+		return "its data file is missing: " + paths[0]
+	}
+	return "its data files are missing: " + strings.Join(paths, ", ")
+}
+
+// goldHasTransactions says gold holds a transaction: whether a report
+// could have read anything before this run.
+func goldHasTransactions(ctx context.Context, db *sql.DB) (bool, error) {
+	var has bool
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM transactions)`).Scan(&has); err != nil {
+		return false, fmt.Errorf("read gold: %w", err)
+	}
+	return has, nil
+}
+
+// noDataLine says there is no data yet and how to collect it: the
+// collect command of each collector, or the missing file where no
+// collector is known.
+func noDataLine(missing []config.Feed) string {
+	var run, files []string
+	for _, f := range missing {
+		switch c := config.CollectCommand(f); {
+		case f.Collector == "":
+			files = append(files, "the file "+f.Path+" does not exist")
+		case !slices.Contains(run, c):
+			run = append(run, c)
+		}
+	}
+	var how []string
+	if len(run) > 0 {
+		how = append(how, "Run: "+strings.Join(run, " and "))
+	}
+	return "no data yet. " + strings.Join(append(how, files...), "; ")
 }
 
 // loadRun is one load, reload or rebuild: the config, what it applies
@@ -78,6 +223,10 @@ type loadRun struct {
 	cfg            *config.Config
 	in             loadInputs
 	stdout, stderr io.Writer
+	// priorTransactions: gold held transactions before the run, so a
+	// report could have read them. Only then is the first stamp of the
+	// cash flow boundary news (printCashflowSummary).
+	priorTransactions bool
 }
 
 // prepareLoad reads what a load applies beside the sources and builds
@@ -203,7 +352,7 @@ func (r loadRun) finish(ctx context.Context, db *sql.DB, carry func() error) err
 			return err
 		}
 	}
-	return errors.Join(stampErr, runGoldPasses(ctx, db, r.cfg, r.in.enrichment, r.verb, r.stdout, r.stderr))
+	return errors.Join(stampErr, runGoldPasses(ctx, db, r.cfg, r.in.enrichment, r.priorTransactions, r.verb, r.stdout, r.stderr))
 }
 
 // sourceArg reads the `<silver_source_id> | -a` argument the
@@ -404,14 +553,15 @@ func parseEnrichmentLedgers(cfg *config.Config) (enrichmentLedgers, error) {
 // enrichment pass, the lot pass, the exposure pass, then the yield pass,
 // which reads the exposure pass's keys. A pass that fails is reported
 // under verb and does not stop the next; the failures come back joined.
-func runGoldPasses(ctx context.Context, db *sql.DB, cfg *config.Config, enrichment enrichmentLedgers, verb string, stdout, stderr io.Writer) error {
+func runGoldPasses(ctx context.Context, db *sql.DB, cfg *config.Config, enrichment enrichmentLedgers, priorTransactions bool,
+	verb string, stdout, stderr io.Writer) error {
 	var failed error
 	for _, pass := range []struct {
 		name string
 		fn   func() error
 	}{
 		{"class", func() error { return runClassPass(ctx, db, cfg) }},
-		{"enrichment", func() error { return runEnrichmentPass(ctx, db, cfg, enrichment, stdout) }},
+		{"enrichment", func() error { return runEnrichmentPass(ctx, db, cfg, enrichment, priorTransactions, stdout) }},
 		{"lots", func() error { return runLotPass(ctx, db, cfg, false, stdout) }},
 		{"exposure", func() error { return runExposurePass(ctx, db, stdout) }},
 		{"yield", func() error { return runYieldPass(ctx, db, stdout) }},
@@ -456,7 +606,11 @@ func printTiming(w io.Writer, name string, start time.Time) {
 // rather than a warning. A missing FX rank degrades a conversion; a
 // missing enrichment pass leaves own-account moves counted as
 // spending, which is not a degraded answer but a wrong one.
-func runEnrichmentPass(ctx context.Context, db *sql.DB, cfg *config.Config, ledgers enrichmentLedgers, stdout io.Writer) error {
+//
+// A first stamp of the cash flow boundary is announced only when
+// priorTransactions says a report could have read the gold before it.
+func runEnrichmentPass(ctx context.Context, db *sql.DB, cfg *config.Config, ledgers enrichmentLedgers, priorTransactions bool,
+	stdout io.Writer) error {
 	include, exclude := cfg.SpendAccountScope()
 	m := cfg.SpendMatching()
 	incomeInclude, incomeExclude := cfg.IncomeAccountScope()
@@ -487,6 +641,7 @@ func runEnrichmentPass(ctx context.Context, db *sql.DB, cfg *config.Config, ledg
 	if err != nil {
 		return fmt.Errorf("enrichment: %w", err)
 	}
+	res.Cashflow.FirstPass = res.Cashflow.FirstPass && priorTransactions
 	printPassSummary(stdout, res)
 	return nil
 }

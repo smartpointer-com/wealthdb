@@ -33,11 +33,35 @@ type globalFlags struct {
 // loadConfig loads the config at ConfigPath and shows its notices
 // (config.Config.Notices).
 func (g globalFlags) loadConfig() (*config.Config, error) {
-	cfg, err := config.Load(g.ConfigPath)
+	cfg, err := loadConfigAt(g.ConfigPath)
 	if err == nil && g.notices != nil {
 		g.notices(cfg)
 	}
 	return cfg, err
+}
+
+// loadConfigAt loads the config at path. A config that is not there, or
+// not finished, is a usage error that names the setup.
+func loadConfigAt(path string) (*config.Config, error) {
+	cfg, err := config.Load(path)
+	if err == nil {
+		return cfg, nil
+	}
+	switch st, _, _ := config.Inspect(path); st {
+	case config.StateAbsent:
+		return nil, errs.Newf(errs.ExitUsage, "Not set up yet. Run: %s", setupCommand(path))
+	case config.StateUnfinished:
+		return nil, errs.Newf(errs.ExitUsage, "Setup is not finished. Run: %s", setupCommand(path))
+	}
+	return nil, err
+}
+
+// setupCommand is the command that sets up the config at path.
+func setupCommand(path string) string {
+	if path == defaultConfigPath() {
+		return "wealthdb config"
+	}
+	return "wealthdb -c " + path + " config"
 }
 
 // noticesOnce writes a config's notices to w, the first time a command

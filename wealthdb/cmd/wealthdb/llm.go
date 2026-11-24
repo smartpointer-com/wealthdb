@@ -19,8 +19,9 @@ import (
 // for a verdict and stores it in gold: `resolve-symbols` (tickers,
 // per-source) and `categorize` (spend categories, per merchant).
 //
-// Here are the transport, the response hygiene and the config check;
-// the retry loop and the store policy are in modelpass.go. Each command
+// Here are the transport and the response hygiene; the config check is
+// config.ModelConfig.Check, and the retry loop and the store policy are
+// in modelpass.go. Each command
 // owns its own prompt, its own CSV columns, and its own validation
 // gauntlet, because what makes a response wrong is entirely specific to
 // what was asked.
@@ -36,27 +37,6 @@ func modelCaller(cfg *config.ModelConfig) llmCall {
 	return func(ctx context.Context, system, user string) (string, error) {
 		return callLLM(ctx, cfg, system, user)
 	}
-}
-
-// validateModelConfig checks the required model fields are set. The
-// shape of baseUrl is not enforced (net/http surfaces the URL error
-// if it is malformed) but every required piece needs to be non-empty.
-//
-// keyPrefix roots every message in the config key that actually holds
-// the block — "spending.categorization.model",
-// "symbol_resolution.model" — so the message names something greppable
-// in the config file, and a deployment with both blocks can tell which
-// one is broken.
-func validateModelConfig(keyPrefix string, m *config.ModelConfig) error {
-	switch {
-	case m.BaseURL == "":
-		return fmt.Errorf("%s.baseUrl is required", keyPrefix)
-	case m.Name == "":
-		return fmt.Errorf("%s.name is required", keyPrefix)
-	case m.API != "" && m.API != "openai-completions":
-		return fmt.Errorf("%s.api %q not supported; only 'openai-completions' is wired today", keyPrefix, m.API)
-	}
-	return nil
 }
 
 // invalidRow is a row the model emitted that failed validation.

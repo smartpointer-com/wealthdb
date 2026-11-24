@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -121,13 +123,17 @@ func runUsage(t *testing.T, args ...string) string {
 }
 
 // TestTheThreeHelpPathsPrintTheSameThing pins that the three ways in
-// agree to the byte: the bare invocation, --help and `help` all print
-// the one generated listing.
+// agree to the byte once a config is set up: the bare invocation,
+// --help and `help` all print the one generated listing.
 func TestTheThreeHelpPathsPrintTheSameThing(t *testing.T) {
 	t.Parallel()
-	bare := runUsage(t)
+	cfg := filepath.Join(t.TempDir(), "wealthdb.cfg")
+	if err := os.WriteFile(cfg, []byte(`{"gold_db": "/x/g.db", "default_currency": "USD"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bare := runUsage(t, "-c", cfg)
 	for _, args := range [][]string{{"--help"}, {"-help"}, {"help"}} {
-		if got := runUsage(t, args...); got != bare {
+		if got := runUsage(t, append([]string{"-c", cfg}, args...)...); got != bare {
 			t.Errorf("`wealthdb %s` output differs from the bare invocation:\n--- bare ---\n%s\n--- %s ---\n%s",
 				strings.Join(args, " "), bare, strings.Join(args, " "), got)
 		}
@@ -138,7 +144,7 @@ func TestTheThreeHelpPathsPrintTheSameThing(t *testing.T) {
 // the rendered listing exactly once.
 func TestUsageNamesEveryCommandOnce(t *testing.T) {
 	t.Parallel()
-	out := runUsage(t)
+	out := runUsage(t, "help")
 	for _, c := range commandHelps {
 		n := 0
 		for _, line := range strings.Split(out, "\n") {

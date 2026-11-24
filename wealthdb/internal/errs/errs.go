@@ -24,9 +24,11 @@ const (
 	// DB doesn't exist; run `wealthdb init` to create it.
 	ExitMissingDB = 3
 
-	// ExitInitExisting — `wealthdb init` was invoked but the gold
-	// DB already exists, or `wealthdb config` was invoked but the
-	// config file already exists.
+	// ExitInitExisting — retired: `wealthdb init` on an existing
+	// gold DB succeeds, and `wealthdb config` edits an existing
+	// config. Nothing returns the code; it stays reserved so a code
+	// a script reads never takes a new meaning (docs/DESIGN.md
+	// §4.10).
 	ExitInitExisting = 4
 
 	// ExitOpenFailed — opening the gold DuckDB file failed for a

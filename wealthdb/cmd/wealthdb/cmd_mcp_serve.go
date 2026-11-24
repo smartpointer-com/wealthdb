@@ -94,7 +94,7 @@ func cmdMCPServe(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	}
 	// The config is loaded per call, but a broken one should fail the
 	// start, not the first question, and its notices show once, here.
-	cfg, err := config.Load(g.ConfigPath)
+	cfg, err := loadConfigAt(g.ConfigPath)
 	if err != nil {
 		return err
 	}

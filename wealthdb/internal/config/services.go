@@ -132,6 +132,21 @@ type ModelConfig struct {
 	ThinkingFormat string `json:"thinkingFormat,omitempty"`
 }
 
+// Check says what a command that asks the model would refuse in m:
+// a missing baseUrl or name, or an api other than the one supported.
+// key is the member that holds the block, which every message names.
+func (m *ModelConfig) Check(key string) error {
+	switch {
+	case m.BaseURL == "":
+		return fmt.Errorf("%s.baseUrl is required", key)
+	case m.Name == "":
+		return fmt.Errorf("%s.name is required", key)
+	case m.API != "" && m.API != "openai-completions":
+		return fmt.Errorf("%s.api %q not supported; only 'openai-completions' is wired today", key, m.API)
+	}
+	return nil
+}
+
 // validateSymbolResolution checks symbol_resolution.overrides: every source
 // must be declared, every kind must be one of the two discriminator values
 // used by the symbol_resolutions table, every lookup_value must be

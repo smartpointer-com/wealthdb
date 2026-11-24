@@ -39,7 +39,9 @@ func runAt(now func() time.Time, args []string, stdin io.Reader, stdout, stderr 
 		return errs.ExitUsage
 	}
 	if len(rest) == 0 {
-		printGlobalUsage(stderr)
+		if !printFirstSteps(g.ConfigPath, stderr) {
+			printGlobalUsage(stderr)
+		}
 		return errs.ExitUsage
 	}
 

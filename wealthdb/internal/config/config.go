@@ -5,9 +5,13 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
@@ -272,12 +276,15 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: read %q: %w", absPath, err)
 	}
+	return Parse(data, absPath)
+}
 
-	var c Config
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&c); err != nil {
-		return nil, fmt.Errorf("config: parse %q: %w", absPath, err)
+// Parse is Load on the text of a config file at absPath: absPath names
+// the file in an error and anchors its relative paths.
+func Parse(data []byte, absPath string) (*Config, error) {
+	c, err := decode(data, absPath)
+	if err != nil {
+		return nil, err
 	}
 
 	// Expand path-valued fields. Done before validation so any
@@ -297,7 +304,96 @@ func Load(path string) (*Config, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
+	return c, nil
+}
+
+// decode reads the text of the config at absPath into a Config. It
+// refuses a member the struct does not name, and checks and expands
+// nothing else.
+func decode(data []byte, absPath string) (*Config, error) {
+	var c Config
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&c); err != nil {
+		return nil, fmt.Errorf("config: parse %q: %w", absPath, err)
+	}
 	return &c, nil
+}
+
+// State is where a config file stands on the way to a working setup.
+type State int
+
+const (
+	// StateAbsent: no file, or a file of whitespace alone.
+	StateAbsent State = iota
+	// StateUnfinished: the file parses but names no default_currency or
+	// no gold_db yet.
+	StateUnfinished
+	// StateValid: the file loads.
+	StateValid
+	// StateRefused: the file does not parse, or does not load for
+	// another reason.
+	StateRefused
+)
+
+// Inspect says where the config at path stands, by Load's own rules.
+// It returns the loaded config for StateValid and the refusal for
+// StateRefused. A file that cannot be read is refused.
+func Inspect(path string) (State, *Config, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return StateRefused, nil, fmt.Errorf("config: resolve %q: %w", path, err)
+	}
+	data, err := os.ReadFile(absPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return StateAbsent, nil, nil
+	}
+	if err != nil {
+		return StateRefused, nil, fmt.Errorf("config: read %q: %w", absPath, err)
+	}
+	return InspectBytes(data, absPath)
+}
+
+// InspectBytes is Inspect on the text of a config file at absPath.
+func InspectBytes(data []byte, absPath string) (State, *Config, error) {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return StateAbsent, nil, nil
+	}
+	c, err := decode(data, absPath)
+	if err != nil {
+		return StateRefused, nil, err
+	}
+	if c.GoldDB == "" || c.DefaultCurrency == "" {
+		return StateUnfinished, nil, nil
+	}
+	if c, err = Parse(data, absPath); err != nil {
+		return StateRefused, nil, err
+	}
+	return StateValid, c, nil
+}
+
+// ExpandPath resolves a path value the way Load resolves the config's
+// own: `~` and `$HOME`, then environment variables, then a relative
+// path against baseDir.
+func ExpandPath(p, baseDir string) (string, error) {
+	return expandPath(p, baseDir)
+}
+
+// TopLevelKeys are the members a config file may hold, in the order the
+// Config struct declares them.
+func TopLevelKeys() []string {
+	t := reflect.TypeFor[Config]()
+	var out []string
+	for i := range t.NumField() {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		if name, _, _ := strings.Cut(f.Tag.Get("json"), ","); name != "" && name != "-" {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // Notices are the lines a front end shows for a config that loads but

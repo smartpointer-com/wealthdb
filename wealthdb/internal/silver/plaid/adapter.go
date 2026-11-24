@@ -36,6 +36,8 @@ var collectors = []silver.Collector{
 		Group:   silver.GroupWorldwide,
 		Covers:  "banks and brokers linked through a Plaid account",
 		PerItem: true,
+		Logins:  "banks",
+		Start:   "link --item {item}",
 	},
 }
 

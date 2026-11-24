@@ -33,13 +33,15 @@ show data as of the last refresh. See [DESIGN.md](DESIGN.md) §2.
 
 ## Enable it
 
-Add a `web` block to `wealthdb.cfg` (the only config it needs):
+Turn the dashboards on in the setup:
 
-```json
-"web": { "enabled": true, "port": 3000 }
+```sh
+wealthdb config dashboards
 ```
 
-`port` defaults to 3000. The dashboards open in the config's
+It writes the `web` block of `wealthdb.cfg`, the only config the
+dashboards need: `"web": { "enabled": true, "port": 3000 }`. `port`
+defaults to 3000. The dashboards open in the config's
 `default_currency` when it is USD, CHF, EUR or GBP, and in USD
 otherwise; each dashboard's Currency picker switches between the four.
 

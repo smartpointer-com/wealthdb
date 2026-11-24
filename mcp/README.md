@@ -29,13 +29,14 @@ wealthdb mcp start | stop | status | restart | logs | stdio | url
 
 ## Enable it
 
-Add an `mcp` block to `wealthdb.cfg`:
+Turn the MCP server on in the setup:
 
-```json
-"mcp": { "enabled": true, "port": 3300 }
+```sh
+wealthdb config mcp-server
 ```
 
-`port` defaults to 3300. The server needs no image of its own: build
+It writes the `mcp` block of `wealthdb.cfg`:
+`"mcp": { "enabled": true, "port": 3300 }`. `port` defaults to 3300. The server needs no image of its own: build
 the engine as usual (`wealthdb build`).
 
 ## Start it and connect a client

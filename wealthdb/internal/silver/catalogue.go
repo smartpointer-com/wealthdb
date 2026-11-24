@@ -78,6 +78,13 @@ type Collector struct {
 	// <item>/<item>.db in its data folder, and each is an entry of its
 	// own.
 	PerItem bool
+	// Logins is the verb that lists a per-item collector's logins, with
+	// the names its --item flag takes; empty when it has none.
+	Logins string
+	// Start is what follows `wealthdb-collect <name>` in the command
+	// that starts collecting: the verb and its flags, `{item}` standing
+	// for a per-item login's name. Empty: `login`.
+	Start string
 	// FX: its silver holds exchange rates, so the reports can convert
 	// the currencies they cover.
 	FX bool

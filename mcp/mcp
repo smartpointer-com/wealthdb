@@ -211,8 +211,7 @@ _base_url() {
 
 _require_enabled() {
     if [ "$ENABLED" != 1 ]; then
-        echo "mcp: not enabled. Add an \"mcp\" block to wealthdb.cfg, e.g.:" >&2
-        echo '      "mcp": { "enabled": true, "port": 3300 }' >&2
+        echo "mcp: the MCP server is off. Run: wealthdb config mcp-server" >&2
         return 1
     fi
 }
@@ -290,7 +289,7 @@ mcp_status() {
         echo "     $INSECURE_WARNING"
     fi
     echo "     live gold: ${GOLD_DB:-<unset>}"
-    [ "$ENABLED" = 1 ] || echo "     note: mcp.enabled is not set in wealthdb.cfg"
+    [ "$ENABLED" = 1 ] || echo "     note: the MCP server is off (wealthdb config mcp-server)"
     return 0
 }
 
@@ -372,10 +371,8 @@ subcommands:
 Two endpoints: /mcp serves full data, /mcp/privacy redacts amounts,
 account numbers and the names taken off statements. Every call reads the
 live database read-only, so answers are as fresh as the last load.
-Published on 127.0.0.1 and [::1] only. Enable it with an "mcp" block in
-wealthdb.cfg:
-
-      "mcp": { "enabled": true, "port": 3300 }
+Published on 127.0.0.1 and [::1] only. Turn it on with
+'wealthdb config mcp-server', which writes the "mcp" block of wealthdb.cfg.
 
 HTTP asks for a bearer token, generated on first start (chmod 600).
 Turning it off takes both "auth": "none" and "insecure": true; "none"

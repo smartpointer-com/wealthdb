@@ -89,7 +89,7 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 			return errs.Newf(errs.ExitUsage, "categorize: %s is not set; add a `%s` block to %s",
 				modelKey, modelKey, g.ConfigPath)
 		}
-		if err := validateModelConfig(modelKey, modelCfg); err != nil {
+		if err := modelCfg.Check(modelKey); err != nil {
 			return errs.Newf(errs.ExitUsage, "categorize: %s", err.Error())
 		}
 	}
@@ -142,7 +142,7 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		fmt.Fprintln(stdout, "categorize: the candidate set below is AS OF THE LAST LOAD; a real run re-asserts it first.")
 	} else if err := stampConfig(ctx, db, cfg, in, "categorize", stdout, stderr); err != nil {
 		return err
-	} else if err := runEnrichmentPass(ctx, db, cfg, in.enrichment, stdout); err != nil {
+	} else if err := runEnrichmentPass(ctx, db, cfg, in.enrichment, true, stdout); err != nil {
 		return err
 	}
 

@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/pathmode"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/wizard"
 )
 
 func init() {
@@ -21,9 +23,8 @@ func cmdInit(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, 
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, `usage: wealthdb init
 
-Creates the gold DuckDB file at the path given by the gold_db
-field in the config file, runs all migrations, and exits. Fails
-if the file already exists.`)
+Create the database at the path the config names (gold_db), and name
+the next step. A database that exists already is left as it is.`)
 	}
 	if err := parseFlags(fs, subargs, "init"); err != nil {
 		return err
@@ -36,15 +37,23 @@ if the file already exists.`)
 	if err != nil {
 		return err
 	}
+	if err := createGold(ctx, g, cfg, stdout); err != nil {
+		return err
+	}
+	fmt.Fprint(stdout, initNextStep(colors(stdout), cfg))
+	return nil
+}
 
+// createGold creates the database the config names and runs every
+// migration, or says where it is when it exists.
+func createGold(ctx context.Context, g globalFlags, cfg *config.Config, stdout io.Writer) error {
 	dec, err := pathmode.Detect(cfg.GoldDB, g.ForceReadOnly, true /* init */)
 	if err != nil {
 		return errs.Wrap(errs.ExitOpenFailed, err)
 	}
 	if dec.DBExists {
-		return errs.Newf(errs.ExitInitExisting,
-			"gold database %q already exists. Use 'wealthdb reset -a' to clear data, "+
-				"or delete the file manually if you really want a fresh DB.", cfg.GoldDB)
+		fmt.Fprintf(stdout, "wealthdb init: the database exists already at %s\n", cfg.GoldDB)
+		return nil
 	}
 	if dec.Mode != pathmode.ModeReadWrite {
 		return errs.Newf(errs.ExitRWNeeded,
@@ -62,6 +71,20 @@ if the file already exists.`)
 		return errs.Wrap(errs.ExitOpenFailed, fmt.Errorf("apply migrations: %w", err))
 	}
 
-	fmt.Fprintf(stdout, "wealthdb init: created gold database at %s\n", cfg.GoldDB)
+	fmt.Fprintf(stdout, "wealthdb init: created the database at %s\n", cfg.GoldDB)
 	return nil
+}
+
+// initNextStep is what follows a database: the setup when no source is
+// configured, else the collect commands of the sources without data,
+// then the load.
+func initNextStep(p wizard.Palette, cfg *config.Config) string {
+	if len(cfg.SilverSources) == 0 {
+		return wizard.ToDo(p, []wizard.Step{{Command: "wealthdb config", Does: "Adds a bank or a broker to read."}})
+	}
+	feeds := make([][]config.Feed, len(cfg.SilverSources))
+	for i := range cfg.SilverSources {
+		feeds[i] = cfg.SilverSources[i].Feeds()
+	}
+	return wizard.NextSteps(p, feeds)
 }

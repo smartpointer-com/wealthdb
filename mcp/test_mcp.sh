@@ -171,7 +171,7 @@ check     "env insecure wins"      "1"                                          
 echo "== mcp_start refusals =="
 config 0 3300 token 0
 if out="$(mcp_start 2>&1)"; then fail "refuses when not enabled"; else pass "refuses when not enabled"; fi
-check     "says how to enable"     '"mcp": { "enabled": true'                      "$out"
+check     "says how to turn it on" 'Run: wealthdb config mcp-server'               "$out"
 config 1 3300 none 0
 if out="$(mcp_start 2>&1)"; then fail "refuses auth none alone"; else pass "refuses auth none alone"; fi
 check     "says what is missing"   "insecure"                                     "$out"

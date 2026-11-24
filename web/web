@@ -210,8 +210,7 @@ web_start() {
         _timed config _load_config || return 1
     fi
     if [ "$ENABLED" != 1 ]; then
-        echo "web: not enabled. Add a \"web\" block to wealthdb.cfg, e.g.:" >&2
-        echo '      "web": { "enabled": true, "port": 3000 }' >&2
+        echo "web: the dashboards are off. Run: wealthdb config dashboards" >&2
         return 1
     fi
     if _is_running; then
@@ -285,7 +284,7 @@ web_status() {
         echo "     snapshot: none yet — created on 'wealthdb web start' / 'refresh'"
     fi
     echo "     live gold: ${GOLD_DB:-<unset>}"
-    [ "$ENABLED" = 1 ] || echo "     note: web.enabled is not set in wealthdb.cfg"
+    [ "$ENABLED" = 1 ] || echo "     note: the dashboards are off (wealthdb config dashboards)"
 }
 
 # _epoch is seconds since the epoch, with a fraction. macOS date has no %N.
@@ -620,10 +619,8 @@ subcommands:
 
 Metabase reads a read-only SNAPSHOT of gold (never the live file), so
 it never contends with 'wealthdb load'. Published on 127.0.0.1 + [::1] only;
-reach it via SSH port-forward + Metabase's own login. Enable it with a
-"web" block in wealthdb.cfg:
-
-      "web": { "enabled": true, "port": 3000 }
+reach it via SSH port-forward + Metabase's own login. Turn it on with
+'wealthdb config dashboards', which writes the "web" block of wealthdb.cfg.
 
 Auto-provision (default on): creates the admin + pre-adds the gold DB,
 skipping the browser setup wizard. Credentials:

@@ -222,7 +222,7 @@ func resolveModel(cfg *config.Config, cfgPath string, opts resolveSymbolsOpts) (
 		return nil, errs.Newf(errs.ExitUsage, "resolve-symbols: %s is not set; add a `%s` block to %s (or use --overrides-only)",
 			modelKey, modelKey, cfgPath)
 	}
-	if err := validateModelConfig(modelKey, modelCfg); err != nil {
+	if err := modelCfg.Check(modelKey); err != nil {
 		return nil, errs.Newf(errs.ExitUsage, "resolve-symbols: %s", err.Error())
 	}
 	return modelCfg, nil

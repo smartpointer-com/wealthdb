@@ -101,11 +101,67 @@ esac
 wealthdb_engine_paths
 
 mkdir -p "$CFG_DIR" "$DATA_ROOT"
+
+# The config may be a symbolic link, as a dotfile manager makes one.
+# CFG_TARGET is the file its links name: `config` writes that file, and
+# mounts its folder too, so the link stays a link. A link into a folder
+# that does not exist is refused before anything is created.
+CFG_TARGET="$CFG" hops=0
+while [ -L "$CFG_TARGET" ]; do
+    hops=$((hops + 1))
+    if [ "$hops" -gt 40 ]; then
+        echo "wealthdb: the config $CFG is a link that names itself; nothing is changed" >&2
+        exit 2
+    fi
+    link="$(readlink "$CFG_TARGET")"
+    case "$link" in
+        /*) CFG_TARGET="$link" ;;
+        *)  CFG_TARGET="$(dirname "$CFG_TARGET")/$link" ;;
+    esac
+done
+if [ ! -d "$(dirname "$CFG_TARGET")" ]; then
+    echo "wealthdb: the config $CFG is a link to $CFG_TARGET, whose folder does not exist; nothing is changed" >&2
+    exit 2
+fi
+CFG_TARGET_DIR="$(cd "$(dirname "$CFG_TARGET")" && pwd)"
 [ -f "$CFG" ] || : > "$CFG"
 
-# Allocate a TTY only when the host shell has one. The wizard
-# (`wealthdb config`) requires this; the other subcommands work
-# either way. Cron / piped invocations skip both flags.
+# The subcommand: the first argument past the global flags (-c PATH,
+# -r, in their -x, --x and --x=V forms).
+sub="" skip=0
+for a in "$@"; do
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    case "$a" in
+        -c|--c|-config|--config) skip=1 ;;
+        -*) ;;
+        *) sub="$a"; break ;;
+    esac
+done
+
+# Every subcommand but `config` mounts the config FILE (Docker follows a
+# link to its file). `config` saves by renaming a temporary file over
+# the config, which a file mount refuses, so it mounts the config's
+# folder instead, and the folder of the file a link names. It also gets
+# the host's locale, whose region guesses the currency, and TERM, so a
+# terminal that cannot do raw mode gets the numbered menu.
+CFG_MOUNT="$CFG:$CFG"
+if [ "$sub" = config ]; then
+    CFG_MOUNT="$CFG_DIR:$CFG_DIR"
+    if [ "$(uname -s)" = Darwin ]; then
+        locale="$(defaults read -g AppleLocale 2>/dev/null || true)"
+    fi
+    locale="${locale:-${LC_ALL:-${LC_MONETARY:-${LANG:-}}}}"
+    set -- -e WEALTHDB_LOCALE="$locale" -e TERM="${TERM:-dumb}" "$IMAGE" "$@"
+    if [ "$CFG_TARGET_DIR" != "$(cd "$CFG_DIR" && pwd)" ]; then
+        set -- -v "$CFG_TARGET_DIR:$CFG_TARGET_DIR" "$@"
+    fi
+else
+    set -- "$IMAGE" "$@"
+fi
+
+# Allocate a TTY only when the host shell has one. `wealthdb config`
+# requires this; the other subcommands work either way. Cron / piped
+# invocations skip both flags.
 TTY=""
 [ -t 0 ] && [ -t 1 ] && TTY="-it"
 
@@ -114,7 +170,6 @@ exec docker run --rm $TTY \
     -e XDG_CONFIG_HOME="$CFG_DIR" \
     -e WEALTHDB_DATA_ROOT="$DATA_ROOT" \
     -u "$(id -u):$(id -g)" \
-    -v "$CFG:$CFG" \
+    -v "$CFG_MOUNT" \
     -v "$DATA_ROOT:$DATA_ROOT" \
-    "$IMAGE" \
     "$@"

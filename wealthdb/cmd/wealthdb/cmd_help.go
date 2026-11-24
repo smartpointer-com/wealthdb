@@ -6,6 +6,8 @@ import (
 	"io"
 	"slices"
 	"strings"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 )
 
 func init() {
@@ -92,7 +94,7 @@ var commandHelps = []commandHelp{
 	{name: "snapshots", args: "<id> | -a", group: "report",
 		short: "the dates a source has data for"},
 
-	{name: "config", group: "load", short: "interactive first-time setup wizard; writes wealthdb.cfg"},
+	{name: "config", args: "[<section>]", group: "load", short: "set up the currency, the banks and brokers, and the servers"},
 	{name: "init", group: "load", short: "create the empty database at the configured path"},
 	{name: "load", args: "<id> | -a", group: "load", short: "load a source's new data (or every source's) into the database"},
 	{name: "reset", args: "<id> | -a", group: "load", short: "remove a source's data from the database"},
@@ -245,4 +247,31 @@ func usageString() string {
 	var b strings.Builder
 	printGlobalUsage(&b)
 	return b.String()
+}
+
+// printFirstSteps writes the first steps of a setup in place of the
+// listing, when the config at path is not there or not finished, and
+// says whether it did.
+func printFirstSteps(path string, w io.Writer) bool {
+	var head string
+	switch st, _, _ := config.Inspect(path); st {
+	case config.StateAbsent:
+		head = "Not set up yet."
+	case config.StateUnfinished:
+		head = "Setup is not finished."
+	default:
+		return false
+	}
+	fmt.Fprintf(w, `wealthdb — a household's complete financial picture, from one local database
+
+%s The first steps:
+  1. %-24s choose the currency and the banks and brokers to read
+  2. %-24s create the database
+  3. %-24s load what the collectors downloaded
+Step 1 names the command that collects each bank's data.
+Run those commands between steps 2 and 3.
+
+Run 'wealthdb help' for everything else.
+`, head, setupCommand(path), "wealthdb init", "wealthdb load -a")
+	return true
 }

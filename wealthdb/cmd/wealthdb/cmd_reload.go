@@ -133,6 +133,10 @@ func reloadFreshAndSwap(ctx context.Context, run loadRun, specs []loader.SourceS
 	if err != nil {
 		return errs.Wrap(errs.ExitOpenFailed, err)
 	}
+	if run.priorTransactions, err = goldHasTransactions(ctx, live); err != nil {
+		_ = live.Close()
+		return err
+	}
 	if err := live.Close(); err != nil {
 		return errs.Wrap(errs.ExitOpenFailed, fmt.Errorf("close migrated gold: %w", err))
 	}
@@ -305,6 +309,9 @@ func reloadInPlace(ctx context.Context, run loadRun, specs []loader.SourceSpec) 
 	}
 	defer db.Close()
 
+	if run.priorTransactions, err = goldHasTransactions(ctx, db); err != nil {
+		return err
+	}
 	firstErr := run.sources(ctx, loader.New(db), specs, true)
 	return errors.Join(firstErr, run.finish(ctx, db, nil))
 }

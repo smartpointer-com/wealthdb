@@ -171,6 +171,10 @@ func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, id s
 		return err
 	}
 	if st == nil {
+		if line, ok := noDataYet(src); ok {
+			fmt.Fprintf(stdout, "%s (%s)\n  %s\n", id, src.Kind, line)
+			return nil
+		}
 		fmt.Fprintf(stdout, "%s (%s, %s)\n  not registered in gold; run `wealthdb load %s` first\n",
 			id, src.Kind, src.Path, id)
 		return nil
@@ -183,6 +187,9 @@ func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, id s
 	}
 
 	fmt.Fprintf(stdout, "%s [%s] %s\n", id, st.Kind, st.Path)
+	if missing := missingFeeds(src); len(missing) > 0 {
+		fmt.Fprintf(stdout, "  ERROR: %s\n", missingLine(missing))
+	}
 	fmt.Fprintf(stdout, "  high_watermark:  %s%s\n", formatWatermark(st.HighWatermark), advancedHint)
 	fmt.Fprintf(stdout, "  first_loaded:    %s\n", formatDateTime(st.FirstLoadedAt))
 	fmt.Fprintf(stdout, "  last_loaded:     %s\n", formatDateTime(st.LastLoadedAt))
@@ -242,7 +249,16 @@ func printOneLineStatus(ctx context.Context, r gold.SourceStatusResult, src *con
 		return
 	}
 	if st == nil {
+		if line, ok := noDataYet(src); ok {
+			fmt.Fprintf(stdout, "%-20s [%s] %s\n", src.ID, src.Kind, line)
+			return
+		}
 		fmt.Fprintf(stdout, "%-20s [%s] not loaded yet\n", src.ID, src.Kind)
+		return
+	}
+
+	if missing := missingFeeds(src); len(missing) > 0 {
+		fmt.Fprintf(stdout, "%-20s [%s] ERROR: %s\n", src.ID, src.Kind, missingLine(missing))
 		return
 	}
 
@@ -281,6 +297,15 @@ func printOneLineStatus(ctx context.Context, r gold.SourceStatusResult, src *con
 	fmt.Fprintf(stdout, "%-20s [%s] %d pos, %d tx, observed=%s, watermark=%s%s%s\n",
 		src.ID, st.Kind, st.PositionsCount, st.TransactionsCount, formatOptionalDate(st.ObservedSnapshotsThrough),
 		formatWatermark(st.HighWatermark), advanced, driftHint)
+}
+
+// noDataYet is the status of a source gold has not loaded, none of whose
+// silver files exists yet, naming the command that collects it.
+func noDataYet(src *config.SilverSource) (string, bool) {
+	if len(missingFeeds(src)) < len(src.Feeds()) {
+		return "", false
+	}
+	return noDataLine(src.Feeds()), true
 }
 
 // silverAhead says the silver holds data a load would bring: its latest

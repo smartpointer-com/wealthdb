@@ -2,9 +2,11 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"math"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -125,6 +127,47 @@ func (s *SilverSource) ToSilverOpenSpec() silver.OpenSpec {
 		})
 	}
 	return out
+}
+
+// Feed is one silver file of a source: its path, the subsource kind it
+// is listed under (empty in the path form), the collector that writes
+// it (empty when the catalogue names none, silver.CollectorOf) and, for
+// a collector with one silver per linked login, that login's name.
+type Feed struct {
+	Path      string
+	Subsource string
+	Collector string
+	Item      string
+}
+
+// Feeds are the source's silver files, in config order: its path, or
+// each of its subsources.
+func (s *SilverSource) Feeds() []Feed {
+	feed := func(sub, p string) Feed {
+		c, _ := silver.CollectorOf(s.Kind, sub, p)
+		f := Feed{Path: p, Subsource: sub, Collector: c.Name}
+		if c.PerItem {
+			f.Item = filepath.Base(filepath.Dir(p))
+		}
+		return f
+	}
+	if len(s.Subsources) == 0 {
+		return []Feed{feed("", s.Path)}
+	}
+	out := make([]Feed, len(s.Subsources))
+	for i, sub := range s.Subsources {
+		out[i] = feed(sub.Kind, sub.Path)
+	}
+	return out
+}
+
+// CollectCommand is the command that starts collecting the data of a
+// feed: its collector's first sign-in, which lists what to save first,
+// or the start the catalogue states for it, with the login's name.
+func CollectCommand(f Feed) string {
+	c, _ := silver.CollectorNamed(f.Collector)
+	start := strings.ReplaceAll(cmp.Or(c.Start, "login"), "{item}", f.Item)
+	return "wealthdb-collect " + f.Collector + " " + start
 }
 
 // registeredKind refuses a kind no adapter registers, naming the kinds

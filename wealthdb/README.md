@@ -110,9 +110,9 @@ From the repo root:
 ```sh
 make build-wealthdb                    # build the engine image (~2 min the first time)
 make install                           # put wealthdb on PATH (~/.local/bin)
-wealthdb config                        # interactive setup wizard
+wealthdb config                        # the setup: currency, banks and brokers, servers
 wealthdb init                          # create the gold DB
-wealthdb load -a                       # merge every configured silver
+wealthdb load -a                       # merge every configured silver, once collected
 wealthdb holdings positions            # consolidated positions, in the default currency
 wealthdb holdings positions -x CHF     # the same, in CHF
 wealthdb holdings positions -f csv     # CSV for scripting
@@ -128,18 +128,19 @@ wealthdb status -v                     # how current each source is
 wealthdb status --marks 2025           # how fresh the marks were at each month end
 ```
 
-The `config` wizard asks for:
+`wealthdb config` asks for:
 
-1. the gold DB path (default `${XDG_DATA_HOME:-~/.local/share}/wealthdb/wealthdb.db`);
-2. the default output currency (default `USD`; `-x` overrides it per
-   query);
-3. one or more silver sources, each with a short id (used by `load`,
-   `reset` and `snapshots`), the source kind (`schwab`, `ubs`,
-   `swissquote`, `fidelity`, …) and the path to its silver database.
+1. the default output currency (`-x` overrides it per query);
+2. the banks and brokers to read, picked by number from a list;
+3. whether the dashboards and the MCP server are on.
 
-It writes the result to `${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg`
-(another path with `-c <path>`). [docs/DESIGN.md §5](docs/DESIGN.md)
-describes every field.
+Each answer is saved at once in `${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg`
+(another path with `-c <path>`), and each pick names the command that
+collects its data. Once every step holds an answer, a run again is a
+menu of the config's sections.
+The rest of the config is edited in the file;
+[docs/DESIGN.md §5](docs/DESIGN.md) describes every field and §4.9 the
+setup.
 
 ## Where the data goes
 

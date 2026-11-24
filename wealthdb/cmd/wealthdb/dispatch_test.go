@@ -239,7 +239,7 @@ func TestInitLoadPositionsEndToEnd(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("init exit=%d stderr=%s", code, se)
 	}
-	if !strings.Contains(so, "created gold database") {
+	if !strings.Contains(so, "created the database at") {
 		t.Errorf("init stdout missing creation message: %s", so)
 	}
 
@@ -269,18 +269,23 @@ func TestInitLoadPositionsEndToEnd(t *testing.T) {
 	}
 }
 
-func TestInitFailsOnExistingDB(t *testing.T) {
+func TestInitTwice(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatalf("first init failed: code=%d", code)
+	so, se, code := run(t, "-c", cfg, "init")
+	if code != 0 || !strings.Contains(so, "created the database at") {
+		t.Fatalf("first init: code=%d stdout=%s stderr=%s", code, so, se)
 	}
-	_, se, code := run(t, "-c", cfg, "init")
-	if code != 4 {
-		t.Errorf("second init exit = %d, want 4 (ExitInitExisting)", code)
+	// The silver of the one source is there: the next step is the load.
+	if !strings.Contains(so, "What to do now\n\nRun this command in the terminal:\n\n  1.  wealthdb load -a\n") {
+		t.Errorf("first init names no next step: %s", so)
 	}
-	if !strings.Contains(se, "already exists") {
-		t.Errorf("stderr missing 'already exists': %s", se)
+	so, se, code = run(t, "-c", cfg, "init")
+	if code != 0 {
+		t.Errorf("second init exit = %d, want 0; stderr %s", code, se)
+	}
+	if !strings.Contains(so, "the database exists already at") || !strings.Contains(so, "wealthdb load -a") {
+		t.Errorf("second init: %s", so)
 	}
 }
 
@@ -802,64 +807,6 @@ func TestPositionsCSVAndJSON(t *testing.T) {
 	}
 	if !strings.HasPrefix(strings.TrimSpace(so), "[") {
 		t.Errorf("json should be a top-level array: %s", so)
-	}
-}
-
-func TestConfigWizardWritesFile(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "wealthdb.cfg")
-	silverPath := filepath.Join(dir, "silver.db")
-
-	// Write a minimal silver SQLite so probeSilverDB inside the
-	// wizard passes.
-	sdb, _ := sql.Open("sqlite", "file:"+silverPath)
-	sdb.Exec(`CREATE TABLE dump_runs (snapshot_at INTEGER PRIMARY KEY)`)
-	sdb.Close()
-
-	// Explicit gold_db path so the validator doesn't probe the
-	// host $XDG_DATA_HOME/wealthdb/ default (which may not exist inside
-	// the test sandbox).
-	goldPath := filepath.Join(dir, "gold.db")
-	stdin := strings.NewReader(strings.Join([]string{
-		goldPath,   // gold_db
-		"USD",      // currency
-		"src-a",    // id
-		"schwab",   // kind
-		silverPath, // path
-		"n",        // no more sources
-	}, "\n") + "\n")
-	var so, se bytes.Buffer
-	exit := Run([]string{"-c", cfgPath, "config"}, stdin, &so, &se)
-	if exit != 0 {
-		t.Fatalf("config exit=%d stdout=%s stderr=%s", exit, so.String(), se.String())
-	}
-	if !strings.Contains(so.String(), "Wrote config to") {
-		t.Errorf("missing 'Wrote config to' confirmation: %s", so.String())
-	}
-
-	// File now exists with valid JSON.
-	data, err := os.ReadFile(cfgPath)
-	if err != nil {
-		t.Fatalf("read config: %v", err)
-	}
-	if !strings.Contains(string(data), `"src-a"`) {
-		t.Errorf("config file missing src-a id: %s", string(data))
-	}
-	if !strings.Contains(string(data), `"default_currency": "USD"`) {
-		t.Errorf("config file missing currency: %s", string(data))
-	}
-
-	// Re-running refuses to clobber: exit 4.
-	stdin = strings.NewReader("\n")
-	so.Reset()
-	se.Reset()
-	exit = Run([]string{"-c", cfgPath, "config"}, stdin, &so, &se)
-	if exit != 4 {
-		t.Errorf("re-run exit = %d, want 4", exit)
-	}
-	if !strings.Contains(se.String(), "already exists") {
-		t.Errorf("missing 'already exists' message: %s", se.String())
 	}
 }
 
