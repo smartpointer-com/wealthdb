@@ -156,6 +156,9 @@ def check(args: argparse.Namespace, client: plaidapi.Client) -> int:
     for pending in left:
         say(f"{pending.name}: a sign-in started {pending.created_at} is left "
             f"open; {items.command('login', environment)} settles it")
+    if linked:
+        say(f"{items.command('wealthdb-collect plaid banks', environment)} "
+            f"lists the linked banks and where their data stands")
     return 0 if linked and healthy and not unreadable else 1
 
 

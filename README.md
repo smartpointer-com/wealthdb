@@ -20,7 +20,9 @@ All data stays on the local machine, and no service sits in between,
 with three exceptions:
 
 - A login linked through [Plaid](collectors/plaid/). Plaid reads that
-  institution and keeps a copy of its data.
+  institution and keeps a copy of its data. Its sign-in page asks to
+  share data with "wealthdb on your computer": that is your own
+  installation, through your own Plaid account.
 - The model that `wealthdb categorize` and `resolve-symbols` ask. When
   it runs on a remote endpoint, it receives the merchant, payer and
   instrument names it is asked about
@@ -30,6 +32,9 @@ with three exceptions:
   see which securities are asked about. Each source also sees who asks,
   FINRA by the API client its requests carry. No amount, account or
   bank is sent.
+
+None of these sends anything to SmartPointer AG, which publishes
+wealthdb. wealthdb has no cloud service.
 
 ## ⚠️ Security & liability disclaimer
 

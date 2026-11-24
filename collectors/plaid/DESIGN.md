@@ -446,6 +446,14 @@ Plaid's test institution.
   the institution's sign-in, account selection, a notice that the
   application is being tested ("Share data" or "Cancel"), an offer to
   save the login with Plaid, success.
+- **The test notice** is Plaid's fixed text for a Trial application,
+  after the name: "<client_name> is building something new. You're
+  helping them test by sharing your account data." `client_name` is free
+  text of at most 30 characters and the same for every deployment, so it
+  is "wealthdb on your computer", and `link` and the setup instructions
+  say what the notice means.
+- **An institution with OAuth** may name the application by Plaid's own
+  registration instead ("Plaid Trial"), whatever `client_name` says.
 - **The consent text names "contact details"** among the data shared,
   though no identity product is requested.
 - **A removed Item** answers `ITEM_NOT_FOUND` afterwards.

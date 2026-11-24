@@ -60,6 +60,12 @@ def test_a_new_link_stores_the_item(plaid, secrets, capsys, caplog):
 
     out = capsys.readouterr().out + caplog.text
     assert HOSTED_URL in out
+    # What the page's last question means, said before it is opened.
+    said = " ".join(out.split())
+    assert "wealthdb on your computer is building something new" in said
+    assert "you share the data with your own wealthdb, on this computer" in said
+    assert ("SmartPointer AG, which publishes wealthdb, receives none of "
+            "it") in said
     assert "Linked Synthetic Bank as 'bank'" in out
     assert "The rest of the page can be finished or closed" in out
     for secret in (access_token(), public_token(), LINK_TOKEN):
@@ -213,12 +219,14 @@ def test_an_item_is_claimed_while_its_session_is_still_open(plaid, secrets):
 
 
 def test_the_wait_logs_the_pages_progress_once_per_event(
-        plaid, secrets, caplog):
+        plaid, secrets, caplog, capsys):
     fake = plaid()
     opened = ("e1", "OPEN", {"view_name": "CONSENT"})
     chosen = ("e2", "SELECT_INSTITUTION", {
         "institution_id": "ins_000", "institution_name": "Synthetic Bank"})
-    failed = ("e3", "ERROR", {"error_code": "INVALID_CREDENTIALS"})
+    failed = ("e3", "ERROR", {"error_code": "INVALID_CREDENTIALS",
+                              "error_message": "the credentials were not "
+                                               "correct"})
     fake.link_docs = [
         {"link_sessions": [link_session(finished=False, events=[opened])]},
         {"link_sessions": [link_session(finished=False,
@@ -234,6 +242,13 @@ def test_the_wait_logs_the_pages_progress_once_per_event(
     assert lines == ["sign-in page: OPEN (CONSENT)",
                      "sign-in page: SELECT_INSTITUTION",
                      "sign-in page: ERROR (INVALID_CREDENTIALS)"]
+    # The error is said once, in Plaid's words, and the wait goes on to
+    # the Item the next try made.
+    out = capsys.readouterr().out
+    said = ("Plaid's sign-in page shows an error: the credentials were not "
+            "correct (INVALID_CREDENTIALS).\n"
+            "Try again on the page; this command keeps waiting for it.\n")
+    assert out.count(said) == 1
 
 
 def test_passing_faults_do_not_end_the_wait(plaid, secrets, caplog):

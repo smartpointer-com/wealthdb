@@ -11,9 +11,17 @@ provider copy the keys from the Keys page of the Plaid Dashboard.
 docs Set up a Plaid account
 signin link prints the address of a sign-in page that Plaid hosts.
 signin Open it in a browser and sign in to your bank there.
+signin At the end, Plaid may say that wealthdb "is building something
+signin new" and that you help "them test by sharing your account data".
+signin That is Plaid's own text for an account on its Trial plan.
+signin You share the data with your own wealthdb, on this computer,
+signin through your own Plaid account. Plaid reads your bank and keeps
+signin a copy of the data. SmartPointer AG, which publishes wealthdb,
+signin receives none of it, and wealthdb has no cloud service.
 first No institution is linked yet. Link one first:
 first   wealthdb-collect plaid link --item <name>
 then wealthdb-collect plaid link --item <name>   # Run it once for each bank that is not linked yet.
-then wealthdb-collect plaid download --lookback all
-then wealthdb-collect plaid load
+then wealthdb-collect plaid download [--item <name>] --lookback all
+then wealthdb-collect plaid load [--item <name>]
+then wealthdb config banks   # Adds the bank to the sources wealthdb reads, when it is not there yet.
 then wealthdb load -a

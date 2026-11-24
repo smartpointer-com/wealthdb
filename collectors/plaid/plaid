@@ -19,6 +19,10 @@
 #                       closed. Opens no page; with none left open, it
 #                       does nothing. With no Item linked yet, it names
 #                       link as the first step.
+#   banks               List the linked banks: each Item's name, its bank,
+#                       when it was linked, its newest download and whether
+#                       that is loaded. Reads only files on this computer
+#                       and asks Plaid nothing.
 #   login --check       Probe the app keys and every stored Item, and list
 #                       the sign-ins left open. Reads only; exit 0 when the
 #                       keys are accepted, an Item is linked, and every
@@ -61,7 +65,7 @@ NAME=plaid
 # shellcheck disable=SC1091
 source "$HERE/../../shared/wrappers/host-lib.sh"
 
-host_begin link login download load prune -- "$@"
+host_begin link banks login download load prune -- "$@"
 host_source_env_file
 
 case "$VERB" in
@@ -73,6 +77,9 @@ case "$VERB" in
             setup_print_first
         fi
         host_run "$VERB.py" --secrets-dir "$SECRETS_DIR"
+        ;;
+    banks)
+        host_run banks.py --bronze-dir "$DATA_DIR" --secrets-dir "$SECRETS_DIR"
         ;;
     download)
         host_run download.py --bronze-dir "$DATA_DIR" --secrets-dir "$SECRETS_DIR"

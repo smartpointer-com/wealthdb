@@ -64,6 +64,10 @@ all collectors share.
 - **`login`** settles the sign-ins that a stopped `link` left open. It
   never opens a sign-in page. With none left open, it does nothing.
   With no institution linked yet, it names `link` as the first step.
+- **`banks`** lists the linked institutions: each one's name, its
+  institution, when it was linked, its newest download and whether that
+  is loaded. It reads only files on this computer and asks Plaid
+  nothing.
 - **`login --check`** reports whether Plaid accepts the keys, the state
   of every linked institution, and the sign-ins left open. It changes
   nothing.
@@ -84,7 +88,8 @@ short name for it, such as `bank` or `broker`.
 ## Examples
 
 ```sh
-wealthdb-collect plaid login --check                                # keys and links
+wealthdb-collect plaid banks                                        # the linked banks, by name
+wealthdb-collect plaid login --check                                # keys and links, at Plaid
 wealthdb-collect plaid link --item bank                             # link a bank or a card
 wealthdb-collect plaid link --item broker --require investments     # link a broker
 wealthdb-collect plaid link --item bank                             # later: renew the link
@@ -239,18 +244,51 @@ institution on the sign-in page.
 ## The sign-in page
 
 `link` prints a URL and waits. The page stays valid for one hour, or
-as long as `--mfa-timeout` says. In the Sandbox it shows these screens:
+as long as `--mfa-timeout` says. It shows these screens, in this order.
+Some institutions leave one out.
 
-1. Plaid's consent screen.
-2. The list of institutions, with a search box.
-3. The institution's own sign-in.
-4. The accounts to share.
-5. A notice that the application is being tested. Choose "Share data".
-6. An offer to save the login with Plaid. It can be skipped.
+1. **A phone number.** Plaid offers to sign in or sign up with it. It is
+   optional: "Continue without phone number" skips it. With a number
+   Plaid knows, the next screen lists the institutions saved there.
+2. **The institutions**, with a search box.
+3. **The institution's own sign-in.** Many open their own website for
+   it. They ask for consent there too, and may name the application
+   "Plaid Trial".
+4. **The accounts to share.** Select every account the reports should
+   show.
+5. **A last question, on a Trial account:** "wealthdb on your computer is
+   building something new. You're helping them test by sharing your
+   account data." Choose "Share data". The next section says what it
+   means.
+6. **"Success! Your information has been successfully shared."** The
+   browser can be closed. Some links first offer to save the login with
+   Plaid, which can be skipped.
+
+### Who the data is shared with
+
+The last question is Plaid's own text for an application on the free
+Trial plan, with the application's name in front. Nobody is testing anything with the data. "wealthdb on your
+computer" is the name the collector sends, and it stands for your own
+installation:
+
+- The request is made with your own Plaid account and your own keys.
+  The access token Plaid issues is stored on your computer.
+- **Plaid** reads the institution and keeps a copy of the data, under
+  its own terms and privacy policy. <https://my.plaid.com> lists what
+  is linked.
+- **Your computer** downloads the data from Plaid.
+- **SmartPointer AG**, which publishes wealthdb, receives none of it.
+  wealthdb has no cloud service, and nothing in it contacts one.
+
+### When the link is stored
 
 The collector stores the link as soon as the accounts are confirmed. The
 terminal then shows the institution, its products and the date its
 consent expires.
+
+An error the page shows, such as a refused password, is printed in the
+terminal at once, in Plaid's words. The page offers to try again, so
+`link` keeps waiting. Ctrl-C stops it, and the same command starts over.
 
 The wait can stop without a link: Ctrl-C, an exit on the page, or the
 hour running out. `link` then asks Plaid once more how the sign-in went:

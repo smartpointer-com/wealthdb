@@ -51,9 +51,12 @@ MAX_DAYS_REQUESTED = 730
 # The longest Plaid lets a Hosted Link page live, in seconds.
 MAX_LINK_LIFETIME = 21 * 24 * 3600
 
-# What the institution's consent screen calls the application, and the
-# opaque handle Plaid files the links under. One deployment is one user.
-CLIENT_NAME = "wealthdb"
+# What Plaid's page calls the application, and the opaque handle Plaid
+# files the links under. One deployment is one user. The name says where
+# the data goes: the page reads "<name> uses Plaid to connect your
+# account", and on a Trial plan "<name> is building something new". Plaid
+# shows "This Application" in place of a name over 30 characters.
+CLIENT_NAME = "wealthdb on your computer"
 CLIENT_USER_ID = "wealthdb"
 
 ENDPOINTS = frozenset({

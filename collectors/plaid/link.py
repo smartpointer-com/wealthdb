@@ -211,8 +211,9 @@ def _sessions(doc: dict) -> list[dict]:
 def _log_progress(doc: dict, seen: set, ignore: frozenset) -> None:
     """Log what the sign-in page has done since the last read, in Plaid's
     own event names. They say where in the flow a person is, and carry no
-    account data, so a pasted log shows how far a failed sign-in got.
-    Sessions in `ignore` ended before this run and are not replayed."""
+    account data, so a pasted log shows how far a failed sign-in got. An
+    error the page shows is also said plainly, at once. Sessions in
+    `ignore` ended before this run and are not replayed."""
     # Plaid lists a session's events newest first and stamps them to the
     # second; reversing before the stable sort keeps events of one second
     # in the order they happened.
@@ -227,6 +228,21 @@ def _log_progress(doc: dict, seen: set, ignore: frozenset) -> None:
                                           "exit_status") if detail.get(k)]
         log.info("sign-in page: %s%s", event.get("event_name"),
                  f" ({', '.join(extra)})" if extra else "")
+        if event.get("event_name") == "ERROR":
+            _say_page_error(detail)
+
+
+def _say_page_error(detail: dict) -> None:
+    """Say at once, in Plaid's words, that the page shows an error. The
+    page offers to try again in the same visit, so the wait goes on: only
+    the end of the visit, or the time running out, ends it."""
+    text = detail.get("error_message") or "no message"
+    code = detail.get("error_code")
+    say()
+    say(f"Plaid's sign-in page shows an error: {text}"
+        f"{f' ({code})' if code else ''}.")
+    say("Try again on the page; this command keeps waiting for it.")
+    say("Ctrl+C stops the wait, and the same command starts over.")
 
 
 def _minutes(seconds: float) -> str:
@@ -579,6 +595,25 @@ def _announce(url: str, environment: str, seconds: float, *,
         + (" again:" if renew else ":"))
     say()
     say(f"    {url}")
+    say()
+    # On a Trial plan the page's last question is Plaid's fixed text for
+    # an application under test. It reads as if the data went to whoever
+    # publishes wealthdb.
+    say("At the end, Plaid may ask:")
+    say()
+    say(f"    {plaidapi.CLIENT_NAME} is building something new")
+    say("    You're helping them test by sharing your account data.")
+    say()
+    say("That is Plaid's own text for an account on its free Trial plan. "
+        "Nobody else is")
+    say("testing anything: you share the data with your own wealthdb, on "
+        "this computer,")
+    say("through your own Plaid account. Plaid reads your bank and keeps a "
+        "copy of the")
+    say("data. SmartPointer AG, which publishes wealthdb, receives none of "
+        "it, and")
+    say("wealthdb has no cloud service. Choose \"Share data\" to finish "
+        "the link.")
     say()
     if environment == "sandbox":
         say("Sandbox: the test login is user_good / pass_good.")

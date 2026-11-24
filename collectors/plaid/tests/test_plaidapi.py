@@ -196,7 +196,8 @@ def test_a_new_link_asks_for_the_deepest_history_and_a_hosted_page():
     assert body["transactions"] == {"days_requested": 730}
     assert body["hosted_link"] == {"url_lifetime_seconds": 7200}
     assert body["country_codes"] == ["US", "CA"]
-    assert body["client_name"] == "wealthdb"
+    assert body["client_name"] == "wealthdb on your computer"
+    assert len(body["client_name"]) <= 30
     assert body["user"] == {"client_user_id": "wealthdb"}
     # Hosted Link on a desktop needs neither, and a webhook would need a
     # server this collector does not run.
