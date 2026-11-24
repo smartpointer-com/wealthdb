@@ -158,6 +158,16 @@ func (s *screen) title(text string) {
 // width is the column text wraps at: an 80-column window less a margin.
 const width = 78
 
+// clipLeft is s when it has at most n characters, else its last n-1
+// after an ellipsis.
+func clipLeft(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return "…" + string(r[len(r)-(n-1):])
+}
+
 // fit wraps each line of text longer than width at its spaces, the
 // lines it adds indented as the line they come from.
 func fit(text string) string {

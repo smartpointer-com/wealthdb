@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -410,7 +411,14 @@ func (w *setup) renderMenu(items []menuItem, cursor int, raw bool, rows int) str
 		body = append(body, fmt.Sprintf("   %s  %s", p.Key(num), rest))
 	}
 	body = append(body, "", "     "+p.Key("q")+"  Quit")
-	head := []string{p.Title("wealthdb config") + p.Help(fmt.Sprintf("%*s", 50, tilde(w.store.path))), ""}
+	// The config's path ends the first line, at column 65 when it is
+	// short. A long one keeps its end, the part that tells two configs
+	// apart, and stays within the screen's width, two spaces after the
+	// title.
+	const title = "wealthdb config"
+	path := clipLeft(tilde(w.store.path), width-len(title)-2)
+	gap := strings.Repeat(" ", max(50-utf8.RuneCountInString(path), 2))
+	head := []string{p.Title(title) + p.Help(gap+path), ""}
 	foot := []string{"", p.Help(" Every change is saved at once.")}
 	if raw {
 		foot[1] = p.Help(" Up/Down or a number move   Enter open   q quit   Every change is saved at once.")

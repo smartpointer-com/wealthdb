@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/jsonedit"
@@ -967,6 +968,28 @@ func TestRawMenuFitsTheWindow(t *testing.T) {
 	}
 	if !strings.Contains(bottom, "... more above") || strings.Contains(bottom, "more below") || !strings.Contains(bottom, "q  Quit") {
 		t.Errorf("at the bottom:\n%s", bottom)
+	}
+}
+
+// A config path longer than the first line has room for keeps its end
+// and stays within the screen: a temporary folder on a Mac is that long.
+func TestTheMenusFirstLineFitsALongConfigPath(t *testing.T) {
+	h := newHarness(t)
+	h.write(`{"gold_db": "/x/g.db", "default_currency": "USD"}`, 0o600)
+	w := &setup{opts: Options{ConfigPath: h.cfg, DataRoot: h.root}}
+	w.store = openTestStore(t, h.cfg, "")
+	w.store.path = "/" + strings.Repeat("a-long-folder-name/", 8) + "wealthdb.cfg"
+	first, _, _ := strings.Cut(w.renderMenu(w.menuItems(), 0, true, 0), "\n")
+	if n := utf8.RuneCountInString(first); n > width {
+		t.Errorf("the first line has %d columns, want %d at most: %q", n, width, first)
+	}
+	if !strings.HasPrefix(first, "wealthdb config  …") || !strings.HasSuffix(first, w.store.path[len(w.store.path)-40:]) {
+		t.Errorf("the first line does not end with the path's end after an ellipsis: %q", first)
+	}
+	w.store.path = "/x/wealthdb.cfg"
+	first, _, _ = strings.Cut(w.renderMenu(w.menuItems(), 0, true, 0), "\n")
+	if want := "wealthdb config" + strings.Repeat(" ", 50-len(w.store.path)) + w.store.path; first != want {
+		t.Errorf("a short path: %q, want %q", first, want)
 	}
 }
 
