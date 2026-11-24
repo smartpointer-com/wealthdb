@@ -137,8 +137,15 @@ docker
   -f
   schwab-api
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-api:latest
+docker
   run
   --rm
+  --pull=never
   --name
   schwab-api
   --user
@@ -196,8 +203,15 @@ docker
   -f
   schwab-api
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-api:latest
+docker
   run
   --rm
+  --pull=never
   --name
   schwab-api
   -p
@@ -317,8 +331,15 @@ docker
   -f
   schwab-api
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-api:latest
+docker
   run
   --rm
+  --pull=never
   --name
   schwab-api
   --user

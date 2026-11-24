@@ -256,7 +256,10 @@ runs `build`, and runs `prune` on the host through
 `wrapper_host_prune`; fidelity-web and schwab-api route `prune`
 themselves. The library bind-mounts the dirs listed under Docker mounts
 and Caches, plus the checkout over `/app` (and `/silver` and `/debug`
-when applicable), and runs as `--user $(id -u):$(id -g)`.
+when applicable), and runs as `--user $(id -u):$(id -g)`. It runs only
+an image built on this computer: a missing image stops the run with
+`wealthdb-collect <name> build`, and every run passes `--pull=never`,
+so no registry is asked for an image of that name.
 
 A **host-venv** wrapper (for tools that need no browser) sets `NAME`,
 sources [`shared/wrappers/host-lib.sh`](../shared/wrappers/host-lib.sh)

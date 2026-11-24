@@ -96,8 +96,15 @@ exit: 0
 === login
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/swissquote:latest
+docker
   run
   --rm
+  --pull=never
   --name
   swissquote
   --user
@@ -134,8 +141,15 @@ exit: 0
 === download
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/swissquote:latest
+docker
   run
   --rm
+  --pull=never
   --name
   swissquote
   --user
@@ -172,8 +186,15 @@ exit: 0
 === load
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/swissquote:latest
+docker
   run
   --rm
+  --pull=never
   --name
   swissquote
   --user
@@ -221,8 +242,15 @@ exit: 0
 === sh
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/swissquote:latest
+docker
   run
   --rm
+  --pull=never
   --name
   swissquote
   --user
@@ -259,8 +287,15 @@ exit: 0
 === bash
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/swissquote:latest
+docker
   run
   --rm
+  --pull=never
   --name
   swissquote
   --user
@@ -297,8 +332,15 @@ exit: 0
 === login --check
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/swissquote:latest
+docker
   run
   --rm
+  --pull=never
   --name
   swissquote
   --user
@@ -336,8 +378,15 @@ exit: 0
 === download --dry-run --lookback 1w
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/swissquote:latest
+docker
   run
   --rm
+  --pull=never
   --name
   swissquote
   --user
@@ -377,8 +426,15 @@ exit: 0
 === load --silver-db <TMP>/w-swissquote/silver/x.db
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/swissquote:latest
+docker
   run
   --rm
+  --pull=never
   --name
   swissquote
   --user
@@ -419,8 +475,15 @@ exit: 0
 === load --silver-db=<TMP>/w-swissquote/silver/x.db
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/swissquote:latest
+docker
   run
   --rm
+  --pull=never
   --name
   swissquote
   --user
@@ -461,8 +524,15 @@ exit: 0
 === load --data-dir <TMP>/w-swissquote/alt-data
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/swissquote:latest
+docker
   run
   --rm
+  --pull=never
   --name
   swissquote
   --user
@@ -499,8 +569,15 @@ exit: 0
 === load --data-dir=<TMP>/w-swissquote/alt-data
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/swissquote:latest
+docker
   run
   --rm
+  --pull=never
   --name
   swissquote
   --user
@@ -537,8 +614,15 @@ exit: 0
 === download --secrets-dir <TMP>/w-swissquote/alt-secrets
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/swissquote:latest
+docker
   run
   --rm
+  --pull=never
   --name
   swissquote
   --user
@@ -575,8 +659,15 @@ exit: 0
 === download --secrets-dir=<TMP>/w-swissquote/alt-secrets
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/swissquote:latest
+docker
   run
   --rm
+  --pull=never
   --name
   swissquote
   --user
@@ -613,8 +704,15 @@ exit: 0
 === bogus-verb
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/swissquote:latest
+docker
   run
   --rm
+  --pull=never
   --name
   swissquote
   --user

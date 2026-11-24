@@ -110,8 +110,15 @@ exit: 0
 === login
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/ubs-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   ubs-web
   --user
@@ -145,8 +152,15 @@ exit: 0
 === download
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/ubs-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   ubs-web
   --user
@@ -180,8 +194,15 @@ exit: 0
 === load
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/ubs-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   ubs-web
   --user
@@ -219,8 +240,15 @@ lsof
   -iTCP:5900
   -sTCP:LISTEN
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/ubs-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   ubs-web
   -p
@@ -269,8 +297,15 @@ exit: 0
 === sh
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/ubs-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   ubs-web
   --user
@@ -304,8 +339,15 @@ exit: 0
 === bash
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/ubs-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   ubs-web
   --user
@@ -339,8 +381,15 @@ exit: 0
 === login --check
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/ubs-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   ubs-web
   --user
@@ -375,8 +424,15 @@ exit: 0
 === download --dry-run --lookback 1w
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/ubs-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   ubs-web
   --user
@@ -413,8 +469,15 @@ exit: 0
 === load --silver-db <TMP>/w-ubs-web/silver/x.db
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/ubs-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   ubs-web
   --user
@@ -452,8 +515,15 @@ exit: 0
 === load --silver-db=<TMP>/w-ubs-web/silver/x.db
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/ubs-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   ubs-web
   --user
@@ -491,8 +561,15 @@ exit: 0
 === load --data-dir <TMP>/w-ubs-web/alt-data
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/ubs-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   ubs-web
   --user
@@ -526,8 +603,15 @@ exit: 0
 === load --data-dir=<TMP>/w-ubs-web/alt-data
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/ubs-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   ubs-web
   --user
@@ -561,8 +645,15 @@ exit: 0
 === download --secrets-dir <TMP>/w-ubs-web/alt-secrets
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/ubs-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   ubs-web
   --user
@@ -596,8 +687,15 @@ exit: 0
 === download --secrets-dir=<TMP>/w-ubs-web/alt-secrets
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/ubs-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   ubs-web
   --user
@@ -631,8 +729,15 @@ exit: 0
 === bogus-verb
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/ubs-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   ubs-web
   --user

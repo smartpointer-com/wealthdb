@@ -181,8 +181,15 @@ docker
   -f
   schwab-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   schwab-web
   --user
@@ -230,8 +237,15 @@ docker
   -f
   schwab-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   schwab-web
   --user
@@ -279,8 +293,15 @@ docker
   -f
   schwab-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   schwab-web
   --user
@@ -343,8 +364,15 @@ docker
   -f
   schwab-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   schwab-web
   -p
@@ -396,8 +424,15 @@ docker
   -f
   schwab-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   schwab-web
   --user
@@ -445,8 +480,15 @@ docker
   -f
   schwab-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   schwab-web
   --user
@@ -512,8 +554,15 @@ docker
   -f
   schwab-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   schwab-web
   --user
@@ -564,8 +613,15 @@ docker
   -f
   schwab-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   schwab-web
   --user
@@ -617,8 +673,15 @@ docker
   -f
   schwab-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   schwab-web
   --user
@@ -670,8 +733,15 @@ docker
   -f
   schwab-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   schwab-web
   --user
@@ -719,8 +789,15 @@ docker
   -f
   schwab-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   schwab-web
   --user
@@ -768,8 +845,15 @@ docker
   -f
   schwab-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   schwab-web
   --user
@@ -817,8 +901,15 @@ docker
   -f
   schwab-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   schwab-web
   --user
@@ -866,8 +957,15 @@ docker
   -f
   schwab-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   schwab-web
   --user

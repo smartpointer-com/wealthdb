@@ -29,6 +29,10 @@ cp "$ROOT/wealthdb/wealthdb" "$TREE/wealthdb/"
 cp "$ROOT/shared/wrappers/image-tag.sh" "$TREE/shared/wrappers/"
 cat > "$TMP/bin/docker" <<'EOF'
 #!/bin/sh
+if [ "$1 $2" = "image inspect" ] && [ -n "${STUB_NO_IMAGE:-}" ]; then
+    echo "Error response from daemon: No such image: wealthdb:t" >&2
+    exit 1
+fi
 for a in "$@"; do printf '%s\n' "$a"; done
 EOF
 chmod +x "$TMP/bin/docker"
@@ -167,5 +171,12 @@ done
 echo "colours:"
 has_item "NO_COLOR goes to the engine" "NO_COLOR=1" "$(NO_COLOR=1 run status)"
 lacks "...and only when set" "NO_COLOR" "$(run status)"
+
+echo "a missing image:"
+out="$(STUB_NO_IMAGE=1 run status 2>&1)"; rc=$?
+[ "$rc" = 2 ] && ok "a missing image exits 2" || bad "a missing image exits $rc"
+has "...naming the build" "wealthdb: the image wealthdb:t is not built yet. Build it with: wealthdb build" "$out"
+lacks_item "...and nothing runs" "run" "$out"
+has_item "a run never pulls" "--pull=never" "$(run status)"
 
 summary "engine mount tests"

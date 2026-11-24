@@ -189,8 +189,15 @@ docker
   -f
   carta
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/carta:latest
+docker
   run
   --rm
+  --pull=never
   --name
   carta
   -p
@@ -245,8 +252,15 @@ docker
   -f
   carta
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/carta:latest
+docker
   run
   --rm
+  --pull=never
   --name
   carta
   --user
@@ -297,8 +311,15 @@ docker
   -f
   carta
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/carta:latest
+docker
   run
   --rm
+  --pull=never
   --name
   carta
   --user
@@ -349,8 +370,15 @@ docker
   -f
   carta
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/carta:latest
+docker
   run
   --rm
+  --pull=never
   --name
   carta
   --user
@@ -412,8 +440,15 @@ docker
   -f
   carta
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/carta:latest
+docker
   run
   --rm
+  --pull=never
   --name
   carta
   --user
@@ -464,8 +499,15 @@ docker
   -f
   carta
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/carta:latest
+docker
   run
   --rm
+  --pull=never
   --name
   carta
   --user
@@ -516,8 +558,15 @@ docker
   -f
   carta
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/carta:latest
+docker
   run
   --rm
+  --pull=never
   --name
   carta
   --user
@@ -569,8 +618,15 @@ docker
   -f
   carta
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/carta:latest
+docker
   run
   --rm
+  --pull=never
   --name
   carta
   --user
@@ -624,8 +680,15 @@ docker
   -f
   carta
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/carta:latest
+docker
   run
   --rm
+  --pull=never
   --name
   carta
   --user
@@ -680,8 +743,15 @@ docker
   -f
   carta
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/carta:latest
+docker
   run
   --rm
+  --pull=never
   --name
   carta
   --user
@@ -736,8 +806,15 @@ docker
   -f
   carta
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/carta:latest
+docker
   run
   --rm
+  --pull=never
   --name
   carta
   --user
@@ -788,8 +865,15 @@ docker
   -f
   carta
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/carta:latest
+docker
   run
   --rm
+  --pull=never
   --name
   carta
   --user
@@ -840,8 +924,15 @@ docker
   -f
   carta
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/carta:latest
+docker
   run
   --rm
+  --pull=never
   --name
   carta
   --user
@@ -892,8 +983,15 @@ docker
   -f
   carta
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/carta:latest
+docker
   run
   --rm
+  --pull=never
   --name
   carta
   --user
@@ -944,8 +1042,15 @@ docker
   -f
   carta
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/carta:latest
+docker
   run
   --rm
+  --pull=never
   --name
   carta
   --user

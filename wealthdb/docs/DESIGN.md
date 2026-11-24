@@ -4211,6 +4211,15 @@ engine's default config path, land on the same absolute paths inside
 and outside. A `-c` path stays a flag, so the engine still names it in
 the command that sets the config up.
 
+Every wrapper runs only an image built on this computer. A missing
+image stops the run with the command that builds it (`wealthdb build`,
+`wealthdb web build`, `wealthdb-collect <name> build`), and every
+`docker run` passes `--pull=never`: no registry is asked for an image
+of that name, which may belong to anyone. Every engine run also names
+`host.docker.internal` (`--add-host … host-gateway`), so an AI model
+served on this computer is reached at the same address on a Mac and on
+Linux.
+
 On a Mac, Docker runs in a virtual machine that sees only the host
 folders it shares (Colima: the home folder, plus what `colima.yaml`
 lists). A bind mount of any other folder does not fail: Docker makes an

@@ -155,8 +155,15 @@ docker
   -f
   raiffeisen_at
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/raiffeisen_at:latest
+docker
   run
   --rm
+  --pull=never
   --name
   raiffeisen_at
   --user
@@ -218,8 +225,15 @@ docker
   -f
   raiffeisen_at
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/raiffeisen_at:latest
+docker
   run
   --rm
+  --pull=never
   --name
   raiffeisen_at
   -p
@@ -274,8 +288,15 @@ docker
   -f
   raiffeisen_at
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/raiffeisen_at:latest
+docker
   run
   --rm
+  --pull=never
   --name
   raiffeisen_at
   --user
@@ -341,8 +362,15 @@ docker
   -f
   raiffeisen_at
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/raiffeisen_at:latest
+docker
   run
   --rm
+  --pull=never
   --name
   raiffeisen_at
   -p
@@ -397,8 +425,15 @@ docker
   -f
   raiffeisen_at
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/raiffeisen_at:latest
+docker
   run
   --rm
+  --pull=never
   --name
   raiffeisen_at
   --user
@@ -449,8 +484,15 @@ docker
   -f
   raiffeisen_at
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/raiffeisen_at:latest
+docker
   run
   --rm
+  --pull=never
   --name
   raiffeisen_at
   --user
@@ -501,8 +543,15 @@ docker
   -f
   raiffeisen_at
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/raiffeisen_at:latest
+docker
   run
   --rm
+  --pull=never
   --name
   raiffeisen_at
   --user
@@ -554,8 +603,15 @@ docker
   -f
   raiffeisen_at
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/raiffeisen_at:latest
+docker
   run
   --rm
+  --pull=never
   --name
   raiffeisen_at
   --user
@@ -609,8 +665,15 @@ docker
   -f
   raiffeisen_at
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/raiffeisen_at:latest
+docker
   run
   --rm
+  --pull=never
   --name
   raiffeisen_at
   --user
@@ -665,8 +728,15 @@ docker
   -f
   raiffeisen_at
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/raiffeisen_at:latest
+docker
   run
   --rm
+  --pull=never
   --name
   raiffeisen_at
   --user
@@ -721,8 +791,15 @@ docker
   -f
   raiffeisen_at
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/raiffeisen_at:latest
+docker
   run
   --rm
+  --pull=never
   --name
   raiffeisen_at
   --user
@@ -773,8 +850,15 @@ docker
   -f
   raiffeisen_at
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/raiffeisen_at:latest
+docker
   run
   --rm
+  --pull=never
   --name
   raiffeisen_at
   --user
@@ -825,8 +909,15 @@ docker
   -f
   raiffeisen_at
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/raiffeisen_at:latest
+docker
   run
   --rm
+  --pull=never
   --name
   raiffeisen_at
   --user
@@ -877,8 +968,15 @@ docker
   -f
   raiffeisen_at
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/raiffeisen_at:latest
+docker
   run
   --rm
+  --pull=never
   --name
   raiffeisen_at
   --user
@@ -929,8 +1027,15 @@ docker
   -f
   raiffeisen_at
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/raiffeisen_at:latest
+docker
   run
   --rm
+  --pull=never
   --name
   raiffeisen_at
   --user

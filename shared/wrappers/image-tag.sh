@@ -264,6 +264,24 @@ except OSError:
 PY
 }
 
+# wealthdb_require_image WHO IMAGE BUILD — return 1, with a message that
+# names BUILD, the command that builds IMAGE, when Docker has no image of
+# that name. Each run passes --pull=never as well: a missing image is
+# never fetched from a registry, where the name may belong to anyone,
+# and whatever came back would run with this computer's folders mounted.
+# Any other failure (no daemon) returns 0 and is left to the run, which
+# says what is wrong.
+wealthdb_require_image() {
+    _wri="$(docker image inspect --format '{{.Id}}' "$2" 2>&1)" && return 0
+    case "$_wri" in
+        *"No such image"*|*"No such object"*)
+            echo "$1: the image $2 is not built yet. Build it with: $3" >&2
+            return 1
+            ;;
+    esac
+    return 0
+}
+
 # wealthdb_abs_path PATH prints PATH made absolute against the working
 # directory. A container mounts a host path at the same path, and docker
 # reads a relative source as a volume name, so every path the engine's

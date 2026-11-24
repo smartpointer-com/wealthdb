@@ -600,7 +600,7 @@ check_eq  "a stale snapshot fails start with provision.py's status" "3" "$rc"
 check_not "...without the browser hint"  "finish setup in the browser"  "$err"
 check     "...naming refresh"   "'wealthdb web refresh' re-snapshots a migrated gold" "$err"
 check     "...with the login, which stands"  "log in as"                "$err"
-check_eq  "...and the server run, never stopped or removed" "run" \
+check_eq  "...the image checked, and the server run, never stopped or removed" "image run" \
           "$(cut -d' ' -f1 < "$tmp/docker-calls" | tr '\n' ' ' | sed 's/ $//')"
 rc="$(start_with 1)"
 err="$(cat "$tmp/start-err")"

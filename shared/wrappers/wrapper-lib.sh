@@ -463,8 +463,9 @@ wrapper_main() {
         wrapper_safety_guard "$@"
     fi
 
+    wealthdb_require_image "$NAME" "$IMAGE" "wealthdb-collect $NAME build" || exit 2
     local -a docker_args=(
-        --rm --name "$CONTAINER_NAME"
+        --rm --pull=never --name "$CONTAINER_NAME"
         ${TTY_ARGS[@]+"${TTY_ARGS[@]}"}
         ${extra_args[@]+"${extra_args[@]}"}
         --user "$(id -u):$(id -g)"

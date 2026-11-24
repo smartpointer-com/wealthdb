@@ -45,7 +45,8 @@ for var in WEALTHDB_GOLD_VERIFY WEALTHDB_GOLD_BEFORE; do
     esac
 done
 
-exec docker run --rm \
+wealthdb_require_image wealthdb-go "$IMAGE" "wealthdb/wealthdb build" || exit 2
+exec docker run --rm --pull=never \
     -u "$(id -u):$(id -g)" \
     -e HOME="$HOME" \
     -e GOCACHE="$CACHE/go-build" \

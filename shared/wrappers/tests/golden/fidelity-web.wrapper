@@ -189,8 +189,15 @@ docker
   -f
   fidelity-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/fidelity-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   fidelity-web
   --user
@@ -279,8 +286,15 @@ docker
   -f
   fidelity-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/fidelity-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   fidelity-web
   -p
@@ -342,8 +356,15 @@ docker
   -f
   fidelity-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/fidelity-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   fidelity-web
   -p
@@ -401,8 +422,15 @@ docker
   -f
   fidelity-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/fidelity-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   fidelity-web
   --user
@@ -456,8 +484,15 @@ docker
   -f
   fidelity-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/fidelity-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   fidelity-web
   --user
@@ -529,8 +564,15 @@ docker
   -f
   fidelity-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/fidelity-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   fidelity-web
   --user
@@ -631,8 +673,15 @@ docker
   -f
   fidelity-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/fidelity-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   fidelity-web
   --user
@@ -686,8 +735,15 @@ docker
   -f
   fidelity-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/fidelity-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   fidelity-web
   --user
@@ -741,8 +797,15 @@ docker
   -f
   fidelity-web
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/fidelity-web:latest
+docker
   run
   --rm
+  --pull=never
   --name
   fidelity-web
   --user

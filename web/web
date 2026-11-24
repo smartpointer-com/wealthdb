@@ -80,7 +80,7 @@ _require_python3() {
 # instead of recreating the container.
 _docker_run_args() {
     DOCKER_ARGS=(
-        run -d
+        run -d --pull=never
         --name "$CONTAINER"
         # Memory discipline. DuckDB runs in-process, so the JVM process
         # holds heap + DuckDB native memory: the container cap keeps a
@@ -230,6 +230,7 @@ web_start() {
     fi
     _relink_snapshots || { echo "web: could not link the snapshot's serving names" >&2; return 1; }
 
+    wealthdb_require_image web "$IMAGE" "wealthdb web build" || return 1
     _docker_run_args
     if ! _timed "container start" docker "${DOCKER_ARGS[@]}" >/dev/null; then
         if [ "$BIND" = both ]; then

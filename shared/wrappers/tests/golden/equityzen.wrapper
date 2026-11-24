@@ -181,8 +181,15 @@ docker
   -f
   equityzen
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/equityzen:latest
+docker
   run
   --rm
+  --pull=never
   --name
   equityzen
   -p
@@ -237,8 +244,15 @@ docker
   -f
   equityzen
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/equityzen:latest
+docker
   run
   --rm
+  --pull=never
   --name
   equityzen
   --user
@@ -289,8 +303,15 @@ docker
   -f
   equityzen
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/equityzen:latest
+docker
   run
   --rm
+  --pull=never
   --name
   equityzen
   --user
@@ -341,8 +362,15 @@ docker
   -f
   equityzen
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/equityzen:latest
+docker
   run
   --rm
+  --pull=never
   --name
   equityzen
   --user
@@ -404,8 +432,15 @@ docker
   -f
   equityzen
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/equityzen:latest
+docker
   run
   --rm
+  --pull=never
   --name
   equityzen
   --user
@@ -456,8 +491,15 @@ docker
   -f
   equityzen
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/equityzen:latest
+docker
   run
   --rm
+  --pull=never
   --name
   equityzen
   --user
@@ -508,8 +550,15 @@ docker
   -f
   equityzen
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/equityzen:latest
+docker
   run
   --rm
+  --pull=never
   --name
   equityzen
   --user
@@ -561,8 +610,15 @@ docker
   -f
   equityzen
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/equityzen:latest
+docker
   run
   --rm
+  --pull=never
   --name
   equityzen
   --user
@@ -616,8 +672,15 @@ docker
   -f
   equityzen
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/equityzen:latest
+docker
   run
   --rm
+  --pull=never
   --name
   equityzen
   --user
@@ -672,8 +735,15 @@ docker
   -f
   equityzen
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/equityzen:latest
+docker
   run
   --rm
+  --pull=never
   --name
   equityzen
   --user
@@ -728,8 +798,15 @@ docker
   -f
   equityzen
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/equityzen:latest
+docker
   run
   --rm
+  --pull=never
   --name
   equityzen
   --user
@@ -780,8 +857,15 @@ docker
   -f
   equityzen
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/equityzen:latest
+docker
   run
   --rm
+  --pull=never
   --name
   equityzen
   --user
@@ -832,8 +916,15 @@ docker
   -f
   equityzen
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/equityzen:latest
+docker
   run
   --rm
+  --pull=never
   --name
   equityzen
   --user
@@ -884,8 +975,15 @@ docker
   -f
   equityzen
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/equityzen:latest
+docker
   run
   --rm
+  --pull=never
   --name
   equityzen
   --user
@@ -936,8 +1034,15 @@ docker
   -f
   equityzen
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/equityzen:latest
+docker
   run
   --rm
+  --pull=never
   --name
   equityzen
   --user

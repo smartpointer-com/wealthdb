@@ -204,10 +204,12 @@ set -- -e WEALTHDB_HOST_OS="$(uname -s)" -e WEALTHDB_MOUNTS="$MOUNTS:$DATA_ROOT"
 TTY=""
 [ -t 0 ] && [ -t 1 ] && TTY="-it"
 
+wealthdb_require_image wealthdb "$IMAGE" "wealthdb build" || exit 2
+
 # host.docker.internal is this computer, as Docker on a Mac names it
 # already: an AI model served here is reached at that name, on Linux
 # too.
-exec docker run --rm $TTY \
+exec docker run --rm --pull=never $TTY \
     --add-host=host.docker.internal:host-gateway \
     -e HOME="$HOME" \
     -e XDG_CONFIG_HOME="$XDG_CFG" \

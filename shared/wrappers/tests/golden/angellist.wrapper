@@ -201,8 +201,15 @@ docker
   -f
   angellist
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/angellist:latest
+docker
   run
   --rm
+  --pull=never
   --name
   angellist
   -p
@@ -258,8 +265,15 @@ docker
   -f
   angellist
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/angellist:latest
+docker
   run
   --rm
+  --pull=never
   --name
   angellist
   -p
@@ -311,8 +325,15 @@ docker
   -f
   angellist
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/angellist:latest
+docker
   run
   --rm
+  --pull=never
   --name
   angellist
   --user
@@ -360,8 +381,15 @@ docker
   -f
   angellist
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/angellist:latest
+docker
   run
   --rm
+  --pull=never
   --name
   angellist
   --user
@@ -420,8 +448,15 @@ docker
   -f
   angellist
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/angellist:latest
+docker
   run
   --rm
+  --pull=never
   --name
   angellist
   --user
@@ -469,8 +504,15 @@ docker
   -f
   angellist
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/angellist:latest
+docker
   run
   --rm
+  --pull=never
   --name
   angellist
   --user
@@ -522,8 +564,15 @@ docker
   -f
   angellist
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/angellist:latest
+docker
   run
   --rm
+  --pull=never
   --name
   angellist
   -p
@@ -576,8 +625,15 @@ docker
   -f
   angellist
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/angellist:latest
+docker
   run
   --rm
+  --pull=never
   --name
   angellist
   --user
@@ -628,8 +684,15 @@ docker
   -f
   angellist
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/angellist:latest
+docker
   run
   --rm
+  --pull=never
   --name
   angellist
   --user
@@ -681,8 +744,15 @@ docker
   -f
   angellist
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/angellist:latest
+docker
   run
   --rm
+  --pull=never
   --name
   angellist
   --user
@@ -734,8 +804,15 @@ docker
   -f
   angellist
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/angellist:latest
+docker
   run
   --rm
+  --pull=never
   --name
   angellist
   --user
@@ -783,8 +860,15 @@ docker
   -f
   angellist
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/angellist:latest
+docker
   run
   --rm
+  --pull=never
   --name
   angellist
   --user
@@ -832,8 +916,15 @@ docker
   -f
   angellist
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/angellist:latest
+docker
   run
   --rm
+  --pull=never
   --name
   angellist
   --user
@@ -881,8 +972,15 @@ docker
   -f
   angellist
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/angellist:latest
+docker
   run
   --rm
+  --pull=never
   --name
   angellist
   --user
@@ -930,8 +1028,15 @@ docker
   -f
   angellist
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/angellist:latest
+docker
   run
   --rm
+  --pull=never
   --name
   angellist
   --user

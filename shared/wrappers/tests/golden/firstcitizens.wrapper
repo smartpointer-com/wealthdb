@@ -151,8 +151,15 @@ docker
   -f
   firstcitizens
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   run
   --rm
+  --pull=never
   --name
   firstcitizens
   --user
@@ -204,8 +211,15 @@ docker
   -f
   firstcitizens
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   run
   --rm
+  --pull=never
   --name
   firstcitizens
   -p
@@ -257,8 +271,15 @@ docker
   -f
   firstcitizens
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   run
   --rm
+  --pull=never
   --name
   firstcitizens
   --user
@@ -306,8 +327,15 @@ docker
   -f
   firstcitizens
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   run
   --rm
+  --pull=never
   --name
   firstcitizens
   --user
@@ -370,8 +398,15 @@ docker
   -f
   firstcitizens
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   run
   --rm
+  --pull=never
   --name
   firstcitizens
   -p
@@ -423,8 +458,15 @@ docker
   -f
   firstcitizens
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   run
   --rm
+  --pull=never
   --name
   firstcitizens
   --user
@@ -472,8 +514,15 @@ docker
   -f
   firstcitizens
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   run
   --rm
+  --pull=never
   --name
   firstcitizens
   --user
@@ -521,8 +570,15 @@ docker
   -f
   firstcitizens
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   run
   --rm
+  --pull=never
   --name
   firstcitizens
   --user
@@ -570,8 +626,15 @@ docker
   -f
   firstcitizens
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   run
   --rm
+  --pull=never
   --name
   firstcitizens
   --user
@@ -620,8 +683,15 @@ docker
   -f
   firstcitizens
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   run
   --rm
+  --pull=never
   --name
   firstcitizens
   --user
@@ -672,8 +742,15 @@ docker
   -f
   firstcitizens
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   run
   --rm
+  --pull=never
   --name
   firstcitizens
   --user
@@ -725,8 +802,15 @@ docker
   -f
   firstcitizens
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   run
   --rm
+  --pull=never
   --name
   firstcitizens
   --user
@@ -778,8 +862,15 @@ docker
   -f
   firstcitizens
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   run
   --rm
+  --pull=never
   --name
   firstcitizens
   --user
@@ -827,8 +918,15 @@ docker
   -f
   firstcitizens
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   run
   --rm
+  --pull=never
   --name
   firstcitizens
   --user
@@ -876,8 +974,15 @@ docker
   -f
   firstcitizens
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   run
   --rm
+  --pull=never
   --name
   firstcitizens
   --user
@@ -925,8 +1030,15 @@ docker
   -f
   firstcitizens
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   run
   --rm
+  --pull=never
   --name
   firstcitizens
   --user
@@ -974,8 +1086,15 @@ docker
   -f
   firstcitizens
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   run
   --rm
+  --pull=never
   --name
   firstcitizens
   --user

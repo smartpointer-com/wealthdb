@@ -33,7 +33,7 @@ printf '%s\n' "\$@" > "$tmp/docker-args"
 case "\$1 \$2" in
     "ps -q"|"ps -aq") [ -n "\${STUB_RUNNING:-}" ] && echo abc123 ;;
     "inspect -f")     echo "\${STUB_RUNNING_IMAGE:-sha256:one}" ;;
-    "image inspect")  [ -n "\${STUB_NO_IMAGE:-}" ] && exit 1; echo "\${STUB_CURRENT_IMAGE:-sha256:one}" ;;
+    "image inspect")  [ -n "\${STUB_NO_IMAGE:-}" ] && { echo "Error response from daemon: No such image: \$3" >&2; exit 1; }; echo "\${STUB_CURRENT_IMAGE:-sha256:one}" ;;
 esac
 exit 0
 EOF

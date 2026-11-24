@@ -167,8 +167,15 @@ docker
   -f
   amex
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/amex:latest
+docker
   run
   --rm
+  --pull=never
   --name
   amex
   --user
@@ -220,8 +227,15 @@ docker
   -f
   amex
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/amex:latest
+docker
   run
   --rm
+  --pull=never
   --name
   amex
   -p
@@ -280,8 +294,15 @@ docker
   -f
   amex
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/amex:latest
+docker
   run
   --rm
+  --pull=never
   --name
   amex
   --user
@@ -333,8 +354,15 @@ docker
   -f
   amex
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/amex:latest
+docker
   run
   --rm
+  --pull=never
   --name
   amex
   -p
@@ -397,8 +425,15 @@ docker
   -f
   amex
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/amex:latest
+docker
   run
   --rm
+  --pull=never
   --name
   amex
   --user
@@ -446,8 +481,15 @@ docker
   -f
   amex
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/amex:latest
+docker
   run
   --rm
+  --pull=never
   --name
   amex
   --user
@@ -495,8 +537,15 @@ docker
   -f
   amex
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/amex:latest
+docker
   run
   --rm
+  --pull=never
   --name
   amex
   --user
@@ -545,8 +594,15 @@ docker
   -f
   amex
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/amex:latest
+docker
   run
   --rm
+  --pull=never
   --name
   amex
   --user
@@ -597,8 +653,15 @@ docker
   -f
   amex
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/amex:latest
+docker
   run
   --rm
+  --pull=never
   --name
   amex
   --user
@@ -650,8 +713,15 @@ docker
   -f
   amex
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/amex:latest
+docker
   run
   --rm
+  --pull=never
   --name
   amex
   --user
@@ -703,8 +773,15 @@ docker
   -f
   amex
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/amex:latest
+docker
   run
   --rm
+  --pull=never
   --name
   amex
   --user
@@ -752,8 +829,15 @@ docker
   -f
   amex
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/amex:latest
+docker
   run
   --rm
+  --pull=never
   --name
   amex
   --user
@@ -801,8 +885,15 @@ docker
   -f
   amex
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/amex:latest
+docker
   run
   --rm
+  --pull=never
   --name
   amex
   --user
@@ -850,8 +941,15 @@ docker
   -f
   amex
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/amex:latest
+docker
   run
   --rm
+  --pull=never
   --name
   amex
   --user
@@ -899,8 +997,15 @@ docker
   -f
   amex
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/amex:latest
+docker
   run
   --rm
+  --pull=never
   --name
   amex
   --user

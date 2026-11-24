@@ -122,7 +122,7 @@ _serve_args() {
 # _docker_run_args populates DOCKER_ARGS for the detached HTTP server
 # from the resolved globals. Pure (no exec); unit-tested.
 _docker_run_args() {
-    DOCKER_ARGS=(run -d --name "$CONTAINER" --restart unless-stopped)
+    DOCKER_ARGS=(run -d --pull=never --name "$CONTAINER" --restart unless-stopped)
     _base_args
     if [ "$AUTH" = token ]; then
         DOCKER_ARGS+=(-v "$TOKEN_FILE:/run/wealthdb-mcp/token:ro")
@@ -149,7 +149,7 @@ _docker_run_args() {
 # client already runs as the user. Extra arguments (--privacy) pass
 # through to mcp-serve.
 _stdio_args() {
-    DOCKER_ARGS=(run --rm -i)
+    DOCKER_ARGS=(run --rm -i --pull=never)
     _base_args
     DOCKER_ARGS+=("$IMAGE" -c "$CFG" mcp-serve --stdio)
     local tok
@@ -215,12 +215,7 @@ _require_enabled() {
     fi
 }
 
-_require_image() {
-    if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-        echo "mcp: image $IMAGE not found; run 'wealthdb build' first" >&2
-        return 1
-    fi
-}
+_require_image() { wealthdb_require_image mcp "$IMAGE" "wealthdb build"; }
 
 # ---- subcommands ------------------------------------------------------
 

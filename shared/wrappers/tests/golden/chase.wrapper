@@ -153,8 +153,15 @@ docker
   -f
   chase
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/chase:latest
+docker
   run
   --rm
+  --pull=never
   --name
   chase
   --user
@@ -206,8 +213,15 @@ docker
   -f
   chase
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/chase:latest
+docker
   run
   --rm
+  --pull=never
   --name
   chase
   -p
@@ -266,8 +280,15 @@ docker
   -f
   chase
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/chase:latest
+docker
   run
   --rm
+  --pull=never
   --name
   chase
   --user
@@ -330,8 +351,15 @@ docker
   -f
   chase
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/chase:latest
+docker
   run
   --rm
+  --pull=never
   --name
   chase
   -p
@@ -383,8 +411,15 @@ docker
   -f
   chase
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/chase:latest
+docker
   run
   --rm
+  --pull=never
   --name
   chase
   --user
@@ -432,8 +467,15 @@ docker
   -f
   chase
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/chase:latest
+docker
   run
   --rm
+  --pull=never
   --name
   chase
   --user
@@ -481,8 +523,15 @@ docker
   -f
   chase
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/chase:latest
+docker
   run
   --rm
+  --pull=never
   --name
   chase
   --user
@@ -531,8 +580,15 @@ docker
   -f
   chase
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/chase:latest
+docker
   run
   --rm
+  --pull=never
   --name
   chase
   --user
@@ -583,8 +639,15 @@ docker
   -f
   chase
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/chase:latest
+docker
   run
   --rm
+  --pull=never
   --name
   chase
   --user
@@ -636,8 +699,15 @@ docker
   -f
   chase
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/chase:latest
+docker
   run
   --rm
+  --pull=never
   --name
   chase
   --user
@@ -689,8 +759,15 @@ docker
   -f
   chase
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/chase:latest
+docker
   run
   --rm
+  --pull=never
   --name
   chase
   --user
@@ -738,8 +815,15 @@ docker
   -f
   chase
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/chase:latest
+docker
   run
   --rm
+  --pull=never
   --name
   chase
   --user
@@ -787,8 +871,15 @@ docker
   -f
   chase
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/chase:latest
+docker
   run
   --rm
+  --pull=never
   --name
   chase
   --user
@@ -836,8 +927,15 @@ docker
   -f
   chase
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/chase:latest
+docker
   run
   --rm
+  --pull=never
   --name
   chase
   --user
@@ -885,8 +983,15 @@ docker
   -f
   chase
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/chase:latest
+docker
   run
   --rm
+  --pull=never
   --name
   chase
   --user

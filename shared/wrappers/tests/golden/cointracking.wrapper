@@ -249,8 +249,15 @@ docker
   -f
   cointracking
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/cointracking:latest
+docker
   run
   --rm
+  --pull=never
   --name
   cointracking
   --user
@@ -304,8 +311,15 @@ docker
   -f
   cointracking
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/cointracking:latest
+docker
   run
   --rm
+  --pull=never
   --name
   cointracking
   --user
@@ -359,8 +373,15 @@ docker
   -f
   cointracking
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/cointracking:latest
+docker
   run
   --rm
+  --pull=never
   --name
   cointracking
   --user
@@ -414,8 +435,15 @@ docker
   -f
   cointracking
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/cointracking:latest
+docker
   run
   --rm
+  --pull=never
   --name
   cointracking
   --user
@@ -480,8 +508,15 @@ docker
   -f
   cointracking
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/cointracking:latest
+docker
   run
   --rm
+  --pull=never
   --name
   cointracking
   --user
@@ -539,8 +574,15 @@ docker
   -f
   cointracking
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/cointracking:latest
+docker
   run
   --rm
+  --pull=never
   --name
   cointracking
   -p
@@ -598,8 +640,15 @@ docker
   -f
   cointracking
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/cointracking:latest
+docker
   run
   --rm
+  --pull=never
   --name
   cointracking
   --user
@@ -653,8 +702,15 @@ docker
   -f
   cointracking
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/cointracking:latest
+docker
   run
   --rm
+  --pull=never
   --name
   cointracking
   --user
@@ -708,8 +764,15 @@ docker
   -f
   cointracking
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/cointracking:latest
+docker
   run
   --rm
+  --pull=never
   --name
   cointracking
   --user
@@ -764,8 +827,15 @@ docker
   -f
   cointracking
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/cointracking:latest
+docker
   run
   --rm
+  --pull=never
   --name
   cointracking
   --user
@@ -822,8 +892,15 @@ docker
   -f
   cointracking
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/cointracking:latest
+docker
   run
   --rm
+  --pull=never
   --name
   cointracking
   --user
@@ -881,8 +958,15 @@ docker
   -f
   cointracking
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/cointracking:latest
+docker
   run
   --rm
+  --pull=never
   --name
   cointracking
   --user
@@ -940,8 +1024,15 @@ docker
   -f
   cointracking
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/cointracking:latest
+docker
   run
   --rm
+  --pull=never
   --name
   cointracking
   --user
@@ -995,8 +1086,15 @@ docker
   -f
   cointracking
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/cointracking:latest
+docker
   run
   --rm
+  --pull=never
   --name
   cointracking
   --user
@@ -1050,8 +1148,15 @@ docker
   -f
   cointracking
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/cointracking:latest
+docker
   run
   --rm
+  --pull=never
   --name
   cointracking
   --user
@@ -1105,8 +1210,15 @@ docker
   -f
   cointracking
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/cointracking:latest
+docker
   run
   --rm
+  --pull=never
   --name
   cointracking
   --user
@@ -1160,8 +1272,15 @@ docker
   -f
   cointracking
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/cointracking:latest
+docker
   run
   --rm
+  --pull=never
   --name
   cointracking
   --user
