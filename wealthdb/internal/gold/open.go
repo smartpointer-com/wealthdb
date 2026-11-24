@@ -15,8 +15,7 @@ import (
 	"net/url"
 	"time"
 
-	_ "github.com/duckdb/duckdb-go/v2"
-
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/duckconn"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/version"
 )
 
@@ -122,13 +121,13 @@ func open(path string, mode Mode, audit bool, options map[string]string) (*sql.D
 		dsn += "?" + params.Encode()
 	}
 
-	db, err := sql.Open("duckdb", dsn)
+	// duckconn.Open attaches the file, and Ping takes the first
+	// connection. Failures here are the user-visible "the file is
+	// missing / corrupt / locked" cases.
+	db, err := duckconn.Open(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb %q: %w", path, err)
 	}
-	// sql.Open is lazy; Ping confirms the driver can actually
-	// attach the file. Failures here are the user-visible "the
-	// file is missing / corrupt / locked" cases.
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping duckdb %q: %w", path, err)

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"flag"
 	"fmt"
 	"io"
@@ -10,8 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	_ "github.com/duckdb/duckdb-go/v2"
-
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/duckconn"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
@@ -123,7 +121,7 @@ func compactBuild(ctx context.Context, goldPath string) func(string) error {
 		// ATTACH is per-connection, so the multi-statement sequence
 		// must run on one pinned *sql.Conn — the pool would otherwise
 		// scatter the statements across connections.
-		db, err := sql.Open("duckdb", ":memory:")
+		db, err := duckconn.Open(":memory:")
 		if err != nil {
 			return fmt.Errorf("open compaction driver: %w", err)
 		}

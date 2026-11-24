@@ -13,8 +13,7 @@ import (
 	"fmt"
 	"net/url"
 
-	_ "github.com/duckdb/duckdb-go/v2"
-
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/duckconn"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
@@ -52,7 +51,7 @@ func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection
 	// DuckDB takes options as `?key=value` query params on the DSN
 	// (cf. internal/gold/open.go).
 	dsn := spec.Path + "?access_mode=" + url.QueryEscape("read_only")
-	db, err := sql.Open("duckdb", dsn)
+	db, err := duckconn.Open(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open cointracking silver %q: %w", spec.Path, err)
 	}

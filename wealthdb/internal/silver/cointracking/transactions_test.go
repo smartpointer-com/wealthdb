@@ -1,11 +1,13 @@
 package cointracking
 
 import (
+	"context"
 	"database/sql"
 	"strings"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/duckconn/duckconntest"
 )
 
 // pointPrice is the latest price on or before the instant at, by one
@@ -92,4 +94,47 @@ SELECT CAST(price_usd AS VARCHAR) FROM coin_prices
 	if priced < 8 {
 		t.Errorf("priced lookups = %d, want the fixture to reach the prices", priced)
 	}
+}
+
+// A trade shortly before midnight UTC takes that day's price, also on a
+// machine whose own day has already turned.
+func TestATradesPriceDayIsItsUTCDay(t *testing.T) {
+	path := newFixtureSilver(t, `
+        INSERT INTO dump_runs VALUES (1000, 2, '/x/1', NULL);
+        INSERT INTO portfolios VALUES ('cu1', 1, 'aaa', 1000, NULL);
+        INSERT INTO wallets VALUES ('cu1', 'cu1:Kraken', 'Kraken', 1000, NULL);
+        INSERT INTO transactions (transaction_external_id, portfolio_external_id, wallet_external_id, snapshot_at,
+                                  occurred_at, type, buy_amount, buy_currency, sell_amount, sell_currency,
+                                  fee_amount, fee_currency, comment) VALUES
+            ('t1', 'cu1', 'cu1:Kraken', 1000, TIMESTAMP '2024-01-01 23:30:00', 'Trade',
+             10.0, 'ETH', 0.5, 'BTC', 0, NULL, NULL);
+        INSERT INTO portfolio_prices VALUES
+            (DATE '2024-01-01', 'cu1', 'BTC', 'USD', 30000.0, 1000),
+            (DATE '2024-01-02', 'cu1', 'BTC', 'USD', 40000.0, 1000);
+    `)
+	conn := openAdapter(t, path)
+	w, err := conn.ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := conn.Transactions(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	batch, _, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Transactions) != 2 {
+		t.Fatalf("%d rows, want the trade's two legs", len(batch.Transactions))
+	}
+	for _, tx := range batch.Transactions {
+		if tx.NetAmount == nil || tx.NetAmount.Abs().String() != "15000" {
+			t.Errorf("%s: net amount %v, want 15000 either way: 0.5 BTC at the price of 2024-01-01",
+				tx.TransactionExternalID, tx.NetAmount)
+		}
+	}
+
+	duckconntest.AlsoInZone(t, "Pacific/Auckland")
 }
