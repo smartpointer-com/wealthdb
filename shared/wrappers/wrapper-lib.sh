@@ -216,13 +216,58 @@ wrapper_mounts_help() {
 # _wrapper_build_hint — print the sentence that says how this
 # collector's image and its base images are built. `make build-<name>`
 # builds the bases first, and only a checkout has the Makefile and their
-# Dockerfiles. An installed copy builds no image.
+# Dockerfiles.
 _wrapper_build_hint() {
-    if [[ -f "$_WRAPPER_ROOT/Makefile" ]]; then
-        echo "In a checkout, run: make build-$NAME"
-    else
-        echo "An installed copy builds no image. Run this collector from a checkout."
-    fi
+    echo "In a checkout, run: make build-$NAME"
+}
+
+# _wrapper_installed_copy — is this tree an installed copy? It has no
+# Makefile, holds no image and builds none.
+_wrapper_installed_copy() {
+    [[ ! -f "$_WRAPPER_ROOT/Makefile" ]]
+}
+
+# _wrapper_stop_installed — stop, with status 2, a verb that needs an
+# image an installed copy does not have. A missing image, a Docker that
+# does not answer and no Docker at all end in this one message there:
+# none of them can be mended in an installed copy.
+_wrapper_stop_installed() {
+    echo "$NAME: this collector runs in a container, and an installed copy has no image for it yet. Run it from a checkout of wealthdb." >&2
+    exit 2
+}
+
+# _wrapper_require_docker — stop, with status 2, when the answer of
+# wealthdb_image_state says there is no Docker to run or build with: no
+# docker program, or one that does not answer. Docker's own first line
+# follows the message, so the cause is not lost. Any other answer goes
+# on.
+_wrapper_require_docker() {
+    case "$IMAGE_STATE" in
+        noclient)
+            echo "$NAME: this collector runs in a container, and Docker is not installed." >&2
+            ;;
+        down)
+            echo "$NAME: Docker does not answer. Start it, then run this again. With Colima: colima start" >&2
+            if [[ -n "$DOCKER_ERROR" ]]; then echo "    $DOCKER_ERROR" >&2; fi
+            ;;
+        *) return 0 ;;
+    esac
+    exit 2
+}
+
+# wrapper_require_image — stop the verb, with status 2 and one message,
+# unless Docker holds the collector's image. It runs before anything
+# else of a verb that needs a container, and asks Docker once
+# (wealthdb_image_state): a run that goes on asks nothing more. A run
+# passes --pull=never as well, so a missing image is never fetched from
+# a registry, where the name may belong to anyone.
+wrapper_require_image() {
+    wealthdb_image_state "$IMAGE"
+    [[ "$IMAGE_STATE" == present ]] && return 0
+    if _wrapper_installed_copy; then _wrapper_stop_installed; fi
+    _wrapper_require_docker
+    echo "$NAME: the image $IMAGE is not built yet. $(_wrapper_build_hint)" >&2
+    exit 2
 }
 
 # Implement `./<wrapper> build [extra args]`, the step `make build-<name>`
@@ -245,10 +290,19 @@ _wrapper_build_hint() {
 # tag builds on its own bases.
 wrapper_build() {
     shift  # drop "build"
-    wealthdb_require_local_bases "$NAME" "$HERE/Dockerfile" "$(_wrapper_build_hint)" || exit 2
+    if _wrapper_installed_copy; then _wrapper_stop_installed; fi
     # The base image's id is part of the inputs: a rebuilt base is a
-    # different image even when its own inputs did not change.
-    _wfrom="$(wealthdb_from_id "$HERE/Dockerfile")"
+    # different image even when its own inputs did not change. The
+    # question that reads it also tells whether Docker answers at all.
+    _wfrom="$(wealthdb_from_ref "$HERE/Dockerfile")"
+    if [[ -n "$_wfrom" && "$_wfrom" != missing ]]; then
+        wealthdb_image_state "$_wfrom"
+        _wrapper_require_docker
+        _wfrom="${IMAGE_ID:-missing}"
+    else
+        _wfrom=missing
+    fi
+    wealthdb_require_local_bases "$NAME" "$HERE/Dockerfile" "$(_wrapper_build_hint)" || exit 2
     _whash="$(wealthdb_inputs_hash "$HERE/Dockerfile" "$HERE/requirements.txt" \
         -- "$_wfrom")" || _whash=
     if wealthdb_build_unchanged "$IMAGE" "$_whash" "$#"; then
@@ -452,6 +506,9 @@ wrapper_main() {
         build) wrapper_build "$@" ;;
         prune) wrapper_host_prune "$@" ;;
     esac
+    # First of all: no container runs without the image, and a verb
+    # that cannot run makes no folder and asks for no credential.
+    wrapper_require_image
     # Pull the --secrets-dir/--data-dir/--silver-db flags out of the args
     # (they may override HOST_SECRETS/HOST_DATA + add the /silver mount),
     # then continue with the remaining args as the positional parameters.
@@ -482,7 +539,6 @@ wrapper_main() {
         wrapper_safety_guard "$@"
     fi
 
-    wealthdb_require_image "$NAME" "$IMAGE" "$(_wrapper_build_hint)" || exit 2
     local -a docker_args=(
         --rm --pull=never --name "$CONTAINER_NAME"
         ${TTY_ARGS[@]+"${TTY_ARGS[@]}"}
@@ -492,6 +548,12 @@ wrapper_main() {
     )
     for v in ${ENV_VARS[@]+"${ENV_VARS[@]}"}; do
         docker_args+=(-e "$v")
+    done
+    # The words a command the collector prints starts with, which the
+    # engine launcher sets for a setup of its own. Unset, nothing is
+    # passed, and the collector prints `wealthdb-collect` and `wealthdb`.
+    for v in WEALTHDB_COLLECT WEALTHDB_PROGRAM; do
+        if [[ -n "${!v:-}" ]]; then docker_args+=(-e "$v"); fi
     done
     docker_args+=(
         -v "$HOST_SECRETS:/secrets"

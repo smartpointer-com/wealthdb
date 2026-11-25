@@ -15,6 +15,11 @@
 # complete setup prints nothing and reaches `docker run` with the argv
 # it has with no declaration at all.
 #
+# A setup of its own: with WEALTHDB_COLLECT and WEALTHDB_PROGRAM set, as
+# the engine launcher sets them, every command printed starts with their
+# words, and a text that names the default data root names the setup's
+# folder. Unset, every text is as the declaration writes it.
+#
 # Fleet: every collector's `login` with an empty secrets folder prints
 # its instructions and starts nothing; plaid, manual, svb and curves
 # print the first step their declaration states and exit 0, and the
@@ -437,6 +442,85 @@ out="$(WEALTHDB_SETUP_NEXT=1 docker_run docker "$DECL" login)"
 has "a login the check stops: exit 78" "rc=78" "$out"
 lacks "a login the check stops: no block" "What to do now" "$out"
 
+echo "a setup of its own: the commands name its config:"
+# The words the engine launcher hands the wrappers of `-c $OWN_CFG`.
+OWN_CFG="$TMP/my try/wealthdb.cfg"
+OWN="wealthdb -c '$OWN_CFG'"
+# Exported in a subshell, as a wrapper finds them: the block a login ends
+# with is printed from an exit trap, which a variable set for one call
+# does not reach.
+own() { (export WEALTHDB_CONFIG="$OWN_CFG" WEALTHDB_PROGRAM="$OWN" WEALTHDB_COLLECT="$OWN collect"; "$@"); }
+cat > "$TMP/own.txt" <<'EOF'
+var TESTCOL_USERNAME required plain <email> The email you sign in with
+checks login link
+provider On a new computer, sign in once by hand. Run
+provider   wealthdb-collect testcol vnc-login --mode none
+provider and wealthdb says the rest.
+signin To test the key, run: wealthdb-collect testcol login --check
+signin   wealthdb config banks
+first Put the files in $XDG_DATA_HOME/wealthdb/testcol by default.
+first   wealthdb-collect testcol link --item <name>
+then wealthdb-collect testcol link --item <name>   # wealthdb-collect runs it once for each bank.
+then wealthdb-collect testcol download [--item <name>] --lookback all
+then wealthdb-collect testcol load
+then wealthdb config banks   # Adds the bank to the sources wealthdb reads.
+then wealthdb load -a
+EOF
+fresh_secrets
+out="$(own docker_run docker "$TMP/own.txt" login)"
+has "the stopped verb is named with the config" "Then run: $OWN collect testcol login" "$out"
+lacks "...and never as the default setup's command" "Then run: wealthdb-collect" "$out"
+has "a step of the collector carries it" "  1.  $OWN collect testcol link --item <name>" "$out"
+has "...with its flags" "  2.  $OWN collect testcol download --lookback all" "$out"
+has "an engine command carries it" "  4.  $OWN config banks" "$out"
+has "...the load into the one database too" "  5.  $OWN load -a" "$out"
+has "what a step does is still found by its verb" "Reads the saved files into this source's own database." "$out"
+has "a note is text, left as it is" "wealthdb-collect runs it once for each bank." "$out"
+has "...the engine command's too" "Adds the bank to the sources wealthdb reads." "$out"
+has "a command indented in a text line carries it" "     $OWN collect testcol vnc-login --mode none" "$out"
+has "a command inside a sentence carries it" "To test the key, run: $OWN collect testcol login --check" "$out"
+has "an engine command indented in a text line carries it" "     $OWN config banks" "$out"
+has "a sentence that names wealthdb stays a sentence" "   and wealthdb says the rest." "$out"
+out="$(own docker_run docker "$TMP/own.txt" link --item schwab)"
+has "a stopped link names itself with its login and the config" \
+    "Then run: $OWN collect testcol link --item schwab" "$out"
+has "the steps after it name the login" "  1.  $OWN collect testcol download --item schwab --lookback all" "$out"
+mkdir -p "$SECRETS"
+echo "$COMPLETE" > "$SECRETS/testcol.env"
+out="$(WEALTHDB_SETUP_NEXT=1 own docker_run docker "$TMP/own.txt" login)"
+has "a login that ends well names the next commands with the config" "  1.  $OWN collect testcol link --item <name>" "$out"
+has "...to the last one" "  5.  $OWN load -a" "$out"
+# The first step of a collector with nothing to sign in to.
+first_lines() {
+    (
+        set -euo pipefail
+        cd "$TMP" || exit 1
+        HERE="$TMP/first-own"; NAME=testcol
+        mkdir -p "$HERE" && cp "$TMP/own.txt" "$HERE/setup.txt"
+        # shellcheck disable=SC1091
+        source "$REPO/shared/wrappers/host-lib.sh"
+        setup_print_first
+    ) 2>&1
+}
+out="$(own first_lines)"
+has "a first line names the setup's folder, not the default data root" \
+    "testcol: Put the files in $TMP/my try/testcol by default." "$out"
+has "...and its command carries the config" "testcol:   $OWN collect testcol link --item <name>" "$out"
+out="$(first_lines)"
+has "the default config: a first line as the declaration writes it" \
+    'testcol: Put the files in $XDG_DATA_HOME/wealthdb/testcol by default.' "$out"
+has "...its command too" "testcol:   wealthdb-collect testcol link --item <name>" "$out"
+rm -f "$SECRETS/testcol.env"
+out="$(docker_run docker "$TMP/own.txt" login)"
+has "the default config: the stopped verb as the declaration writes it" "Then run: wealthdb-collect testcol login" "$out"
+has "...an engine command too" "  5.  wealthdb load -a" "$out"
+has "...and a text line" "To test the key, run: wealthdb-collect testcol login --check" "$out"
+lacks "...and no config anywhere" " -c " "$out"
+# A path with a quote and an ampersand reaches the text as it is given.
+out="$(WEALTHDB_COLLECT="wealthdb -c '/x/it'\\''s & co/w.cfg' collect" docker_run docker "$TMP/own.txt" login)"
+has "words with a quote and an & are printed as they are" \
+    "To test the key, run: wealthdb -c '/x/it'\\''s & co/w.cfg' collect testcol login --check" "$out"
+
 echo "the setup check, host family:"
 fresh_secrets
 out="$(docker_run host "$DECL" login)"
@@ -585,7 +669,8 @@ echo "login on each collector, from an empty secrets folder:"
 
 # fleet_run NAME ROOT ARGS...: the collector's wrapper and setup.txt in a
 # tree of their own (no .venv), with stub docker and python3. FLEET_NEXT=1
-# asks for the block a login ends with, as a terminal does.
+# asks for the block a login ends with, as a terminal does. FLEET_ENV
+# holds more NAME=VALUE pairs for the wrapper's environment.
 cat > "$TMP/bin/python3" <<'EOF'
 #!/usr/bin/env bash
 echo "python3 ran"
@@ -601,6 +686,7 @@ fleet_run() {
     env -i PATH="$TMP/bin:/usr/bin:/bin" HOME="$root/home" LC_ALL=C TMPDIR="$TMP" \
         XDG_DATA_HOME="$root/xd" XDG_CACHE_HOME="$root/xc" XDG_CONFIG_HOME="$root/xcfg" \
         STUB_LOG="$root/stub.log" WEALTHDB_SETUP_NEXT="${FLEET_NEXT:-}" \
+        ${FLEET_ENV[@]+"${FLEET_ENV[@]}"} \
         "$root/tree/collectors/$name/$name" "$@" < /dev/null 2>&1
     echo "rc=$?"
 }
@@ -668,6 +754,37 @@ for name in manual svb; do
         "$name: $(sed -n 's/^first //p' "$REPO/collectors/$name/setup.txt" | sed -n '1p')" "$out"
     lacks "$name: download ends with no block" "What to do now" "$out"
 done
+
+# A setup of its own: a wrapper's own text names the config in the
+# command it tells a person to run, and the declaration's text names the
+# setup's folder.
+echo
+echo "the wrappers' own texts, for a setup of its own:"
+FLEET_CFG="$TMP/try/wealthdb.cfg"
+FLEET_ENV=(WEALTHDB_CONFIG="$FLEET_CFG" WEALTHDB_PROGRAM="wealthdb -c $FLEET_CFG"
+           WEALTHDB_COLLECT="wealthdb -c $FLEET_CFG collect")
+for name in manual svb curves refdata fred ubs-psn; do
+    root="$TMP/own-$name"
+    mkdir -p "$root/home/.secrets"
+    case $name in
+        fred)    printf "FRED_API_KEY='%s'\n" "$SECRET_MARK" > "$root/home/.secrets/fred.env" ;;
+        ubs-psn) printf "UBS_PSN_CLIENT_ID='x'\n" > "$root/home/.secrets/ubs-psn.env"
+                 : > "$root/home/.secrets/ubs_psn_key" ;;
+    esac
+    verb=load
+    case $name in manual|svb) ;; *) verb="login --check" ;; esac
+    out="$(FLEET_NEXT=1 fleet_run "$name" "$root" login)"
+    has "$name: login exits 0" "rc=0" "$out"
+    has "$name: its text names the command with the config" "wealthdb -c $FLEET_CFG collect $name $verb" "$out"
+    lacks "$name: ...and never the default setup's" "wealthdb-collect $name" "$out"
+    lacks "$name: no value printed" "$SECRET_MARK" "$out"
+done
+out="$(FLEET_NEXT=1 fleet_run manual "$TMP/own-manual" login)"
+has "manual: the data folder is the setup's" "the data folder, $TMP/try/manual by default." "$out"
+has "manual: the last step loads into the setup's database" "wealthdb -c $FLEET_CFG load -a" "$out"
+out="$(FLEET_NEXT=1 fleet_run svb "$TMP/own-svb" login)"
+has "svb: the statement folder is the setup's" "folder of the data folder, $TMP/try/svb/bronze" "$out"
+unset FLEET_ENV
 
 echo
 summary "setup check tests"

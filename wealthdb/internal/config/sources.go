@@ -161,13 +161,16 @@ func (s *SilverSource) Feeds() []Feed {
 	return out
 }
 
-// CollectCommand is the command that starts collecting the data of a
-// feed: its collector's first sign-in, which lists what to save first,
-// or the start the catalogue states for it, with the login's name.
-func CollectCommand(f Feed) string {
+// CollectArgs is what follows the collect command in the command that
+// starts collecting the data of a feed: its collector, then the
+// collector's first sign-in, which lists what to save first, or the
+// start the catalogue states for it, with the login's name. The collect
+// command itself depends on the config the run reads, so the caller
+// states it.
+func CollectArgs(f Feed) string {
 	c, _ := silver.CollectorNamed(f.Collector)
 	start := strings.ReplaceAll(cmp.Or(c.Start, "login"), "{item}", f.Item)
-	return "wealthdb-collect " + f.Collector + " " + start
+	return f.Collector + " " + start
 }
 
 // registeredKind refuses a kind no adapter registers, naming the kinds

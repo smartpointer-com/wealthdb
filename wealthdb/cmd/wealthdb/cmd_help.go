@@ -117,7 +117,7 @@ var commandHelps = []commandHelp{
 		long:  "Manage the optional MCP server that serves the read-only reports to AI agents: start, stop, status, restart, logs, stdio, url. Served by the host-side `wealthdb` wrapper rather than this binary — see mcp/README.md."},
 	{name: "collect", args: "<source> <verb>", hostSide: true, group: "other",
 		short: "collect a bank's or a broker's data: login, download, load (host-side wrapper)",
-		long:  "Run a collector: `wealthdb collect <source> login`, then `download` and `load`; `wealthdb collect list` names the sources. The same command as `wealthdb-collect`. Served by the host-side `wealthdb` wrapper rather than this binary — see collectors/README.md."},
+		long:  "Run a collector: `wealthdb collect <source> login`, then `download` and `load`; `wealthdb collect list` names the sources. `wealthdb-collect` is the same command for the default config; after `wealthdb -c <file>`, the collector works in that config's setup. Served by the host-side `wealthdb` wrapper rather than this binary — see collectors/README.md."},
 	{name: "mcp-serve", args: "--stdio | --http ADDR", group: "other",
 		short: "the MCP server itself; 'wealthdb mcp' runs and manages it"},
 	{name: "version", group: "other", short: "print the wealthdb version"},

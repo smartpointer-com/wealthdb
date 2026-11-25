@@ -49,13 +49,13 @@ case "$cmd" in
         # `login` at a terminal ends with the commands that follow it.
         setup_print_first
         if [[ "$cmd" == login ]]; then setup_arm_next login ${@+"$@"}; fi
-        cat >&2 <<'EOF'
+        cat >&2 <<EOF
 svb: no-op. The statements are a fixed historical archive: SVB wound down
 in 2023. Two more files may sit in <data-dir>/bronze/: an optional
 signature.txt page-1 guard, and the derived-marks.xlsx performance
 workbook of month-end account values for the months the statements do
 not cover. load searches the folder and every folder below it.
-`wealthdb-collect svb load` rebuilds the silver DBs from them.
+\`${WEALTHDB_COLLECT:-wealthdb-collect} svb load\` rebuilds the silver DBs from them.
 EOF
         exit 0
         ;;

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 
 from collectorkit import cli, envfile
@@ -157,7 +158,8 @@ def check(args: argparse.Namespace, client: plaidapi.Client) -> int:
         say(f"{pending.name}: a sign-in started {pending.created_at} is left "
             f"open; {items.command('login', environment)} settles it")
     if linked:
-        say(f"{items.command('wealthdb-collect plaid banks', environment)} "
+        collect = os.environ.get("WEALTHDB_COLLECT", "wealthdb-collect")
+        say(f"{items.command(f'{collect} plaid banks', environment)} "
             f"lists the linked banks and where their data stands")
     return 0 if linked and healthy and not unreadable else 1
 

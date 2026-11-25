@@ -8,6 +8,10 @@ FAIL=0
 # recorded for this checkout (engine-mode.sh). A test of the native
 # engine names a record of its own.
 export WEALTHDB_BUILD_CONFIG=/dev/null
+# No ambient config reaches a wrapper, nor the words a setup of its own
+# prints its commands with: every case runs the default config unless it
+# names another.
+unset WEALTHDB_CONFIG WEALTHDB_COLLECT WEALTHDB_PROGRAM
 
 ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
 bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
@@ -33,8 +37,10 @@ summary() {
 }
 
 # stub_docker DIR: writes a fake `docker` into DIR. It answers `ps` with
-# no container and `image inspect` with no image, starts nothing and
-# exits 0 otherwise. When STUB_LOG names a file, each call is appended to
+# no container and `image inspect` with an image's id, so a wrapper
+# finds its image, starts nothing and exits 0. With STUB_NO_IMAGE it
+# holds no image, and with STUB_DOWN it is a Docker that does not
+# answer. When STUB_LOG names a file, each call is appended to
 # it: "docker", then the argv one item per line, then, for each `-e NAME`
 # that passes a name only, the value NAME holds in the stub's
 # environment, since that value is what would reach the container.
@@ -55,7 +61,19 @@ if [ -n "${STUB_LOG:-}" ]; then
         done
     } >> "$STUB_LOG"
 fi
-[ "${1:-}" != image ]
+if [ -n "${STUB_DOWN:-}" ]; then
+    echo "failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running" >&2
+    echo "a second line of Docker's" >&2
+    exit 1
+fi
+if [ "${1:-}" = image ]; then
+    if [ -n "${STUB_NO_IMAGE:-}" ]; then
+        echo "Error response from daemon: No such image: ${*: -1}" >&2
+        exit 1
+    fi
+    echo sha256:stub
+fi
+exit 0
 STUB
     chmod +x "$1/docker"
 }

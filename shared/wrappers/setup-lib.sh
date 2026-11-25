@@ -22,6 +22,15 @@
 # sourced in a subshell, which reports the names it set and never a
 # value.
 #
+# A declaration writes each command for the default setup:
+# `wealthdb-collect <name> <verb>` and `wealthdb <command>`. A command is
+# printed with the words the engine launcher hands a setup of its own in
+# place of its first word: WEALTHDB_COLLECT (`wealthdb -c CFG collect`)
+# and WEALTHDB_PROGRAM (`wealthdb -c CFG`). With neither set, it is
+# printed as it is written. A text line that names the data root as
+# $XDG_DATA_HOME/wealthdb names the folder of a setup of its own instead
+# (_setup_text).
+#
 # bash 3.2 compatibility: no namerefs or associative arrays.
 
 # The exit status of a verb the setup check stops: EX_CONFIG of
@@ -352,7 +361,8 @@ setup_print_instructions() {
             echo
             echo "$(_setup_paint 1 "$step. Do this first:")"
             for l in "${_S_PROVIDER[@]}"; do
-                echo "   $l"
+                _setup_text "$l"
+                echo "   $_S_LINE"
             done
             if [[ -n "$_S_DOCS" ]]; then
                 echo "   More: $(_setup_q "$HERE/README.md"), section \"$_S_DOCS\"."
@@ -414,7 +424,8 @@ setup_print_instructions() {
             echo
             echo "How the sign-in runs:"
             for l in "${_S_SIGNIN[@]}"; do
-                echo "   $l"
+                _setup_text "$l"
+                echo "   $_S_LINE"
             done
         fi
         echo
@@ -498,7 +509,64 @@ _setup_verb_command() {
             break
         fi
     done
-    printf '%s' "$cmd"
+    _setup_command "$cmd"
+    printf '%s' "$_S_LINE"
+}
+
+# _setup_command CMD — set _S_LINE to the command CMD of a declaration
+# as it is printed. Its first word gives way to the words of this setup:
+# `wealthdb-collect` to WEALTHDB_COLLECT, and `wealthdb` to
+# WEALTHDB_PROGRAM. Unset, the word stays.
+_setup_command() {
+    case "$1" in
+        "wealthdb-collect "*) _S_LINE="${WEALTHDB_COLLECT:-wealthdb-collect} ${1#wealthdb-collect }" ;;
+        "wealthdb "*)         _S_LINE="${WEALTHDB_PROGRAM:-wealthdb} ${1#wealthdb }" ;;
+        *)                    _S_LINE="$1" ;;
+    esac
+}
+
+# _setup_text LINE — set _S_LINE to the text LINE of a declaration as it
+# is printed. An indented line that is one command is printed as a
+# command (_setup_command). In any other line, each `wealthdb-collect`
+# before a source gives way to WEALTHDB_COLLECT, when that is set. For a
+# setup of its own, `$XDG_DATA_HOME/wealthdb`, the default data root as
+# a text names it, gives way to the setup's folder. The pieces are
+# joined by hand: bash versions differ in how ${line//a/b} reads a
+# quote or an & in b.
+_setup_text() {
+    local line="$1" lead out=""
+    lead="${line%%[! ]*}"
+    if [[ -n "$lead" && ( "${line#"$lead"}" == "wealthdb "* || "${line#"$lead"}" == "wealthdb-collect "* ) ]]; then
+        _setup_command "${line#"$lead"}"
+        _S_LINE="$lead$_S_LINE"
+        return 0
+    fi
+    if [[ -n "${WEALTHDB_COLLECT:-}" ]]; then
+        while [[ "$line" == *"wealthdb-collect "* ]]; do
+            out="$out${line%%wealthdb-collect *}$WEALTHDB_COLLECT "
+            line="${line#*wealthdb-collect }"
+        done
+        line="$out$line"
+    fi
+    if [[ "$line" == *'$XDG_DATA_HOME/wealthdb'* ]]; then
+        _setup_own_root
+        if [[ -n "$_S_OWN_ROOT" ]]; then
+            line="${line%%\$XDG_DATA_HOME/wealthdb*}${_S_OWN_ROOT%/}${line#*\$XDG_DATA_HOME/wealthdb}"
+        fi
+    fi
+    _S_LINE="$line"
+}
+
+# _setup_own_root — set _S_OWN_ROOT to the data root of a setup of its
+# own, the config's folder, or to nothing for the default config
+# (wealthdb_engine_paths). Resolved once, in a subshell, which keeps the
+# rule's variables out of the wrapper.
+_setup_own_root() {
+    [[ -z "${_S_OWN_ROOT+x}" ]] || return 0
+    _S_OWN_ROOT="$(
+        wealthdb_engine_paths
+        if [[ "$OWN_SETUP" == 1 ]]; then printf '%s' "$DATA_ROOT"; fi
+    )"
 }
 
 # _setup_fill LINE — set _S_LINE to LINE with each optional part, the
@@ -533,7 +601,8 @@ _setup_step() {
         line="${line%%   # *}"
     fi
     while [[ "$line" == *" " ]]; do line="${line% }"; done
-    _S_CMD="$line"
+    _setup_command "$line"
+    _S_CMD="$_S_LINE"
     _S_DOES=()
     case "$line" in
         "wealthdb load"*)
@@ -650,7 +719,8 @@ setup_print_first() {
     [[ -f "$decl" ]] || return 0
     setup_read "$decl"
     for l in ${_S_FIRST[@]+"${_S_FIRST[@]}"}; do
-        echo "$NAME: $l" >&2
+        _setup_text "$l"
+        echo "$NAME: $_S_LINE" >&2
     done
 }
 

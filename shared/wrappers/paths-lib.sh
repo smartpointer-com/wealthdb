@@ -24,6 +24,11 @@
 #   4. ~/.secrets, ${XDG_DATA_HOME:-~/.local/share}/wealthdb/<name> and
 #      ${XDG_CACHE_HOME:-~/.cache}/wealthdb/debug/<name>
 #
+# A config that is not the default one is a setup of its own
+# (wealthdb_engine_paths in image-tag.sh, sourced before this file). Its
+# data root is the config's folder, in place of 3 and 4: WEALTHDB_DATA_ROOT
+# is not read, and the data of <name> is <folder>/<name>.
+#
 # bash 3.2 compatibility: no namerefs or associative arrays; indirect
 # expansion (${!var}) reads the per-prefix override variables.
 
@@ -51,10 +56,22 @@ collector_default_paths() {
     local secrets_default="${WEALTHDB_SECRETS_DIR:-$HOME/.secrets}"
     SECRETS_DIR="$(_collector_envvar SECRETS_DIR "$secrets_default")"
 
-    # The default data root follows the XDG Base Directory spec
-    # ($XDG_DATA_HOME, falling back to ~/.local/share).
-    local data_default="${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb/$NAME"
-    [[ -n "${WEALTHDB_DATA_ROOT:-}" ]] && data_default="${WEALTHDB_DATA_ROOT%/}/$NAME"
+    # The data root of a setup of its own is the config's folder. The
+    # rule is resolved in a subshell, which keeps its variables out of
+    # the wrapper.
+    local data_default
+    data_default="$(
+        wealthdb_engine_paths
+        if [[ "$OWN_SETUP" == 1 ]]; then printf '%s' "${DATA_ROOT%/}/$NAME"; fi
+    )"
+    if [[ -z "$data_default" ]]; then
+        # The default data root follows the XDG Base Directory spec
+        # ($XDG_DATA_HOME, falling back to ~/.local/share).
+        data_default="${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb/$NAME"
+        if [[ -n "${WEALTHDB_DATA_ROOT:-}" ]]; then
+            data_default="${WEALTHDB_DATA_ROOT%/}/$NAME"
+        fi
+    fi
     DATA_DIR="$(_collector_envvar DATA_DIR "$data_default")"
 
     DEBUG_DIR="$(_collector_envvar DEBUG_DIR "${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/debug/$NAME")"

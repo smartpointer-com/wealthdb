@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -138,8 +139,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--token-path",
         type=Path,
         default=Path.home() / ".secrets" / "schwab-api-token.json",
+        # argparse reads a % in a help text as a format, so one in the
+        # command's words is doubled.
         help="Path to the schwab-py token JSON file. The file must already "
-             "exist (mint it with `wealthdb-collect schwab-api login` first). Default: "
+             "exist (mint it with `"
+             + os.environ.get("WEALTHDB_COLLECT", "wealthdb-collect").replace("%", "%%")
+             + " schwab-api login` first). Default: "
              "~/.secrets/schwab-api-token.json.",
     )
     p.add_argument(
@@ -482,8 +487,8 @@ def run(args: argparse.Namespace) -> int:
     if not args.token_path.is_file():
         raise SystemExit(
             f"Token file {args.token_path} does not exist. "
-            f"Run `wealthdb-collect schwab-api login` first to mint one (interactive "
-            f"browser flow)."
+            f"Run `{os.environ.get('WEALTHDB_COLLECT', 'wealthdb-collect')} schwab-api login` "
+            f"first to mint one (interactive browser flow)."
         )
 
     client_id = envfile.resolve_credential(args.client_id, "SCHWAB_CLIENT_ID", "--client-id")

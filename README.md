@@ -330,6 +330,10 @@ and test target. [collectors/README.md](collectors/README.md) has the
 flags all collectors share — data locations, the `--lookback` window —
 and [wealthdb/README.md](wealthdb/README.md) the engine's subcommands.
 
+A second setup is another config file. `wealthdb -c <file> …` keeps
+its data in the config's folder and runs servers of its own
+([wealthdb/docs/DESIGN.md §4.2](wealthdb/docs/DESIGN.md#a-setup-of-its-own)).
+
 The yield report and the income projection run with no setup of their
 own. A `yield` block in the config adds the benchmark curves and the
 withholding rates ([wealthdb/docs/YIELD.md](wealthdb/docs/YIELD.md)

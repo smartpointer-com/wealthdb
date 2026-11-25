@@ -105,8 +105,9 @@ the signed-in account:
 - It starts again at login, and again if it dies.
 - Its file is `~/Library/LaunchAgents/com.smartpointer.wealthdb.mcp.plist`
   (`…wealthdb.metabase.plist` for the dashboards). The file holds the
-  paths of the `start` that wrote it, and no secret. The server runs in
-  the directory of that `start`.
+  paths of the `start` that wrote it, the server's data folder among
+  them, and no secret. The server runs in the directory of that
+  `start`.
 - Its log is `~/Library/Logs/wealthdb/mcp.log` (`metabase.log`). A
   start moves a log of more than 20 MB aside as `mcp.log.1`.
 - `stop` removes the file, so a stopped server stays stopped. A server
@@ -114,6 +115,10 @@ the signed-in account:
   starts it.
 - After an upgrade of wealthdb, `wealthdb mcp restart` runs the new
   engine. `wealthdb mcp status` says when the running one is outdated.
+- A setup of its own has a server of its own name, and with it a file
+  and a log of that name: `…wealthdb.mcp-<name>.plist` and
+  `mcp-<name>.log` ([DESIGN.md §4.2](DESIGN.md#a-setup-of-its-own)). A
+  start refuses a name that the server of another setup holds.
 
 On any other system, `start` runs the server as a plain background
 process, with a pid file and a log in the server's data folder. It does
@@ -167,9 +172,9 @@ A service definition needs three things:
 
 - the account that owns the data folder, as the user it runs as;
 - the same environment the command line has: `HOME`, and a `PATH` with
-  the system's folders (`/usr/bin:/bin`); `WEALTHDB_CONFIG` and
-  `WEALTHDB_DATA_ROOT` where the config or the data are not in their
-  default places;
+  the system's folders (`/usr/bin:/bin`); `WEALTHDB_CONFIG` for a
+  config elsewhere, whose folder is then the data root; and
+  `WEALTHDB_DATA_ROOT` for the default config's data elsewhere;
 - a restart when the command exits.
 
 On a Mac that is a LaunchDaemon in `/Library/LaunchDaemons`, with

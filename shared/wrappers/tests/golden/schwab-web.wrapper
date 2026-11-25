@@ -170,6 +170,12 @@ exit: 0
 === download
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   ps
   --filter
   name=^schwab-web$
@@ -180,12 +186,6 @@ docker
   rm
   -f
   schwab-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/schwab-web:latest
 docker
   run
   --rm
@@ -226,6 +226,12 @@ exit: 0
 === load
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   ps
   --filter
   name=^schwab-web$
@@ -236,12 +242,6 @@ docker
   rm
   -f
   schwab-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/schwab-web:latest
 docker
   run
   --rm
@@ -282,6 +282,12 @@ exit: 0
 === collapse-statements
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   ps
   --filter
   name=^schwab-web$
@@ -292,12 +298,6 @@ docker
   rm
   -f
   schwab-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/schwab-web:latest
 docker
   run
   --rm
@@ -348,6 +348,12 @@ exit: 0
 --- stderr
 === vnc-login
 --- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
 lsof
   -nP
   -iTCP:5900
@@ -363,12 +369,6 @@ docker
   rm
   -f
   schwab-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/schwab-web:latest
 docker
   run
   --rm
@@ -413,6 +413,12 @@ exit: 0
 === sh
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   ps
   --filter
   name=^schwab-web$
@@ -423,12 +429,6 @@ docker
   rm
   -f
   schwab-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/schwab-web:latest
 docker
   run
   --rm
@@ -469,6 +469,12 @@ exit: 0
 === bash
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   ps
   --filter
   name=^schwab-web$
@@ -479,12 +485,6 @@ docker
   rm
   -f
   schwab-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/schwab-web:latest
 docker
   run
   --rm
@@ -543,6 +543,12 @@ schwab-web: 'login' folds into 'download' — nothing to persist.
 === download --dry-run --lookback 1w
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   ps
   --filter
   name=^schwab-web$
@@ -553,12 +559,6 @@ docker
   rm
   -f
   schwab-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/schwab-web:latest
 docker
   run
   --rm
@@ -602,6 +602,12 @@ exit: 0
 === load --silver-db <TMP>/w-schwab-web/silver/x.db
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   ps
   --filter
   name=^schwab-web$
@@ -612,12 +618,6 @@ docker
   rm
   -f
   schwab-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/schwab-web:latest
 docker
   run
   --rm
@@ -662,6 +662,12 @@ exit: 0
 === load --silver-db=<TMP>/w-schwab-web/silver/x.db
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   ps
   --filter
   name=^schwab-web$
@@ -672,12 +678,6 @@ docker
   rm
   -f
   schwab-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/schwab-web:latest
 docker
   run
   --rm
@@ -722,6 +722,12 @@ exit: 0
 === load --data-dir <TMP>/w-schwab-web/alt-data
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   ps
   --filter
   name=^schwab-web$
@@ -732,12 +738,6 @@ docker
   rm
   -f
   schwab-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/schwab-web:latest
 docker
   run
   --rm
@@ -778,6 +778,12 @@ exit: 0
 === load --data-dir=<TMP>/w-schwab-web/alt-data
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   ps
   --filter
   name=^schwab-web$
@@ -788,12 +794,6 @@ docker
   rm
   -f
   schwab-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/schwab-web:latest
 docker
   run
   --rm
@@ -834,6 +834,12 @@ exit: 0
 === download --secrets-dir <TMP>/w-schwab-web/alt-secrets
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   ps
   --filter
   name=^schwab-web$
@@ -844,12 +850,6 @@ docker
   rm
   -f
   schwab-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/schwab-web:latest
 docker
   run
   --rm
@@ -890,6 +890,12 @@ exit: 0
 === download --secrets-dir=<TMP>/w-schwab-web/alt-secrets
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   ps
   --filter
   name=^schwab-web$
@@ -900,12 +906,6 @@ docker
   rm
   -f
   schwab-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/schwab-web:latest
 docker
   run
   --rm
@@ -946,6 +946,12 @@ exit: 0
 === bogus-verb
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-web:latest
+docker
   ps
   --filter
   name=^schwab-web$
@@ -956,12 +962,6 @@ docker
   rm
   -f
   schwab-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/schwab-web:latest
 docker
   run
   --rm

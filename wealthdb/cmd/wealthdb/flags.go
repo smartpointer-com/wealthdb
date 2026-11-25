@@ -58,14 +58,33 @@ func loadConfigAt(path string) (*config.Config, error) {
 
 // commandFor is the wealthdb command rest as it is typed for the config
 // at path: `wealthdb <rest>`, or `wealthdb -c <path> <rest>` when path
-// is not the default config, so that a command a message names reads the
-// config the run read. The path is quoted where a shell needs it
-// (shellWord), so the command works when pasted. An empty rest gives
-// how every such command starts.
+// is not the default config (config.IsDefault), so that a command a
+// message names reads the config the run read, whichever way the run
+// named it. The path is quoted where a shell needs it (shellWord), so
+// the command works when pasted. An empty rest gives how every such
+// command starts.
 func commandFor(path, rest string) string {
 	cmd := "wealthdb"
-	if path != defaultConfigPath() {
+	if !config.IsDefault(path) {
 		cmd += " -c " + shellWord(path)
+	}
+	if rest != "" {
+		cmd += " " + rest
+	}
+	return cmd
+}
+
+// collectFor is the collect command rest (a collector and its verb) as
+// it is typed for the config at path: `wealthdb-collect <rest>` for the
+// default config, else `wealthdb -c <path> collect <rest>`, so that the
+// collector writes into the data folder of the setup the run read
+// (config.DataRoot). A bare `wealthdb-collect` names no config, and
+// acts on the default setup. An empty rest gives how every such command
+// starts.
+func collectFor(path, rest string) string {
+	cmd := "wealthdb-collect"
+	if !config.IsDefault(path) {
+		cmd = commandFor(path, "collect")
 	}
 	if rest != "" {
 		cmd += " " + rest
@@ -113,24 +132,14 @@ func (g globalFlags) clock() time.Time {
 	return time.Now()
 }
 
-// defaultConfigPath returns the config file a run reads without -c:
-// $WEALTHDB_CONFIG, else wealthdb.cfg under the XDG config dir
-// ($XDG_CONFIG_HOME, falling back to ~/.config), made absolute, so
-// every message names one path.
-func defaultConfigPath() string {
+// envConfigPath returns the config file a run reads without -c:
+// $WEALTHDB_CONFIG, else the default config (config.DefaultPath), made
+// absolute, so every message names one path.
+func envConfigPath() string {
 	if p := os.Getenv("WEALTHDB_CONFIG"); p != "" {
 		return absPath(p)
 	}
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return absPath(filepath.Join(xdg, "wealthdb.cfg"))
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		// No home directory: the literal path, which no file has, so
-		// the run answers that nothing is set up.
-		return "$HOME/.config/wealthdb.cfg"
-	}
-	return filepath.Join(home, ".config", "wealthdb.cfg")
+	return config.DefaultPath()
 }
 
 // absPath is p made absolute against the working directory and clean,
@@ -146,7 +155,7 @@ func absPath(p string) string {
 // args. Returns the consumed flags, the remaining args (starting
 // with the subcommand name), and a usage-writer error if parsing
 // failed. The config path is absolute and clean, as the default one is,
-// whichever way it was named.
+// whichever way it was named: config.IsDefault compares it to that one.
 func parseGlobal(args []string, errOut io.Writer) (globalFlags, []string, error) {
 	fs := flag.NewFlagSet("wealthdb", flag.ContinueOnError)
 	fs.SetOutput(errOut)
@@ -154,7 +163,7 @@ func parseGlobal(args []string, errOut io.Writer) (globalFlags, []string, error)
 		printGlobalUsage(errOut)
 	}
 
-	g := globalFlags{ConfigPath: defaultConfigPath()}
+	g := globalFlags{ConfigPath: envConfigPath()}
 	fs.StringVar(&g.ConfigPath, "c", g.ConfigPath, "path to wealthdb config file")
 	fs.StringVar(&g.ConfigPath, "config", g.ConfigPath, "path to wealthdb config file")
 	fs.BoolVar(&g.ForceReadOnly, "r", false, "force read-only access to the gold DB")

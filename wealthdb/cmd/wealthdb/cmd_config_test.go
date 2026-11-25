@@ -128,17 +128,11 @@ func TestConfigValidate(t *testing.T) {
 }
 
 // TestConfigThenInitThenStatus walks the wizard end to end on a scratch
-// data folder: the config it writes loads, init creates the database,
-// and status names the collect command of the source with no data.
+// data folder, for the default config and for a setup of its own: the
+// config it writes loads, init creates the database in the setup's data
+// folder, and the to-do block, status and load name the collect command
+// of the source with no data, for the config the run read.
 func TestConfigThenInitThenStatus(t *testing.T) {
-	dir := t.TempDir()
-	root := filepath.Join(dir, "data")
-	t.Setenv("WEALTHDB_DATA_ROOT", root)
-	t.Setenv("WEALTHDB_LOCALE", "en_US")
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	cfg := filepath.Join(dir, "cfg", "wealthdb.cfg")
 	pick := ""
 	for i, c := range silver.Catalogue() {
 		if c.Name == "viac" {
@@ -146,34 +140,112 @@ func TestConfigThenInitThenStatus(t *testing.T) {
 		}
 	}
 	answers := strings.Join([]string{"", pick, "", "", "", ""}, "\n") + "\n"
-	var so, se bytes.Buffer
-	if code := Run([]string{"-c", cfg, "config"}, strings.NewReader(answers), &so, &se); code != 0 {
-		t.Fatalf("config exit %d\nstdout %s\nstderr %s", code, so.String(), se.String())
-	}
-	text, _ := os.ReadFile(cfg)
-	for _, want := range []string{`"gold_db": "${WEALTHDB_DATA_ROOT}/wealthdb.db"`, `"default_currency": "USD"`,
-		`"path": "${WEALTHDB_DATA_ROOT}/viac/viac.db"`} {
-		if !strings.Contains(string(text), want) {
-			t.Errorf("config lacks %s:\n%s", want, text)
-		}
-	}
-	for _, want := range []string{"created the database at " + filepath.Join(root, "wealthdb.db"),
-		"What to do now", "\n  1.  wealthdb-collect viac login\n\n", "\n  2.  wealthdb -c " + cfg + " load -a\n\n"} {
-		if !strings.Contains(so.String(), want) {
-			t.Errorf("output lacks %q:\n%s", want, so.String())
-		}
-	}
-	out, errOut, code := run(t, "-c", cfg, "status")
-	if code != 0 || !strings.Contains(out, "no data yet. Run: wealthdb-collect viac login") {
-		t.Errorf("status: exit %d\n%s%s", code, out, errOut)
-	}
-	// The menu runs now, and leaves the file as it is.
-	so.Reset()
-	if code := Run([]string{"-c", cfg, "config"}, strings.NewReader("q\n"), &so, &se); code != 0 {
-		t.Fatalf("menu exit %d: %s", code, se.String())
-	}
-	if after, _ := os.ReadFile(cfg); !bytes.Equal(after, text) || !strings.Contains(so.String(), "Walk through") {
-		t.Errorf("menu:\n%s\nfile:\n%s", so.String(), after)
+	for _, tc := range []struct {
+		name string
+		// cfg and root are the config and the data folder its setup
+		// reads, under the test's folder; envRoot is WEALTHDB_DATA_ROOT,
+		// under it too, or unset when empty.
+		cfg, root, envRoot string
+		// byEnv: WEALTHDB_CONFIG names the config, and no -c.
+		byEnv bool
+		// own: the config is not the default one, so every command names
+		// it, quoted where the path holds a blank.
+		own bool
+	}{
+		{name: "the default config", cfg: "conf/wealthdb.cfg", root: "data", envRoot: "data"},
+		{name: "the default config, no WEALTHDB_DATA_ROOT", cfg: "conf/wealthdb.cfg", root: "xdg/wealthdb"},
+		{name: "a setup of its own", cfg: "try/wealthdb.cfg", root: "try", envRoot: "data", own: true},
+		{name: "a setup of its own, no WEALTHDB_DATA_ROOT", cfg: "try/wealthdb.cfg", root: "try", own: true},
+		{name: "a setup of its own, a blank in the path", cfg: "my setup/wealthdb.cfg", root: "my setup", envRoot: "data", own: true},
+		{name: "a setup of its own, named by WEALTHDB_CONFIG", cfg: "try/wealthdb.cfg", root: "try", envRoot: "data", own: true, byEnv: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg, root := filepath.Join(dir, tc.cfg), filepath.Join(dir, tc.root)
+			elsewhere := filepath.Join(dir, "data")
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "conf"))
+			t.Setenv("XDG_DATA_HOME", filepath.Join(dir, "xdg"))
+			t.Setenv("WEALTHDB_DATA_ROOT", "")
+			if tc.envRoot != "" {
+				t.Setenv("WEALTHDB_DATA_ROOT", filepath.Join(dir, tc.envRoot))
+			}
+			t.Setenv("WEALTHDB_LOCALE", "en_US")
+			for _, d := range []string{root, elsewhere} {
+				if err := os.MkdirAll(d, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			named := []string{"-c", cfg}
+			if tc.byEnv {
+				t.Setenv("WEALTHDB_CONFIG", cfg)
+				named = nil
+			}
+			args := func(rest ...string) []string { return append(slices.Clone(named), rest...) }
+			prog, collect := "wealthdb", "wealthdb-collect"
+			if tc.own {
+				prog = "wealthdb -c " + shellWord(cfg)
+				collect = prog + " collect"
+			}
+
+			var so, se bytes.Buffer
+			if code := Run(args("config"), strings.NewReader(answers), &so, &se); code != 0 {
+				t.Fatalf("config exit %d\nstdout %s\nstderr %s", code, so.String(), se.String())
+			}
+			text, _ := os.ReadFile(cfg)
+			// The paths go through the variable when it stands for the
+			// data folder in this config: the environment names the
+			// folder, or the config is a setup of its own.
+			gold, viac := `"gold_db": "${WEALTHDB_DATA_ROOT}/wealthdb.db"`, `"path": "${WEALTHDB_DATA_ROOT}/viac/viac.db"`
+			if !tc.own && tc.envRoot == "" {
+				gold = fmt.Sprintf(`"gold_db": %q`, filepath.Join(root, "wealthdb.db"))
+				viac = fmt.Sprintf(`"path": %q`, filepath.Join(root, "viac", "viac.db"))
+			}
+			for _, want := range []string{gold, `"default_currency": "USD"`, viac} {
+				if !strings.Contains(string(text), want) {
+					t.Errorf("config lacks %s:\n%s", want, text)
+				}
+			}
+			for _, want := range []string{"Data folder:  " + root + "\n",
+				"created the database at " + filepath.Join(root, "wealthdb.db"),
+				"What to do now", "\n  1.  " + collect + " viac login\n\n", "\n  2.  " + prog + " load -a\n\n"} {
+				if !strings.Contains(so.String(), want) {
+					t.Errorf("output lacks %q:\n%s", want, so.String())
+				}
+			}
+			if _, err := os.Stat(filepath.Join(root, "wealthdb.db")); err != nil {
+				t.Errorf("the database is not in the data folder %s: %v", root, err)
+			}
+			// A setup of its own leaves the folder the variable names
+			// alone.
+			if left, _ := os.ReadDir(elsewhere); root != elsewhere && len(left) != 0 {
+				t.Errorf("the run wrote into %s, the folder of another setup: %v", elsewhere, left)
+			}
+			noData := "no data yet. Run: " + collect + " viac login"
+			out, errOut, code := run(t, args("status")...)
+			if code != 0 || !strings.Contains(out, "[viac] "+noData+"\n") {
+				t.Errorf("status: exit %d, want %q\n%s%s", code, noData, out, errOut)
+			}
+			if out, errOut, code = run(t, args("status", "viac")...); code != 0 || !strings.Contains(out, "\n  "+noData+"\n") {
+				t.Errorf("status viac: exit %d, want %q\n%s%s", code, noData, out, errOut)
+			}
+			if out, errOut, code = run(t, args("load", "-a")...); code != 0 || !strings.Contains(out, "load: viac: "+noData+"\n") {
+				t.Errorf("load -a: exit %d, want %q\n%s%s", code, noData, out, errOut)
+			}
+			if _, errOut, code = run(t, args("load", "viac")...); code == 0 || !strings.Contains(errOut, "viac: "+noData) {
+				t.Errorf("load viac: exit %d, want %q\n%s", code, noData, errOut)
+			}
+			if tc.own == strings.Contains(so.String()+out+errOut, "wealthdb-collect") {
+				t.Errorf("own setup %v, but the collect commands read:\n%s%s%s", tc.own, so.String(), out, errOut)
+			}
+			// The menu runs now, and leaves the file as it is.
+			so.Reset()
+			if code := Run(args("config"), strings.NewReader("q\n"), &so, &se); code != 0 {
+				t.Fatalf("menu exit %d: %s", code, se.String())
+			}
+			if after, _ := os.ReadFile(cfg); !bytes.Equal(after, text) || !strings.Contains(so.String(), "Walk through") {
+				t.Errorf("menu:\n%s\nfile:\n%s", so.String(), after)
+			}
+		})
 	}
 }
 
@@ -264,13 +336,15 @@ func TestLoadSkipsWhatHasNoData(t *testing.T) {
 	if _, se, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatalf("init: %s", se)
 	}
+	// The config is not the default one, so a collect command names it.
+	collect := "wealthdb -c " + cfg + " collect"
 	so, se, code := run(t, "-c", cfg, "load", "-a")
 	if code != 0 {
 		t.Fatalf("load -a exit %d\n%s%s", code, so, se)
 	}
 	for _, want := range []string{
-		"load: viac: no data yet. Run: wealthdb-collect viac login",
-		"load: schwab-test: schwab-web: no data yet. Run: wealthdb-collect schwab-web login",
+		"load: viac: no data yet. Run: " + collect + " viac login\n",
+		"load: schwab-test: schwab-web: no data yet. Run: " + collect + " schwab-web login\n",
 		"load: schwab-test: 1 snapshot row(s)",
 		// No collector is known for the file: the line names the file.
 		"load: own: no data yet; the file " + own + " does not exist\n",
@@ -285,15 +359,15 @@ func TestLoadSkipsWhatHasNoData(t *testing.T) {
 		t.Errorf("the first load into an empty gold announced the first pass:\n%s", so)
 	}
 	_, se, code = run(t, "-c", cfg, "load", "viac")
-	if code == 0 || !strings.Contains(se, "viac: no data yet. Run: wealthdb-collect viac login") {
+	if code == 0 || !strings.Contains(se, "viac: no data yet. Run: "+collect+" viac login") {
 		t.Errorf("load viac: exit %d, %s", code, se)
 	}
 	so, _, _ = run(t, "-c", cfg, "status")
-	if !strings.Contains(so, "[viac] no data yet. Run: wealthdb-collect viac login") {
+	if !strings.Contains(so, "[viac] no data yet. Run: "+collect+" viac login\n") {
 		t.Errorf("status:\n%s", so)
 	}
 	so, _, _ = run(t, "-c", cfg, "status", "viac")
-	if !strings.Contains(so, "no data yet. Run: wealthdb-collect viac login") {
+	if !strings.Contains(so, "\n  no data yet. Run: "+collect+" viac login\n") {
 		t.Errorf("status viac:\n%s", so)
 	}
 
@@ -438,7 +512,9 @@ func TestReloadSkipsWhatHasNoData(t *testing.T) {
 		return so
 	}
 	before := held()
-	const noData = "reload: viac: no data yet. Run: wealthdb-collect viac login\n"
+	// The config is not the default one, so the collect command names it.
+	collect := "wealthdb -c " + cfg + " collect viac login"
+	noData := "reload: viac: no data yet. Run: " + collect + "\n"
 	for _, tc := range []struct {
 		args []string
 		want string
@@ -459,7 +535,7 @@ func TestReloadSkipsWhatHasNoData(t *testing.T) {
 		}
 	}
 	_, se, code := run(t, "-c", cfg, "reload", "viac")
-	if code == 0 || !strings.Contains(se, "viac: no data yet. Run: wealthdb-collect viac login") {
+	if code == 0 || !strings.Contains(se, "viac: no data yet. Run: "+collect) {
 		t.Errorf("reload viac: exit %d, %s", code, se)
 	}
 
@@ -486,45 +562,76 @@ func TestReloadSkipsWhatHasNoData(t *testing.T) {
 
 // TestLoadNamesWhatTheConfigLeavesOut: load -a says which collected data
 // the config does not name, for a collector it does name, and the
-// command that adds it, for the config the load read.
+// command that adds it, for the config the load read. The data is
+// looked for in the data folder of that config's setup: the folder
+// WEALTHDB_DATA_ROOT names for the default config, and the config's own
+// folder for any other, whatever the variable says.
 func TestLoadNamesWhatTheConfigLeavesOut(t *testing.T) {
-	dir := t.TempDir()
-	root := filepath.Join(dir, "data")
-	t.Setenv("WEALTHDB_DATA_ROOT", root)
-	// One linked login in the config, with no data yet; another collected
-	// beside it that the config does not name.
-	other := filepath.Join(root, "plaid", "second", "second.db")
-	if err := os.MkdirAll(filepath.Dir(other), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(other, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg := filepath.Join(dir, "wealthdb.cfg")
-	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD", "silver_sources": [
-  {"id": "first", "kind": "plaid", "path": %q}]}`, filepath.Join(dir, "wealthdb.db"), filepath.Join(root, "plaid", "first", "first.db"))
-	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, se, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatalf("init: %s", se)
-	}
-	so, se, code := run(t, "-c", cfg, "load", "-a")
-	if code != 0 {
-		t.Fatalf("load -a: exit %d\n%s%s", code, so, se)
-	}
-	for _, want := range []string{
-		"load: first: no data yet. Run: wealthdb-collect plaid link --item first\n",
-		"load: collected, but not in the config, so not loaded: Plaid (linked banks): second\n",
-		"load: to add it, run: wealthdb -c " + cfg + " config banks\n",
+	for _, tc := range []struct {
+		name, cfg, root string
+		own             bool
+	}{
+		{"the default config", "conf/wealthdb.cfg", "data", false},
+		{"a setup of its own", "my setup/wealthdb.cfg", "my setup", true},
 	} {
-		if !strings.Contains(so, want) {
-			t.Errorf("load -a lacks %q:\n%s", want, so)
-		}
-	}
-	// A load of one source says nothing of the others.
-	if so, _, _ := run(t, "-c", cfg, "load", "first"); strings.Contains(so, "not in the config") {
-		t.Errorf("load first:\n%s", so)
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg, root := filepath.Join(dir, tc.cfg), filepath.Join(dir, tc.root)
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "conf"))
+			t.Setenv("WEALTHDB_DATA_ROOT", filepath.Join(dir, "data"))
+			// One linked login in the config, with no data yet; another
+			// collected beside it that the config does not name, and a
+			// third in the folder the variable names.
+			for _, f := range []string{filepath.Join(root, "plaid", "second", "second.db"),
+				filepath.Join(dir, "data", "plaid", "third", "third.db")} {
+				if err := os.MkdirAll(filepath.Dir(f), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(f, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.MkdirAll(filepath.Dir(cfg), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			body := `{"gold_db": "${WEALTHDB_DATA_ROOT}/wealthdb.db", "default_currency": "USD", "silver_sources": [
+  {"id": "first", "kind": "plaid", "path": "${WEALTHDB_DATA_ROOT}/plaid/first/first.db"}]}`
+			if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, se, code := run(t, "-c", cfg, "init"); code != 0 {
+				t.Fatalf("init: %s", se)
+			}
+			if _, err := os.Stat(filepath.Join(root, "wealthdb.db")); err != nil {
+				t.Errorf("the database is not in the data folder %s: %v", root, err)
+			}
+			so, se, code := run(t, "-c", cfg, "load", "-a")
+			if code != 0 {
+				t.Fatalf("load -a: exit %d\n%s%s", code, so, se)
+			}
+			wants := []string{
+				"load: first: no data yet. Run: wealthdb-collect plaid link --item first\n",
+				"load: collected, but not in the config, so not loaded: Plaid (linked banks): second, Plaid (linked banks): third\n",
+				"load: to add it, run: wealthdb config banks\n",
+			}
+			if tc.own {
+				prog := "wealthdb -c '" + cfg + "'"
+				wants = []string{
+					"load: first: no data yet. Run: " + prog + " collect plaid link --item first\n",
+					"load: collected, but not in the config, so not loaded: Plaid (linked banks): second\n",
+					"load: to add it, run: " + prog + " config banks\n",
+				}
+			}
+			for _, want := range wants {
+				if !strings.Contains(so, want) {
+					t.Errorf("load -a lacks %q:\n%s", want, so)
+				}
+			}
+			// A load of one source says nothing of the others.
+			if so, _, _ := run(t, "-c", cfg, "load", "first"); strings.Contains(so, "not in the config") {
+				t.Errorf("load first:\n%s", so)
+			}
+		})
 	}
 }
 

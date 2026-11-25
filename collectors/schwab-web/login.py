@@ -335,9 +335,9 @@ def run_check(profile_dir: Path, screenshot_dir: Path | None,
                 rc = 0
             else:
                 log.error(
-                    "session DEAD: %s — run `wealthdb-collect schwab-web download` "
+                    "session DEAD: %s — run `%s schwab-web download` "
                     "(or `vnc-login`) to mint a new session",
-                    url,
+                    url, os.environ.get("WEALTHDB_COLLECT", "wealthdb-collect"),
                 )
                 rc = 2
         except PWTimeout as e:
@@ -420,21 +420,24 @@ def run_manual(profile_dir: Path,
                         log.error(
                             "CLI-MFA could not complete; re-run download "
                             "for a fresh attempt, or drive the login "
-                            "via wealthdb-collect schwab-web vnc-login"
+                            "via %s schwab-web vnc-login",
+                            os.environ.get("WEALTHDB_COLLECT", "wealthdb-collect"),
                         )
                         return 8
                     if verdict == "manual":
                         log.warning(
                             "CLI-MFA path failed; falling back to manual "
-                            "drive — open a VNC session (wealthdb-collect schwab-web "
-                            "vnc-login) and complete the login by hand"
+                            "drive — open a VNC session (%s schwab-web "
+                            "vnc-login) and complete the login by hand",
+                            os.environ.get("WEALTHDB_COLLECT", "wealthdb-collect"),
                         )
 
             if cli_mfa:
                 log.info(
                     "waiting for the post-auth landing page (/app/...). "
                     "If anything stalls, open a VNC session "
-                    "(wealthdb-collect schwab-web vnc-login) to recover."
+                    "(%s schwab-web vnc-login) to recover.",
+                    os.environ.get("WEALTHDB_COLLECT", "wealthdb-collect"),
                 )
             else:
                 log.info(

@@ -1,10 +1,19 @@
 """`banks`: the linked banks, from the files on this computer alone."""
 from __future__ import annotations
 
+import pytest
+
 import banks
 import load
 from conftest import access_token, leave_pending, store
 from test_load import write_run
+
+
+@pytest.fixture(autouse=True)
+def default_setup(monkeypatch):
+    """The default config: the launcher handed no words of a setup of
+    its own, so a command is printed as `wealthdb-collect`."""
+    monkeypatch.delenv("WEALTHDB_COLLECT", raising=False)
 
 
 def run(secrets, data, *argv):
@@ -55,6 +64,29 @@ def test_each_bank_and_where_its_data_stands(secrets, tmp_path, capsys,
     assert "    wealthdb-collect plaid login --check --sandbox" in lines
     for n in range(1, 5):
         assert access_token(n=n) not in out
+
+
+def test_a_setup_of_its_own_names_its_config_in_each_command(
+        secrets, tmp_path, capsys, plaid, monkeypatch):
+    # The words the launcher hands a setup of its own: a command pasted
+    # with them acts on that setup, never on the default one.
+    words = "wealthdb -c '/x/my try/wealthdb.cfg' collect"
+    monkeypatch.setenv("WEALTHDB_COLLECT", words)
+    data = tmp_path / "plaid"
+    assert run(secrets, data, "--sandbox") == 0
+    assert (f"    {words} plaid link --item <name> --sandbox\n"
+            in capsys.readouterr().out)
+
+    store(secrets, "chase", n=1)
+    leave_pending(secrets, plaid.clock, "amex")
+    assert run(secrets, data, "--sandbox") == 0
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert (f"A sign-in for amex is left open, started 2026-01-02. "
+            f"`{words} plaid login --sandbox` settles it.") in lines
+    assert f"    {words} plaid link --item <name> --sandbox" in lines
+    assert f"    {words} plaid login --check --sandbox" in lines
+    assert "wealthdb-collect" not in out
 
 
 def test_the_listing_writes_nothing(secrets, tmp_path):

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import shutil
 import sqlite3
 import sys
@@ -63,8 +64,8 @@ def extract(db: Path, host_filter: str) -> list[dict]:
     if not db.exists():
         raise SystemExit(
             f"Firefox cookie DB not found: {db}\n"
-            f"Log in via `wealthdb-collect angellist login` first (it writes the "
-            f"profile here)."
+            f"Log in via `{os.environ.get('WEALTHDB_COLLECT', 'wealthdb-collect')} "
+            f"angellist login` first (it writes the profile here)."
         )
     tmp = Path(tempfile.mkdtemp(prefix="alck_"))
     try:

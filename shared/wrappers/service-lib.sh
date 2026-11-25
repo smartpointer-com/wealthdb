@@ -29,7 +29,16 @@
 #                  (_write_plist), a LaunchAgent hands to `serve`. Never
 #                  one that holds a secret: `serve` reads the env file
 #                  itself.
-# The helpers read CONTAINER and DATA_DIR at call time.
+#   SERVICE_CONFIG the config file the server's container mounts, when
+#                  it mounts one (mcp). A start takes a container that
+#                  mounts it for this setup's server (_start_guard).
+# The helpers read CONTAINER and DATA_DIR at call time, and PROGRAM, the
+# words a command to run starts with (wealthdb_engine_paths).
+#
+# The caller sources image-tag.sh first. Its wealthdb_engine_paths tells
+# the default config from a setup of its own, which keeps its servers
+# apart: their names, their data folders and their env files' names
+# (_service_knobs, _source_env_file).
 
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/envfile-lib.sh"
@@ -37,6 +46,9 @@
 . "$(dirname "${BASH_SOURCE[0]}")/engine-mode.sh"
 
 SERVICE_ENV="WEALTHDB_$(printf '%s' "$SERVICE" | tr '[:lower:]' '[:upper:]')"
+# The default config's values, until the paths are resolved
+# (_service_knobs).
+PROGRAM=wealthdb OWN_SETUP=0
 SERVICE_MODE="$(wealthdb_engine_mode "$ROOT")" || exit 2
 
 _require_docker() {
@@ -57,7 +69,9 @@ _config_env() {
         out="$("$WEALTHDB" config-env "$SERVICE")" || out=""
     fi
     if [ -z "$out" ]; then
-        echo "$SERVICE: could not read settings via 'wealthdb config-env $SERVICE' (is wealthdb.cfg valid?)" >&2
+        local cfg=wealthdb.cfg
+        if [ "$OWN_SETUP" = 1 ]; then cfg="$CFG"; fi
+        echo "$SERVICE: could not read settings via '$PROGRAM config-env $SERVICE' (is $cfg valid?)" >&2
         return 1
     fi
     eval "$out"
@@ -88,6 +102,27 @@ _loopback_host() {
 }
 
 _bad_bind() { echo "$SERVICE: invalid ${SERVICE_ENV}_BIND '$1' (want both|v4|v6)" >&2; }
+
+# _service_knobs BASE sets CONTAINER and DATA_DIR, and with them the
+# engine's paths (wealthdb_engine_paths). ${SERVICE_ENV}_CONTAINER and
+# ${SERVICE_ENV}_DATA_DIR win, each on its own. For the default config
+# the container is wealthdb-BASE and the data folder is
+# $XDG_DATA_HOME/wealthdb/SERVICE, else ~/.local/share/wealthdb/SERVICE.
+# A setup of its own has the container wealthdb-BASE-NAME, NAME from its
+# folder (wealthdb_setup_name), and the data folder SERVICE in that
+# folder, so its server never takes the name or the files of another
+# setup's.
+_service_knobs() {
+    local container="${SERVICE_ENV}_CONTAINER" data="${SERVICE_ENV}_DATA_DIR"
+    wealthdb_engine_paths
+    if [ "$OWN_SETUP" = 1 ]; then
+        CONTAINER="${!container:-wealthdb-$1-$SETUP_NAME}"
+        DATA_DIR="${!data:-${SETUP_DIR%/}/$SERVICE}"
+    else
+        CONTAINER="${!container:-wealthdb-$1}"
+        DATA_DIR="${!data:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb/$SERVICE}"
+    fi
+}
 
 # _is_running: the server runs. _exists: there is a server to stop or
 # remove, running or not: a container, a LaunchAgent or a pid file.
@@ -159,12 +194,53 @@ _stop_other_kind() {
 }
 
 # _container_serves_here succeeds when the container mounts DATA_DIR, or
-# a file or folder in it: the token, Metabase's own database.
+# a file or folder in it: the token, Metabase's own database. Docker
+# reports a mount's source as a clean path, so DATA_DIR is compared
+# clean.
 _container_serves_here() {
-    local src
+    local src here
+    here="$(wealthdb_clean_path "$DATA_DIR")"
     while IFS= read -r src; do
-        case "$src" in "$DATA_DIR" | "$DATA_DIR"/*) return 0 ;; esac
-    done < <(docker container inspect -f '{{range .Mounts}}{{println .Source}}{{end}}' "$CONTAINER" 2>/dev/null)
+        case "$src" in "$here" | "${here%/}"/*) return 0 ;; esac
+    done < <(_container_mounts)
+    return 1
+}
+
+# _container_mounts prints the host path of each of the container's
+# mounts, one per line.
+_container_mounts() {
+    docker container inspect -f '{{range .Mounts}}{{println .Source}}{{end}}' "$CONTAINER" 2>/dev/null
+}
+
+# _container_reads_config succeeds when the container mounts
+# SERVICE_CONFIG, the config of this setup. It tells whose server an MCP
+# container with no token is: that one mounts nothing of its data
+# folder.
+_container_reads_config() {
+    [ -n "${SERVICE_CONFIG:-}" ] || return 1
+    _container_mounts | grep -qxF -- "$(wealthdb_clean_path "$SERVICE_CONFIG")"
+}
+
+# _start_guard fails, with a message, when the name this start would
+# take is held by the server of another setup: a container of that name
+# that serves another data folder and reads another config, or, for a
+# native server under launchd, a LaunchAgent of that label that serves
+# another data folder. A start replaces only its own server, so `start`
+# and `restart` call this before they stop or remove anything. A native
+# server that is a plain background process has no name to share: its
+# pid file is in its own data folder.
+_start_guard() {
+    local name="$CONTAINER"
+    if [ "$SERVICE_MODE" = native ]; then
+        _uses_launchd && [ -f "$(_service_plist)" ] || return 0
+        _agent_serves_here && return 0
+        name="$(_service_label)"
+    else
+        _exists || return 0
+        _container_serves_here && return 0
+        _container_reads_config && return 0
+    fi
+    echo "$SERVICE: $name is the server of another setup (its files are not in $DATA_DIR). Stop that one first, or name this one with ${SERVICE_ENV}_CONTAINER." >&2
     return 1
 }
 
@@ -250,6 +326,30 @@ _pid_command() {
     printf '%s\n' "$cmd"
 }
 
+# _plist_value KEY prints the string the LaunchAgent's file gives KEY
+# among its environment variables, as _write_plist wrote it: the line
+# after the key's, unescaped. It prints nothing for a key that is not
+# there.
+_plist_value() {
+    awk -v key="<key>$1</key>" '
+        found { sub(/^[[:space:]]*<string>/, ""); sub(/<\/string>[[:space:]]*$/, ""); print; exit }
+        index($0, key) { found = 1 }' "$(_service_plist)" 2>/dev/null |
+        sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&amp;/\&/g'
+}
+
+# _agent_serves_here succeeds when the LaunchAgent of this label serves
+# DATA_DIR: the data folder its file names. A file that names none was
+# written for the default data folder, under the XDG_DATA_HOME it names.
+_agent_serves_here() {
+    local dir
+    dir="$(_plist_value "${SERVICE_ENV}_DATA_DIR")"
+    if [ -z "$dir" ]; then
+        dir="$(_plist_value XDG_DATA_HOME)"
+        dir="${dir:-$HOME/.local/share}/wealthdb/$SERVICE"
+    fi
+    [ "$(wealthdb_clean_path "$dir")" = "$(wealthdb_clean_path "$DATA_DIR")" ]
+}
+
 # _serve_here records this process as the server. `serve` calls it just
 # before it execs the server, which keeps the pid. It refuses while
 # another process is the server: a second one would take the pid file
@@ -257,7 +357,7 @@ _pid_command() {
 _serve_here() {
     local pid
     if pid="$(_native_pid)" && [ "$pid" != "$$" ]; then
-        echo "$SERVICE: already running (pid $pid). Use 'wealthdb $SERVICE restart'." >&2
+        echo "$SERVICE: already running (pid $pid). Use '$PROGRAM $SERVICE restart'." >&2
         return 1
     fi
     mkdir -p "$DATA_DIR" && printf '%s\n' "$$" > "$(_service_pidfile)"
@@ -285,9 +385,11 @@ _plist_string() { printf '<string>%s</string>\n' "$(printf '%s' "$1" | _xml_esca
 # at login, and again whenever it exits. The entry is the command the
 # caller started wealthdb by (WEALTHDB_ENTRY), which stays in place when
 # a newer version is installed. The agent hands `serve` the paths and
-# knobs of this start, and no secret. A relative path among them is
-# written absolute: launchd runs `serve` in another directory, and the
-# one of this start may be gone by the next login.
+# knobs of this start, and no secret. The data folder is always among
+# them: it tells whose server the agent is (_agent_serves_here). A
+# relative path among them is written absolute: launchd runs `serve` in
+# another directory, and the one of this start may be gone by the next
+# login.
 _write_plist() {
     local plist log var val
     plist="$(_service_plist)" log="$(_service_logfile)"
@@ -307,6 +409,7 @@ _write_plist() {
             "${SERVICE_ENV}_CONTAINER" "${SERVICE_ENV}_DATA_DIR" "${SERVICE_ENV}_BIND" \
             "${SERVICE_ENV}_ENV_FILE" ${SERVICE_ENV_KEEP:-}; do
             val="${!var:-}"
+            if [ "$var" = "${SERVICE_ENV}_DATA_DIR" ]; then val="$DATA_DIR"; fi
             [ -n "$val" ] || continue
             case "$var" in
                 XDG_*_HOME | WEALTHDB_CONFIG | WEALTHDB_DATA_ROOT | WEALTHDB_SECRETS_DIR | *_DATA_DIR | *_ENV_FILE)
@@ -342,7 +445,7 @@ _native_start() {
         if ! launchctl bootstrap "$(_launchd_domain)" "$(_service_plist)"; then
             rm -f "$(_service_plist)"
             echo "$SERVICE: launchd did not take the server. It runs servers for an account that is signed in" >&2
-            echo "     at the screen. On a server, run 'wealthdb $SERVICE serve' under a system service instead." >&2
+            echo "     at the screen. On a server, run '$PROGRAM $SERVICE serve' under a system service instead." >&2
             return 1
         fi
     else
@@ -413,12 +516,17 @@ _file_id() {
 # the knobs: ${SERVICE_ENV}_ENV_FILE, else wealthdb-SERVICE.env in the
 # secrets folder, $WEALTHDB_SECRETS_DIR or ~/.secrets, as the collectors
 # find theirs (repo convention: secrets never live in the config file).
+# A setup of its own reads wealthdb-SERVICE-NAME.env there instead,
+# NAME from its folder as in its container's name (wealthdb_setup_name),
+# so it never reads the secrets of another setup's server.
 # It is a bash script: syntax-checked, then sourced with every
 # assignment exported. A file that does not parse returns 1, and bash's
 # message is not shown, since it quotes the line.
 _source_env_file() {
-    local var="${SERVICE_ENV}_ENV_FILE" envf
-    envf="${!var:-${WEALTHDB_SECRETS_DIR:-$HOME/.secrets}/wealthdb-$SERVICE.env}"
+    local var="${SERVICE_ENV}_ENV_FILE" envf name="wealthdb-$SERVICE"
+    wealthdb_engine_paths
+    if [ "$OWN_SETUP" = 1 ]; then name="$name-$SETUP_NAME"; fi
+    envf="${!var:-${WEALTHDB_SECRETS_DIR:-$HOME/.secrets}/$name.env}"
     if [ -f "$envf" ] && ! wealthdb_source_bash "$envf"; then
         echo "$SERVICE: $envf has a bash syntax error" >&2
         return 1

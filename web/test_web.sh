@@ -12,6 +12,9 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+# No ambient config reaches the script: every case runs the default
+# config unless it names another.
+unset WEALTHDB_CONFIG WEALTHDB_COLLECT WEALTHDB_PROGRAM
 
 # Engine stub: web/web resolves WEALTHDB from WEALTHDB_BIN when it is
 # SOURCED, so the stub must be exported before the source line. It
@@ -750,7 +753,13 @@ start_spill() {
         _load_config() { ENABLED=1; PORT=3000; GOLD_DB="$tmp/gold.db"; }
         _is_running()  { return 1; }
         _exists()      { [ "$exists" = 1 ]; }
-        docker()       { case "$1" in run) ls "$SPILL_DIR" | tr '\n' ' ' > "$tmp/spill/at-run" ;; esac; }
+        # The container that remains is this setup's: it mounts its data.
+        docker() {
+            case "$1" in
+                run)       ls "$SPILL_DIR" | tr '\n' ' ' > "$tmp/spill/at-run" ;;
+                container) printf '%s\n' "$H2_DIR" ;;
+            esac
+        }
         DATA_DIR="$tmp/spill" H2_DIR="$tmp/spill/metabase" SPILL_DIR="$tmp/spill/spill"
         SNAP="$tmp/spill/snapshot/wealthdb.db" BIND=v4 IMAGE=img CONTAINER=wealthdb-metabase
         WEALTHDB_WEB_NO_PROVISION=1
@@ -883,6 +892,203 @@ check_eq "the start banner names every base dashboard, in DASHBOARDS' order" "$w
 check_eq "web/web's provision statuses are provision.py's" \
     "$("$prov_python" -c 'import sys; sys.path.insert(0, sys.argv[1]); import provision as p; print(p.EXIT_STALE_SNAPSHOT, p.EXIT_UNVERIFIED)' "$HERE" 2>&1)" \
     "$PROV_STALE_SNAPSHOT $PROV_UNVERIFIED"
+
+# ---- a setup of its own -------------------------------------------------
+# A config that is not the default one keeps its dashboards apart: the
+# container's name, the data folder and the env file follow the config's
+# folder, and each override still wins.
+
+# knobs NAME=VALUE...: what _resolve_knobs gives in an environment that
+# holds HOME, the config dir /cfg and the pairs given.
+knobs() {
+    (
+        unset WEALTHDB_WEB_DATA_DIR WEALTHDB_WEB_CONTAINER WEALTHDB_WEB_ENV_FILE \
+            WEALTHDB_CONFIG WEALTHDB_DATA_ROOT XDG_DATA_HOME
+        export HOME=/home/u XDG_CONFIG_HOME=/cfg
+        for kv in "$@"; do export "${kv?}"; done
+        _resolve_knobs
+        printf '%s\n' "container=$CONTAINER" "data=$DATA_DIR" "h2=$H2_DIR" "program=$PROGRAM"
+    )
+}
+echo "== _resolve_knobs: the default config =="
+out="$(knobs)"
+check_eq "wealthdb-metabase, the XDG data folder and plain commands" \
+    "container=wealthdb-metabase
+data=/home/u/.local/share/wealthdb/web
+h2=/home/u/.local/share/wealthdb/web/metabase
+program=wealthdb" "$out"
+out="$(knobs XDG_DATA_HOME=/xdg WEALTHDB_DATA_ROOT=/data)"
+check    "XDG_DATA_HOME moves the data folder" "data=/xdg/wealthdb/web" "$out"
+out="$(knobs WEALTHDB_CONFIG=/cfg/./wealthdb.cfg WEALTHDB_DATA_ROOT=/data)"
+check_eq "WEALTHDB_CONFIG on the default config changes nothing" \
+    "container=wealthdb-metabase data=/home/u/.local/share/wealthdb/web" "$(printf '%s\n' "$out" | sed -n '1,2p' | tr '\n' ' ' | sed 's/ $//')"
+out="$(knobs WEALTHDB_WEB_CONTAINER=mine WEALTHDB_WEB_DATA_DIR=/d)"
+check    "WEALTHDB_WEB_CONTAINER names the container" "container=mine" "$out"
+check    "WEALTHDB_WEB_DATA_DIR names the data folder" "data=/d" "$out"
+# A demo's call: the config dir, the config and the data root are one
+# folder, and the names are given.
+out="$(knobs XDG_CONFIG_HOME=/srv/demo WEALTHDB_CONFIG=/srv/demo/wealthdb.cfg WEALTHDB_DATA_ROOT=/srv/demo \
+    WEALTHDB_WEB_CONTAINER=wealthdb-metabase-demo WEALTHDB_WEB_DATA_DIR=/srv/demo/web)"
+check_eq "a demo's call: the names and the folders it gives" \
+    "container=wealthdb-metabase-demo
+data=/srv/demo/web
+h2=/srv/demo/web/metabase
+program=wealthdb" "$out"
+out="$(knobs XDG_CONFIG_HOME=/srv/demo WEALTHDB_CONFIG=/srv/demo/wealthdb.cfg WEALTHDB_DATA_ROOT=/srv/demo)"
+check    "...and with no names given it is the default config's server" "container=wealthdb-metabase" "$out"
+
+echo "== _resolve_knobs: a setup of its own =="
+out="$(knobs "WEALTHDB_CONFIG=/home/u/My Try/wealthdb.cfg" WEALTHDB_DATA_ROOT=/data XDG_DATA_HOME=/xdg)"
+check_eq "the container is named after the folder, the data is in it, and commands name the config" \
+    "container=wealthdb-metabase-my-try
+data=/home/u/My Try/web
+h2=/home/u/My Try/web/metabase
+program=wealthdb -c '/home/u/My Try/wealthdb.cfg'" "$out"
+out="$(knobs WEALTHDB_CONFIG=/home/u/TRY/wealthdb.cfg)"
+check    "an upper-case folder gives a lower-case name" "container=wealthdb-metabase-try" "$out"
+out="$(knobs WEALTHDB_CONFIG=/home/u/try//wealthdb.cfg)"
+check    "a doubled slash changes nothing" "data=/home/u/try/web" "$out"
+out="$(knobs WEALTHDB_CONFIG=/wealthdb.cfg)"
+check    "a config in the root folder: the name is setup" "container=wealthdb-metabase-setup" "$out"
+check    "...and the data folder /web" "data=/web" "$out"
+out="$(knobs WEALTHDB_CONFIG=/home/u/try/wealthdb.cfg WEALTHDB_WEB_CONTAINER=mine)"
+check    "WEALTHDB_WEB_CONTAINER still names the container" "container=mine" "$out"
+check    "...and the data folder stays the setup's" "data=/home/u/try/web" "$out"
+out="$(knobs WEALTHDB_CONFIG=/home/u/try/wealthdb.cfg WEALTHDB_WEB_DATA_DIR=/d)"
+check    "WEALTHDB_WEB_DATA_DIR still names the data folder" "data=/d" "$out"
+check    "...and the container stays the setup's" "container=wealthdb-metabase-try" "$out"
+
+echo "== the env file: in the secrets folder, named after a setup of its own =="
+# env_marker NAME=VALUE...: the marker the env file that was read sets.
+mkdir -p "$tmp/Own Setup" "$tmp/envs"
+printf 'ENV_MARKER=the-default-file\n' > "$tmp/secrets/wealthdb-web.env"
+printf 'ENV_MARKER=the-file-of-the-setup\n' > "$tmp/secrets/wealthdb-web-own-setup.env"
+printf 'ENV_MARKER=a-file-in-the-folder\n' > "$tmp/Own Setup/wealthdb-web.env"
+printf 'ENV_MARKER=the-named-file\n' > "$tmp/envs/named.env"
+env_marker() {
+    (
+        unset WEALTHDB_CONFIG WEALTHDB_WEB_ENV_FILE ENV_MARKER
+        export XDG_CONFIG_HOME="$tmp/cfg"
+        for kv in "$@"; do export "${kv?}"; done
+        _source_env_file && echo "${ENV_MARKER:-none}"
+    )
+}
+check_eq "the default config reads wealthdb-web.env in the secrets folder" "the-default-file" "$(env_marker)"
+check_eq "a setup of its own reads the file named after its folder, there too" "the-file-of-the-setup" \
+    "$(env_marker "WEALTHDB_CONFIG=$tmp/Own Setup/wealthdb.cfg")"
+check_eq "...and neither the default file nor one in its own folder" "none" \
+    "$(rm -f "$tmp/secrets/wealthdb-web-own-setup.env"; env_marker "WEALTHDB_CONFIG=$tmp/Own Setup/wealthdb.cfg")"
+printf 'ENV_MARKER=the-file-of-the-setup\n' > "$tmp/secrets/wealthdb-web-own-setup.env"
+mkdir -p "$tmp/secrets-alt"
+printf 'ENV_MARKER=the-file-in-the-other-secrets-folder\n' > "$tmp/secrets-alt/wealthdb-web-own-setup.env"
+check_eq "WEALTHDB_SECRETS_DIR moves it, as it moves the default file" "the-file-in-the-other-secrets-folder" \
+    "$(env_marker "WEALTHDB_CONFIG=$tmp/Own Setup/wealthdb.cfg" "WEALTHDB_SECRETS_DIR=$tmp/secrets-alt")"
+check_eq "WEALTHDB_WEB_ENV_FILE wins for a setup of its own" "the-named-file" \
+    "$(env_marker "WEALTHDB_CONFIG=$tmp/Own Setup/wealthdb.cfg" "WEALTHDB_WEB_ENV_FILE=$tmp/envs/named.env")"
+check_eq "...and for the default config" "the-named-file" "$(env_marker "WEALTHDB_WEB_ENV_FILE=$tmp/envs/named.env")"
+rm -f "$tmp/secrets/wealthdb-web.env" "$tmp/secrets/wealthdb-web-own-setup.env" "$tmp/secrets-alt/wealthdb-web-own-setup.env"
+mkdir -p "$tmp/own setup"
+
+echo "== a start never takes over another setup's server =="
+# guarded MOUNT RUNNING CMD...: CMD against a Docker that holds a
+# container of this name, which mounts MOUNT and runs when RUNNING is 1,
+# until it is removed. Prints CMD's output and status; the docker calls
+# land in $tmp/guard-calls. GUARD_DATA spells the data folder another
+# way, and GUARD_CONFIG names a config.
+guarded() {
+    local mount="$1" running="$2"
+    shift 2
+    : > "$tmp/guard-calls"
+    (
+        _load_config() { ENABLED=1; PORT=3000; GOLD_DB="$tmp/gold.db"; CONFIG_LOADED=1; }
+        docker() {
+            printf '%s\n' "$*" >> "$tmp/guard-calls"
+            if grep -q '^rm ' "$tmp/guard-calls"; then return 0; fi
+            case "$1 $2" in
+                "ps -aq")            echo abc123 ;;
+                "ps -q")             if [ "$running" = 1 ]; then echo abc123; fi ;;
+                "container inspect") printf '%s\n' "$mount" ;;
+            esac
+        }
+        _provision()    { PROV_RC=0 PROV_SERVED=1; }
+        _start_banner() { :; }
+        _materialize()  { :; }
+        export WEALTHDB_WEB_DATA_DIR="${GUARD_DATA:-$tmp/guard}" WEALTHDB_WEB_BIND=v4
+        if [ -n "${GUARD_CONFIG:-}" ]; then export WEALTHDB_CONFIG="$GUARD_CONFIG"; fi
+        mkdir -p "$tmp/guard/snapshot" && : > "$tmp/guard/snapshot/wealthdb.db"
+        # A subshell: web_main turns errexit on.
+        ( "$@" ) 2>&1
+        echo "rc=$?"
+    )
+}
+# changed: the calls that stop, remove or start a container.
+changed() { grep -E '^(stop|rm|run|kill) ' "$tmp/guard-calls" | cut -d' ' -f1 | tr '\n' ' ' | sed 's/ $//'; }
+out="$(guarded /elsewhere/web/metabase 0 web_main start)"
+check    "a container that serves another data folder stops the start" "rc=1" "$out"
+check    "the message names it, the folder and the way out" \
+    "web: wealthdb-metabase is the server of another setup (its files are not in $tmp/guard). Stop that one first, or name this one with WEALTHDB_WEB_CONTAINER." "$out"
+check_eq "nothing is stopped, removed or started" "" "$(changed)"
+out="$(guarded /elsewhere/web/metabase 1 web_main start)"
+check    "one that runs stops it too, with the same message" "is the server of another setup" "$out"
+check_not "...and not with the advice to restart" "already running" "$out"
+check_eq "...and nothing is changed" "" "$(changed)"
+out="$(guarded /elsewhere/web/metabase 1 web_main restart)"
+check    "a restart is refused before it stops anything" "rc=1" "$out"
+check    "...with the message" "is the server of another setup" "$out"
+check_eq "...and nothing is changed" "" "$(changed)"
+out="$(guarded "$tmp/guard/metabase" 0 web_main start)"
+check    "a container of this data folder that does not run is replaced" "rc=0" "$out"
+check_eq "...removed, then started" "rm run" "$(changed)"
+out="$(GUARD_DATA="$tmp/guard/" guarded "$tmp/guard/metabase" 0 web_main start)"
+check_eq "a data folder spelled with a trailing slash is the same folder" "rm run" "$(changed)"
+out="$(guarded "$tmp/guard/metabase" 1 web_main start)"
+check    "one that runs is this setup's: use restart" "web: already running (container wealthdb-metabase). Use 'wealthdb web restart'." "$out"
+out="$(guarded "$tmp/guard/metabase" 1 web_main restart)"
+check_eq "a restart of this setup's server stops, removes and starts it" "stop rm run" "$(changed)"
+out="$(guarded "$tmp/guard-other" 0 web_main start)"
+check    "a folder whose name only starts the same is another folder" "is the server of another setup" "$out"
+# refresh with another setup's server under the name: the snapshot is
+# this setup's to refresh, and the server is left as it is.
+out="$(guarded /elsewhere/web/metabase 1 web_main refresh)"
+check    "a refresh beside another setup's server succeeds" "rc=0" "$out"
+check_eq "...and stops, removes and starts nothing" "" "$(changed)"
+
+echo "== the commands a setup of its own is told to run =="
+OWNCFG="$tmp/own setup/wealthdb.cfg"
+OWNCMD="wealthdb -c '$OWNCFG'"
+# own_run CMD...: CMD with that config named, as `wealthdb -c` names it.
+own_run() {
+    (
+        export WEALTHDB_CONFIG="$OWNCFG"
+        unset WEALTHDB_WEB_DATA_DIR
+        _resolve_knobs
+        "$@" 2>&1
+    )
+}
+out="$(own_run eval 'ENABLED=0; _require_enabled')"
+check_eq "turning the dashboards on" "web: the dashboards are off. Run: $OWNCMD config dashboards" "$out"
+out="$(own_run eval '_snapshot "$tmp/no-gold.db" "$tmp/x/s.db"')"
+check    "a database that is not there" "(run '$OWNCMD init' / '$OWNCMD load' first)" "$out"
+out="$(own_run eval 'PORT=3000 BIND=v4 PROV_LOGIN=x; _start_banner')"
+check    "the banner's refresh" "Run '$OWNCMD web refresh' after each '$OWNCMD load' to update." "$out"
+check    "the banner names the setup's container" "web: wealthdb-metabase-own-setup is up" "$out"
+out="$(own_run eval '_is_running() { return 0; }; _load_config() { ENABLED=1; PORT=3000; GOLD_DB=x; CONFIG_LOADED=1; }; _start_guard() { return 0; }; web_start')"
+check    "a server that runs" "Use '$OWNCMD web restart'." "$out"
+out="$(own_run eval '_config_env() { return 0; }; SNAP="$tmp/none.db"; web_status')"
+check    "status, with the dashboards off" "note: the dashboards are off ($OWNCMD config dashboards)" "$out"
+check    "status, with no snapshot" "created on '$OWNCMD web start' / 'refresh'" "$out"
+out="$(own_run eval 'WEALTHDB=true; _config_env')"
+check    "a config the engine cannot read is named with its path" \
+    "web: could not read settings via '$OWNCMD config-env web' (is $OWNCFG valid?)" "$out"
+out="$(GUARD_CONFIG="$OWNCFG" guarded /elsewhere/web/metabase 0 web_main start)"
+check    "the guard names the setup's own container" "web: wealthdb-metabase-own-setup is the server of another setup" "$out"
+check_eq "...and nothing is changed" "" "$(changed)"
+# The default config's texts name no config.
+out="$( (_resolve_knobs; WEALTHDB=true; _config_env) 2>&1)"
+check_eq "the default config: the engine's command and the config by its name" \
+    "web: could not read settings via 'wealthdb config-env web' (is wealthdb.cfg valid?)" "$out"
+out="$( (_resolve_knobs; ENABLED=0; _require_enabled) 2>&1)"
+check_eq "the default config: turning the dashboards on" "web: the dashboards are off. Run: wealthdb config dashboards" "$out"
 
 # ---- the native server -------------------------------------------------
 # The same script in a tree of the native engine: web is sourced again
@@ -1065,6 +1271,67 @@ native_cases() {
     )
     fails=$?
     printf 'WEALTHDB_WEB_ENABLED=1\nWEALTHDB_WEB_PORT=3111\nWEALTHDB_GOLD_DB=%s\n' "'$tmp/gold.db'" > "$tmp/engine-out"
+
+    echo "== native: a start never takes over another setup's LaunchAgent =="
+    (
+        # launchd is a function that records its calls. On `bootstrap`
+        # it runs the agent: a stand-in that records its pid, as serve
+        # does.
+        _uses_launchd() { return 0; }
+        launchctl() {
+            echo "$*" >> "$tmp/launchctl-calls"
+            case "$1" in
+                bootstrap)
+                    sleep 30 >/dev/null 2>&1 &
+                    echo $! > "$(_service_pidfile)" ;;
+            esac
+        }
+        unset XDG_DATA_HOME
+        SERVICE_PROC=sleep
+        plist="$(_service_plist)" label="$(_service_label)"
+        # An agent of this label that another setup wrote: its file
+        # names that setup's data folder.
+        (DATA_DIR="/elsewhere/a<b>&c/web"; _write_plist)
+        cp "$plist" "$tmp/other.plist"
+        check     "an agent file names its data folder, escaped" \
+            "<key>WEALTHDB_WEB_DATA_DIR</key>|        <string>/elsewhere/a&lt;b&gt;&amp;c/web</string>" \
+            "$(grep -A1 WEALTHDB_WEB_DATA_DIR "$plist" | tr '\n' '|')"
+        check_eq  "...which is read back as it was" "/elsewhere/a<b>&c/web" "$(_plist_value WEALTHDB_WEB_DATA_DIR)"
+        : > "$tmp/launchctl-calls"
+        out="$(web_start 2>&1)"; rc=$?
+        check_eq  "a start is refused" "1" "$rc"
+        check     "the message names the agent, the folder and the way out" \
+            "web: $label is the server of another setup (its files are not in $tmp/nweb). Stop that one first, or name this one with WEALTHDB_WEB_CONTAINER." "$out"
+        check_eq  "launchd is asked for nothing" "" "$(cat "$tmp/launchctl-calls")"
+        if cmp -s "$plist" "$tmp/other.plist"; then pass "and the agent file is as it was"; else fail "the start changed the agent file"; fi
+        out="$( (export WEALTHDB_WEB_DATA_DIR="$tmp/nweb"; web_main restart) 2>&1)"; rc=$?
+        check     "a restart is refused before it stops anything" "1 web: $label is the server of another setup" "$rc $out"
+        check_eq  "...launchd is asked for nothing" "" "$(cat "$tmp/launchctl-calls")"
+        if cmp -s "$plist" "$tmp/other.plist"; then pass "...and the agent file is as it was"; else fail "the restart changed the agent file"; fi
+        # An agent file that names no data folder was written for the
+        # default one, under the XDG data dir it names.
+        drop_key() { awk -v key="<key>$1</key>" 'skip { skip = 0; next } index($0, key) { skip = 1; next } { print }' "$plist" > "$plist.tmp" && mv "$plist.tmp" "$plist"; }
+        drop_key WEALTHDB_WEB_DATA_DIR
+        if (DATA_DIR="$HOME/.local/share/wealthdb/web"; _agent_serves_here); then pass "an agent file with no data folder serves the default one"
+        else fail "an agent file with no data folder is not the default setup's"; fi
+        if _agent_serves_here; then fail "an agent file with no data folder reads as this folder's"
+        else pass "...and no other"; fi
+        (export XDG_DATA_HOME=/xdg; DATA_DIR=/xdg/wealthdb/web; _write_plist)
+        drop_key WEALTHDB_WEB_DATA_DIR
+        if (DATA_DIR=/xdg/wealthdb/web/; _agent_serves_here); then pass "...under the XDG data dir it names"
+        else fail "an agent file's XDG data dir is not read"; fi
+        # This setup's own agent, left by a server that died, is replaced.
+        _write_plist
+        : > "$tmp/launchctl-calls"
+        out="$(web_start 2>&1)"; rc=$?
+        check_eq  "a start over this setup's own agent succeeds" "0" "$rc"
+        check     "the agent is booted out, then in" "bootout gui/$(id -u)/$label|bootstrap gui/$(id -u) $plist|" \
+            "$(tr '\n' '|' < "$tmp/launchctl-calls")"
+        web_stop >/dev/null 2>&1
+        [ ! -e "$plist" ] && pass "and a stop removes it" || fail "the agent file is left"
+        exit "$fails"
+    )
+    fails=$?
 
     echo "== native: serve becomes Metabase =="
     # serve is a command of its own, whose process Java becomes: it runs

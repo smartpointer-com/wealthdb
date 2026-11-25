@@ -97,7 +97,7 @@ and -p reach the two money columns; marked_pct does not move.`)
 	if fs.NArg() == 1 {
 		return runStatusDetailed(ctx, db, cfg, g.ConfigPath, fs.Arg(0), *verbose, stdout)
 	}
-	runStatusOverview(ctx, db, cfg, *verbose, stdout)
+	runStatusOverview(ctx, db, cfg, g.ConfigPath, *verbose, stdout)
 	return nil
 }
 
@@ -140,14 +140,17 @@ func buildMarkColumnRegistry(outCcy string) []columnSpec[gold.MarkRow] {
 	}
 }
 
-func runStatusOverview(ctx context.Context, db *sql.DB, cfg *config.Config, verbose bool, stdout io.Writer) {
+// runStatusOverview prints a line per configured source. The collect
+// command it names for a source with no data yet reads the config at
+// configPath (collectFor).
+func runStatusOverview(ctx context.Context, db *sql.DB, cfg *config.Config, configPath string, verbose bool, stdout io.Writer) {
 	if len(cfg.SilverSources) == 0 {
 		fmt.Fprintln(stdout, "status: no silver sources configured")
 		return
 	}
 	results := gold.StatusForSources(ctx, db, sourceIDs(cfg), verbose)
 	for i := range cfg.SilverSources {
-		printOneLineStatus(ctx, results[i], &cfg.SilverSources[i], verbose, stdout)
+		printOneLineStatus(ctx, results[i], &cfg.SilverSources[i], configPath, verbose, stdout)
 	}
 }
 
@@ -161,7 +164,8 @@ func sourceIDs(cfg *config.Config) []string {
 }
 
 // runStatusDetailed prints one source's status. The load it names where
-// gold is behind reads the config at configPath (commandFor).
+// gold is behind, and the collect command of a source with no data yet,
+// read the config at configPath (commandFor, collectFor).
 func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, configPath, id string, verbose bool, stdout io.Writer) error {
 	src, ok := cfg.Lookup(id)
 	if !ok {
@@ -173,7 +177,7 @@ func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, conf
 		return err
 	}
 	if st == nil {
-		if line, ok := noDataYet(src); ok {
+		if line, ok := noDataYet(configPath, src); ok {
 			fmt.Fprintf(stdout, "%s (%s)\n  %s\n", id, src.Kind, line)
 			return nil
 		}
@@ -244,14 +248,14 @@ func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, conf
 // printOneLineStatus emits a single-line summary for the overview
 // view. Tolerates a per-source error: the line says ERROR and the
 // message, and the next source still prints.
-func printOneLineStatus(ctx context.Context, r gold.SourceStatusResult, src *config.SilverSource, verbose bool, stdout io.Writer) {
+func printOneLineStatus(ctx context.Context, r gold.SourceStatusResult, src *config.SilverSource, configPath string, verbose bool, stdout io.Writer) {
 	st, err := r.Status, r.Err
 	if err != nil {
 		fmt.Fprintf(stdout, "%-20s [%s] ERROR: %s\n", src.ID, src.Kind, err.Error())
 		return
 	}
 	if st == nil {
-		if line, ok := noDataYet(src); ok {
+		if line, ok := noDataYet(configPath, src); ok {
 			fmt.Fprintf(stdout, "%-20s [%s] %s\n", src.ID, src.Kind, line)
 			return
 		}
@@ -302,12 +306,13 @@ func printOneLineStatus(ctx context.Context, r gold.SourceStatusResult, src *con
 }
 
 // noDataYet is the status of a source gold has not loaded, none of whose
-// silver files exists yet, naming the command that collects it.
-func noDataYet(src *config.SilverSource) (string, bool) {
+// silver files exists yet, naming the command that collects it for the
+// config at configPath.
+func noDataYet(configPath string, src *config.SilverSource) (string, bool) {
 	if len(missingFeeds(src)) < len(src.Feeds()) {
 		return "", false
 	}
-	return noDataLine(src.Feeds()), true
+	return noDataLine(configPath, src.Feeds()), true
 }
 
 // silverAhead says the silver holds data a load would bring: its latest

@@ -41,11 +41,11 @@ case "$VERB" in
         # closes one authenticated SSH session, consuming no files.
         host_login_probe download.py --bronze-dir "$DATA_DIR" \
             --key "$SECRETS_DIR/ubs_psn_key"
-        cat >&2 <<'EOF'
+        cat >&2 <<EOF
 ubs-psn: no-op. UBS PSN is an SSH-key-authenticated SFTP delivery — there is
 no interactive login / MFA session to mint. To verify the key is accepted
 (connect + host-key check, no files consumed), run:
-  wealthdb-collect ubs-psn login --check
+  ${WEALTHDB_COLLECT:-wealthdb-collect} ubs-psn login --check
 EOF
         ;;
     download)

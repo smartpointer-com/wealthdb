@@ -126,6 +126,12 @@ exit: 0
 === login
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-api:latest
+docker
   ps
   --filter
   name=^schwab-api$
@@ -136,12 +142,6 @@ docker
   rm
   -f
   schwab-api
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/schwab-api:latest
 docker
   run
   --rm
@@ -187,6 +187,12 @@ exit: 0
 --- stderr
 === vnc-login
 --- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-api:latest
 lsof
   -nP
   -iTCP:5900
@@ -202,12 +208,6 @@ docker
   rm
   -f
   schwab-api
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/schwab-api:latest
 docker
   run
   --rm
@@ -320,6 +320,12 @@ exit: 0
 === login --check
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/schwab-api:latest
+docker
   ps
   --filter
   name=^schwab-api$
@@ -330,12 +336,6 @@ docker
   rm
   -f
   schwab-api
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/schwab-api:latest
 docker
   run
   --rm

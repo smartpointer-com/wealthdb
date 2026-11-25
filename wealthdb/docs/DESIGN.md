@@ -189,9 +189,51 @@ Before a host-side command (`web`, `mcp`, `collect`), the launcher
 hands a `-c` path on as `WEALTHDB_CONFIG`, so
 `wealthdb -c <file> web start` reads that config.
 
-When `-c` names a config other than the default one, a message that
-names a `wealthdb` command to run carries the same `-c <file>`:
-`Run 'wealthdb -c <file> init' first`.
+#### A setup of its own
+
+The default config is `${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg`. A
+config named with `-c` or `WEALTHDB_CONFIG` that is another file is a
+**setup of its own**, kept in the config's folder. The two paths are
+compared absolute and clean, and no link is followed.
+
+For a setup of its own:
+
+- **Data.** The config's folder is the data root. `WEALTHDB_DATA_ROOT`
+  is not read, and `${WEALTHDB_DATA_ROOT}` in the config stands for
+  that folder (§5). A collector keeps its data in `<collector>/` there.
+- **Servers.** The dashboards keep their files in `web/` there, and
+  the MCP server in `mcp/`. The servers are named
+  `wealthdb-metabase-<name>` and `wealthdb-mcp-<name>`. `<name>` is the
+  folder's last path part in lower case, with `-` for each character
+  outside `a-z`, `0-9`, `_`, `.` and `-`; the root folder gives
+  `setup`.
+- **Env files.** The servers read `wealthdb-web-<name>.env` and
+  `wealthdb-mcp-<name>.env` in the secrets folder
+  (`$WEALTHDB_SECRETS_DIR`, else `~/.secrets`).
+- **Overrides.** Each explicit override still wins, on its own:
+  `WEALTHDB_WEB_CONTAINER`, `WEALTHDB_WEB_DATA_DIR`,
+  `WEALTHDB_WEB_ENV_FILE` and the three `WEALTHDB_MCP_*` ones.
+- **Commands in messages.** Every command a message names carries the
+  config, whichever way the run named it: `wealthdb -c <file> init`,
+  and for a collector `wealthdb -c <file> collect <collector> <verb>`.
+  The path is quoted where a shell needs it.
+
+For the default config, a message names `wealthdb <command>` and
+`wealthdb-collect <collector> <verb>`. The examples in this document
+show that form.
+
+A start never takes over the server of another setup. When a server of
+the name exists and does not serve this setup's files, `web start` and
+`mcp start` refuse and remove nothing:
+`<service>: <name> is the server of another setup (its files are not in <folder>). Stop that one first, or name this one with WEALTHDB_WEB_CONTAINER.`
+(`WEALTHDB_MCP_CONTAINER` for the MCP server).
+
+For the host-side commands of a setup of its own, the launcher also
+exports `WEALTHDB_DATA_ROOT` (the config's folder), `WEALTHDB_PROGRAM`
+(`wealthdb -c <file>`) and `WEALTHDB_COLLECT`
+(`wealthdb -c <file> collect`): the words a command they print starts
+with. `web`, `mcp` and `wealthdb-collect` resolve the same rule when
+they are run on their own with `WEALTHDB_CONFIG` set.
 
 ### 4.3 `wealthdb init`
 
@@ -481,7 +523,8 @@ source.
 
 The setup of the config file at `-c` (default `$WEALTHDB_CONFIG`,
 else `${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg`). `-c` sets up or
-checks a file at any path, to try a setup or keep several. The file is
+checks a file at any path, to try a setup or keep several. Such a file
+is a setup of its own, with its data in its folder (§4.2). The file is
 the only saved state. Every confirmed answer is written at once, so a
 run can stop at any prompt (q, Ctrl+D or Ctrl+C) and the next run
 starts from what is saved, each prompt showing the saved value as its
@@ -536,7 +579,8 @@ value it holds already writes nothing.
   file in the data folder: the container engine mounts only the config
   and that folder, and the setup holds a config to what both kinds of
   engine can read. The path is written through `${WEALTHDB_DATA_ROOT}`
-  when the variable names that folder. A path with no file yet is
+  when the variable stands for that folder: the environment names it,
+  or the config is a setup of its own. A path with no file yet is
   taken, with a note.
 
 **AI model** sets one model for every member that names one:
@@ -659,7 +703,8 @@ collector's name, display name, group, a line on what it covers, the
 subsource kind or the silver file names, and whether its silver holds
 exchange rates. A pick writes the entry at once, at the collector's
 default silver path, `${WEALTHDB_DATA_ROOT}/<collector>/<file>` (an
-absolute path when the variable is unset). The entry id is the file's
+absolute path for the default config when the variable is unset). The
+entry id is the file's
 name without its extension; on a clash the next free `<id>-2`. A plaid
 pick first offers the banks whose data is collected already, all at
 once, and offers to drop an entry of the collector that never got
@@ -693,11 +738,12 @@ port. Turning one on names `wealthdb web start` or `wealthdb mcp
 start` in the same way, and adds it to the to-do block. Every other
 member of the block (`mcp.auth`, `mcp.insecure`) stays as it is.
 
-**The data folder** is shown, never asked. It is `WEALTHDB_DATA_ROOT`,
-else `$XDG_DATA_HOME/wealthdb`, else `~/.local/share/wealthdb`; the
-container engine mounts it (§12.2). The first saved answer writes
-`gold_db` as `${WEALTHDB_DATA_ROOT}/wealthdb.db`. A `gold_db` that
-names another place is shown as it is and left alone.
+**The data folder** is shown, never asked. For the default config it
+is `WEALTHDB_DATA_ROOT`, else `$XDG_DATA_HOME/wealthdb`, else
+`~/.local/share/wealthdb`. For any other config it is the config's
+folder (§4.2). The container engine mounts it (§12.2). The first saved
+answer writes `gold_db` as `${WEALTHDB_DATA_ROOT}/wealthdb.db`. A
+`gold_db` that names another place is shown as it is and left alone.
 
 #### Saving
 
@@ -1167,9 +1213,15 @@ load. Every path value in the file is expanded the same way:
 3. a path still relative resolves against the config file's
    directory.
 
-Conventional layout, as `wealthdb config` writes it. The launcher
-always gives the engine `WEALTHDB_DATA_ROOT`, the data root, so every
-path in the config is written through `${WEALTHDB_DATA_ROOT}`:
+`${WEALTHDB_DATA_ROOT}` is the data root of the config's setup (§4.2).
+For the default config it is the variable, and an unset or empty one
+fails the load. For any other config it is the config's folder,
+whatever the environment holds.
+
+Conventional layout of the default config, as `wealthdb config` writes
+it. The launcher always gives the engine `WEALTHDB_DATA_ROOT`, the
+data root, so every path in the config is written through
+`${WEALTHDB_DATA_ROOT}`:
 
 ```
 $XDG_CONFIG_HOME/wealthdb.cfg          config file (this file)
@@ -4228,10 +4280,13 @@ rejected for this reason.
 
 The host wrapper mounts host paths to the **same paths** inside the
 container, so the gold DB path resolves identically on both sides and
-no path translation is needed. The data root is `$WEALTHDB_DATA_ROOT`
-when set, else `${XDG_DATA_HOME:-~/.local/share}/wealthdb`. The config
-file is the `-c` flag's path, else `$WEALTHDB_CONFIG`, else
-`wealthdb.cfg` in `${XDG_CONFIG_HOME:-~/.config}`. Two bind mounts:
+no path translation is needed. The config file is the `-c` flag's
+path, else `$WEALTHDB_CONFIG`, else `wealthdb.cfg` in
+`${XDG_CONFIG_HOME:-~/.config}`. The data root of the default config
+is `$WEALTHDB_DATA_ROOT` when set, else
+`${XDG_DATA_HOME:-~/.local/share}/wealthdb`. Any other config is a
+setup of its own, and its folder is the data root (§4.2). Two bind
+mounts:
 
 ```
 <config file> → <config file>   config file
@@ -4250,8 +4305,8 @@ as a volume name. The container also gets `HOME`, `XDG_CONFIG_HOME`,
 `WEALTHDB_DATA_ROOT` and, when the host sets it, `WEALTHDB_CONFIG`, so
 `~`, `$HOME` and `${WEALTHDB_DATA_ROOT}` in the config file, and the
 engine's default config path, land on the same absolute paths inside
-and outside. A `-c` path stays a flag, so the engine still names it in
-the command that sets the config up.
+and outside. The engine names the config in every command it prints
+whenever the config is not the default file (§4.2).
 
 Every wrapper runs only an image built on this computer. A missing
 image stops the run with the command that builds it (`wealthdb build`,
@@ -4286,6 +4341,7 @@ The host-side `wealthdb` shell wrapper does the mounting. Two shapes:
 XDG_CFG="${XDG_CONFIG_HOME:-$HOME/.config}"
 CFG="${WEALTHDB_CONFIG:-$XDG_CFG/wealthdb.cfg}"   # or the -c flag's path
 DATA_ROOT="${WEALTHDB_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb}"
+# A config that is not the default one: DATA_ROOT="$(dirname "$CFG")"
 mkdir -p "$(dirname "$CFG")" "$DATA_ROOT"
 [ -f "$CFG" ] || : > "$CFG"
 TTY=""; [ -t 0 ] && [ -t 1 ] && TTY="-it"
@@ -4309,8 +4365,10 @@ skips it.
 `wealthdb config` mounts the config's folder in place of the file, and
 makes no empty file. It saves by renaming a temporary file over the
 config, and a rename onto a file mount fails. It also gets the host's
-locale as `WEALTHDB_LOCALE` and `TERM`. Every other subcommand mounts
-the file alone. When the config is a symbolic link, the wrapper follows
+locale as `WEALTHDB_LOCALE` and `TERM`. A folder that is also the data
+root is mounted once, as the data root: a setup of its own keeps its
+config there. Every other subcommand mounts the file alone. When the
+config is a symbolic link, the wrapper follows
 it on the host, and `config` also mounts the folder of the file it
 names. A link into a folder that does not exist stops the wrapper with
 exit 2, before anything is created.

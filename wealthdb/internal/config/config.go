@@ -289,12 +289,11 @@ func Parse(data []byte, absPath string) (*Config, error) {
 
 	// Expand path-valued fields. Done before validation so any
 	// path-shape checks see the resolved value.
-	configDir := filepath.Dir(absPath)
 	for _, f := range c.pathFields() {
 		if *f.p == "" {
 			continue
 		}
-		expanded, err := expandPath(*f.p, configDir)
+		expanded, err := expandPath(*f.p, absPath)
 		if err != nil {
 			return nil, fmt.Errorf("config: %s: %w", f.key, err)
 		}
@@ -372,11 +371,13 @@ func InspectBytes(data []byte, absPath string) (State, *Config, error) {
 	return StateValid, c, nil
 }
 
-// ExpandPath resolves a path value the way Load resolves the config's
-// own: `~` and `$HOME`, then environment variables, then a relative
-// path against baseDir.
-func ExpandPath(p, baseDir string) (string, error) {
-	return expandPath(p, baseDir)
+// ExpandPath resolves a path value the way Load resolves those of the
+// config at configPath, an absolute path: `~` and `$HOME`, then
+// environment variables, with WEALTHDB_DATA_ROOT standing for the data
+// folder of that config's setup (DataRoot), then a relative path
+// against the config's folder.
+func ExpandPath(p, configPath string) (string, error) {
+	return expandPath(p, configPath)
 }
 
 // TopLevelKeys are the members a config file may hold, in the order the

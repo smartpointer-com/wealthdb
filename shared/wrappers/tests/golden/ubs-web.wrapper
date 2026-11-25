@@ -235,16 +235,16 @@ exit: 0
 --- stderr
 === explore
 --- calls
-lsof
-  -nP
-  -iTCP:5900
-  -sTCP:LISTEN
 docker
   image
   inspect
   --format
   {{.Id}}
   wealthdb/ubs-web:latest
+lsof
+  -nP
+  -iTCP:5900
+  -sTCP:LISTEN
 docker
   run
   --rm

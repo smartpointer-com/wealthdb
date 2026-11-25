@@ -1087,10 +1087,11 @@ Provisioning is idempotent. A card or dashboard that matches its
 definition is left as it is. One that differs is updated in place.
 Retired names are archived. `web/web` takes the admin password
 from `WEALTHDB_WEB_ADMIN_PASSWORD` (for example in
-`~/.secrets/wealthdb-web.env`), or generates one once and saves it
-chmod 600. It hands the password to `provision.py` in that same
-environment variable, never on the command line, where `ps` would show
-it. `WEALTHDB_WEB_NO_PROVISION=1` opts back into the browser wizard.
+`~/.secrets/wealthdb-web.env`, or `wealthdb-web-<name>.env` for a
+setup of its own), or generates one once and saves it chmod 600. It
+hands the password to `provision.py` in that same environment
+variable, never on the command line, where `ps` would show it.
+`WEALTHDB_WEB_NO_PROVISION=1` opts back into the browser wizard.
 
 The container runs as root (temurin default), so it reads the mode-600
 gold snapshot without loosening the snapshot's permissions.

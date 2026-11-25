@@ -78,12 +78,13 @@ port-forward; auth is Metabase's own login.
   never baked into the image.
 - This component holds **no source credentials**. Its one secret is the
   Metabase admin password. `web/web` reads it on the host, from
-  `WEALTHDB_WEB_ADMIN_PASSWORD` or `~/.secrets/wealthdb-web.env`, and
-  hands it to `provision.py` in that variable. An unset password is
-  generated and saved at 0600. Never mount `~/.secrets/` into the
-  container and never pass a secret on a command line. Metabase keeps
-  the admin account in its H2 metadata DB (under `$XDG_DATA_HOME`,
-  outside the repo).
+  `WEALTHDB_WEB_ADMIN_PASSWORD` or `~/.secrets/wealthdb-web.env`
+  (`wealthdb-web-<name>.env` for a setup of its own,
+  [README.md](README.md#enable-it)), and hands it to `provision.py` in
+  that variable. An unset password is generated and saved at 0600.
+  Never mount `~/.secrets/` into the container and never pass a secret
+  on a command line. Metabase keeps the admin account in its H2
+  metadata DB (in the dashboards' data folder, outside the repo).
 
 ## 4. The driver is fragile — keep all three invariants
 

@@ -23,7 +23,8 @@ import (
 )
 
 // harness is a scratch config folder and data folder, with actions that
-// record what the setup asked of the engine.
+// record what the setup asked of the engine. Its config is the default
+// one (newHarness), or a setup of its own (newOwnHarness).
 type harness struct {
 	t                   *testing.T
 	cfg, root           string
@@ -34,8 +35,11 @@ type harness struct {
 	section             string
 	wizard, rootFromEnv bool
 	inContainer         bool
-	// program is Options.Program: empty for the default config.
-	program string
+	// program is Options.Program and collectCmd Options.Collect: empty
+	// for the default config.
+	program, collectCmd string
+	// own is Options.OwnSetup.
+	own bool
 	// asked are the models a test question went to; reply is the answer,
 	// or the failure when replyErr is set.
 	asked    []config.ModelConfig
@@ -50,7 +54,27 @@ func newHarness(t *testing.T) *harness {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// The config is the default one, as config.IsDefault reads it.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
 	return &harness{t: t, cfg: filepath.Join(dir, "config", "wealthdb.cfg"), root: root}
+}
+
+// newOwnHarness is a harness whose config is not the default one: a
+// setup of its own in a folder with a blank in its name, which is its
+// data folder too. WEALTHDB_DATA_ROOT names another folder, which the
+// setup must not read.
+func newOwnHarness(t *testing.T) *harness {
+	t.Helper()
+	dir := t.TempDir()
+	root := filepath.Join(dir, "my setup")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+	t.Setenv("WEALTHDB_DATA_ROOT", filepath.Join(dir, "elsewhere"))
+	cfg := filepath.Join(root, "wealthdb.cfg")
+	prog := "wealthdb -c '" + cfg + "'"
+	return &harness{t: t, cfg: cfg, root: root, own: true, program: prog, collectCmd: prog + " collect"}
 }
 
 func (h *harness) write(body string, mode os.FileMode) {
@@ -100,6 +124,7 @@ func (h *harness) run(lines ...string) (string, error) {
 		ConfigPath:      h.cfg,
 		DataRoot:        h.root,
 		DataRootFromEnv: h.rootFromEnv,
+		OwnSetup:        h.own,
 		Locale:          "de_CH.UTF-8",
 		In:              strings.NewReader(in),
 		Out:             &out,
@@ -108,6 +133,7 @@ func (h *harness) run(lines ...string) (string, error) {
 		Section:         h.section,
 		InContainer:     h.inContainer,
 		Program:         h.program,
+		Collect:         h.collectCmd,
 		Actions: Actions{
 			Init: func() error {
 				h.inits++
@@ -1024,7 +1050,7 @@ func TestNextSteps(t *testing.T) {
 	if err := os.WriteFile(have, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got := NextSteps(Palette{}, "wealthdb load -a", [][]config.Feed{
+	got := NextSteps(Palette{}, "", "wealthdb load -a", [][]config.Feed{
 		{{Path: have, Collector: "viac"}},
 		{{Path: filepath.Join(dir, "a.db"), Collector: "ubs-web"}, {Path: filepath.Join(dir, "b.db"), Collector: "ubs-psn"}},
 		{{Path: filepath.Join(dir, "c.db"), Collector: "ubs-web"}},
@@ -1044,8 +1070,24 @@ func TestNextSteps(t *testing.T) {
 	}
 	one := "\n" + rule + "\nWhat to do now\n\nRun this command in the terminal:\n" +
 		"\n  1.  wealthdb load -a\n\n      Brings the database of every source into the one database that\n      the reports read.\n" + rule + "\n"
-	if got := NextSteps(Palette{}, "wealthdb load -a", [][]config.Feed{{{Path: have, Collector: "viac"}}}); got != one {
+	if got := NextSteps(Palette{}, "", "wealthdb load -a", [][]config.Feed{{{Path: have, Collector: "viac"}}}); got != one {
 		t.Errorf("got\n%s\nwant\n%s", got, one)
+	}
+	// For a config that is not the default one, each collect command
+	// starts as the caller states it, a per-item one too.
+	const prog = "wealthdb -c '/x/my setup/wealthdb.cfg'"
+	got = NextSteps(Palette{}, prog+" collect", prog+" load -a", [][]config.Feed{
+		{{Path: filepath.Join(dir, "a.db"), Collector: "ubs-web"}},
+		{{Path: filepath.Join(dir, "first", "first.db"), Collector: "plaid", Item: "first"}},
+	})
+	for _, w := range []string{"\n  1.  " + prog + " collect ubs-web login\n", "\n  2.  " + prog + " collect plaid link --item first\n",
+		"\n  3.  " + prog + " load -a\n"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("the block lacks %q:\n%s", w, got)
+		}
+	}
+	if strings.Contains(got, "wealthdb-collect") {
+		t.Errorf("a collect command names no config:\n%s", got)
 	}
 	if got := ToDo(Palette{}, nil); got != "" {
 		t.Errorf("no step gives a block: %q", got)
@@ -1385,7 +1427,7 @@ func TestNoLineIsLabelledQ(t *testing.T) {
 // takes none.
 func TestCommandsNameTheConfig(t *testing.T) {
 	const prog = "wealthdb -c /x/try.cfg"
-	bare := regexp.MustCompile(`wealthdb (init|load|web|mcp|resolve-symbols|categorize|config (is|goes|lists|validate|again))`)
+	bare := regexp.MustCompile(`wealthdb-collect|wealthdb (init|load|web|mcp|resolve-symbols|categorize|config (is|goes|lists|validate|again))`)
 	// A sentence wraps where the window ends, so the check reads the
 	// output with every run of white space as one space.
 	check := func(t *testing.T, out string, wants ...string) {
@@ -1401,23 +1443,23 @@ func TestCommandsNameTheConfig(t *testing.T) {
 		}
 	}
 	h := newHarness(t)
-	h.program = prog
+	h.program, h.collectCmd = prog, prog+" collect"
 	out, err := h.run("chf", num(t, "viac"), "", "on", "on", "n")
 	if err != nil {
 		t.Fatal(err)
 	}
 	check(t, out,
 		"Type q to stop; "+prog+" config goes on from there.",
-		"To collect the data of VIAC, run this command when "+prog+" config is done: wealthdb-collect viac login "+
+		"To collect the data of VIAC, run this command when "+prog+" config is done: "+prog+" collect viac login "+
 			prog+" config lists it again at the end.",
 		"To start the dashboards, run this command when "+prog+" config is done: "+prog+" web start ",
 		"To start the MCP server, run this command when "+prog+" config is done: "+prog+" mcp start ",
-		" 1. "+prog+" init Creates", " 2. wealthdb-collect viac login Starts", " 3. "+prog+" load -a Brings",
+		" 1. "+prog+" init Creates", " 2. "+prog+" collect viac login Starts", " 3. "+prog+" load -a Brings",
 		" 4. "+prog+" web start Starts", " 5. "+prog+" mcp start Starts")
 
 	// A stop part-way names the setup command, and so does a section.
 	h = newHarness(t)
-	h.program = prog
+	h.program, h.collectCmd = prog, prog+" collect"
 	if out, err = h.run("chf", "q"); err != nil {
 		t.Fatal(err)
 	}
@@ -1559,5 +1601,120 @@ func TestNoLoadActionNoOffer(t *testing.T) {
 	out = run(Actions{Load: func(id string) error { loads = append(loads, id); return nil }}, "a", "l", "")
 	if !strings.Contains(out, "  l  load its data now") || !slices.Equal(loads, []string{"viac"}) {
 		t.Errorf("loads %v:\n%s", loads, out)
+	}
+}
+
+// A config that is not the default one is a setup of its own: the data
+// folder is the config's folder whatever WEALTHDB_DATA_ROOT says, the
+// paths the setup writes go through the variable and load into that
+// folder, and every collect command names the config, quoted for a
+// shell.
+func TestSetupOfItsOwn(t *testing.T) {
+	h := newOwnHarness(t)
+	prog, collect := h.program, h.collectCmd
+	out, err := h.run("chf", num(t, "viac"), "", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := h.read()
+	for _, w := range []string{`"gold_db": "${WEALTHDB_DATA_ROOT}/wealthdb.db"`, `"path": "${WEALTHDB_DATA_ROOT}/viac/viac.db"`} {
+		if !strings.Contains(text, w) {
+			t.Errorf("config lacks %s:\n%s", w, text)
+		}
+	}
+	cfg := h.cfgOf()
+	if cfg.GoldDB != filepath.Join(h.root, "wealthdb.db") {
+		t.Errorf("gold_db = %s, want it in the config's folder %s", cfg.GoldDB, h.root)
+	}
+	if len(cfg.SilverSources) != 1 || cfg.SilverSources[0].Path != filepath.Join(h.root, "viac", "viac.db") {
+		t.Errorf("sources = %+v, want them in the config's folder %s", cfg.SilverSources, h.root)
+	}
+	for _, w := range []string{
+		"Data folder:  " + h.root + "\n",
+		// The command of the pick, on a line of its own, and the to-do
+		// block.
+		"\n\n      " + collect + " viac login\n\n",
+		"\n  1.  " + collect + " viac login\n\n",
+		"\n  2.  " + prog + " load -a\n\n",
+	} {
+		if !strings.Contains(out, w) {
+			t.Errorf("output lacks %q:\n%s", w, out)
+		}
+	}
+	if strings.Contains(out, "wealthdb-collect") || strings.Contains(out, "elsewhere") {
+		t.Errorf("the output names the default setup:\n%s", out)
+	}
+
+	// The data folder section says where the setup lives, and names no
+	// variable to move it by.
+	h.section = "data-folder"
+	if out, err = h.run(); err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{"Data folder: " + h.root + "\n", "The database: " + filepath.Join(h.root, "wealthdb.db") + "\n",
+		"This config is a setup of its own, and its folder is the data folder.\nTo move the setup, move the folder.\n"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("output lacks %q:\n%s", w, out)
+		}
+	}
+	if strings.Contains(out, "WEALTHDB_DATA_ROOT") {
+		t.Errorf("the section names the variable, which this setup does not read:\n%s", out)
+	}
+
+	// A ledger is checked against the config's folder, and written
+	// through the variable.
+	h.collect("ledgers", "pins.csv")
+	h.section = "ledgers"
+	pins := fieldLetter(t, ledgerFiles, "Spending pins")
+	outside := filepath.Join(filepath.Dir(h.root), "elsewhere", "ledgers", "pins.csv")
+	if out, err = h.run(pins, outside, "${WEALTHDB_DATA_ROOT}/ledgers/pins.csv", ""); err != nil {
+		t.Fatal(err)
+	}
+	// The refusal wraps where the window ends.
+	if !strings.Contains(strings.Join(strings.Fields(out), " "), outside+" is not in the data folder, "+h.root+".") ||
+		!strings.Contains(h.read(), `"${WEALTHDB_DATA_ROOT}/ledgers/pins.csv"`) {
+		t.Errorf("the ledger is not held to the config's folder:\n%s\n%s", out, h.read())
+	}
+
+	// The collect commands of a per-item collector name the config too.
+	h.section = "banks"
+	if out, err = h.run("n", num(t, "plaid"), "chase", ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{
+		"with that name:\n\n      " + collect + " plaid link --item <name>\n\n",
+		"To see those names, run:\n\n      " + collect + " plaid banks\n\n",
+		"\n      " + collect + " plaid link --item chase\n",
+	} {
+		if !strings.Contains(out, w) {
+			t.Errorf("output lacks %q:\n%s", w, out)
+		}
+	}
+	if strings.Contains(out, "wealthdb-collect") {
+		t.Errorf("a collect command names no config:\n%s", out)
+	}
+}
+
+// The default config's data folder section names the variable that
+// moves the folder, when the variable names it.
+func TestDataFolderOfTheDefaultConfig(t *testing.T) {
+	h := newHarness(t)
+	h.rootFromEnv = true
+	t.Setenv("WEALTHDB_DATA_ROOT", h.root)
+	h.write(`{"gold_db": "${WEALTHDB_DATA_ROOT}/wealthdb.db", "default_currency": "USD"}`+"\n", 0o600)
+	h.collect("wealthdb.db")
+	h.section = "data-folder"
+	out, err := h.run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{"Data folder: " + h.root + "\n", "The database: " + filepath.Join(h.root, "wealthdb.db") + "\n",
+		"To move the folder, move it and set WEALTHDB_DATA_ROOT to its new place.\n"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("output lacks %q:\n%s", w, out)
+		}
+	}
+	if strings.Contains(out, "setup of its own") {
+		t.Errorf("the default config reads as a setup of its own:\n%s", out)
 	}
 }

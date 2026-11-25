@@ -90,6 +90,7 @@ def explain_token_failure(err: Exception) -> str:
             "The refresh token has expired or been revoked. Schwab refresh "
             "tokens live 7 days from the last interactive login and cannot "
             "be renewed programmatically.",
-            "Fix: mint a new one with `wealthdb-collect schwab-api login`.",
+            "Fix: mint a new one with "
+            f"`{os.environ.get('WEALTHDB_COLLECT', 'wealthdb-collect')} schwab-api login`.",
         ]
     return "\n".join(lines)

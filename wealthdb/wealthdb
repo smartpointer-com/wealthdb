@@ -121,40 +121,22 @@ case "${1:-}" in
         ;;
 esac
 
-# Data root (gold DB + every silver DB) defaults to the XDG data dir
-# ($XDG_DATA_HOME/wealthdb, falling back to ~/.local/share/wealthdb) but
-# can live anywhere via WEALTHDB_DATA_ROOT — e.g. a shared, ACL-gated dir
-# outside $HOME. It is mounted at the SAME path inside the container so
-# the config's ${WEALTHDB_DATA_ROOT}/... entries resolve identically on
-# both sides, and the variable is forwarded so that expansion (and the
-# collectors' own wrappers) agree. The host path must be one Docker can
-# see (for Colima, listed under `mounts:` in colima.yaml).
-#
-# The config file is the -c flag's path, else WEALTHDB_CONFIG, else
-# wealthdb.cfg in the XDG config dir ($XDG_CONFIG_HOME, falling back to
-# ~/.config). It is mounted at the same path, and the variables are
-# forwarded, so the engine's own config resolution lands on the mounted
-# file. A relative path is made absolute here, in the flag too, since
-# the container's working directory is not the host's.
-wealthdb_engine_paths
-ENV_CFG="${WEALTHDB_CONFIG:+$CFG}"
-
 # One pass over the global flags (-c PATH, -r, in their -x, --x and
 # --x=V forms): a -c path is made absolute in place and names the
 # config, and the first argument past them is the subcommand. The
 # arguments are rebuilt in order. lead counts the arguments before the
-# subcommand, and flag_cfg is 1 when a -c named the config.
-sub="" want=0 past=0 lead=0 flag_cfg=0 n=$#
+# subcommand, and flag_cfg is 1 when a -c named the config, FLAG_CFG.
+sub="" want=0 past=0 lead=0 flag_cfg=0 FLAG_CFG="" n=$#
 for a in "$@"; do
     if [ "$past" = 0 ]; then
         if [ "$want" = 1 ]; then
-            a="$(wealthdb_abs_path "$a")" CFG="$a" want=0 flag_cfg=1
+            a="$(wealthdb_abs_path "$a")" FLAG_CFG="$a" want=0 flag_cfg=1
         else
             case "$a" in
                 -c|--c|-config|--config) want=1 ;;
                 -c=*|--c=*|-config=*|--config=*)
-                    CFG="$(wealthdb_abs_path "${a#*=}")"
-                    a="${a%%=*}=$CFG" flag_cfg=1
+                    FLAG_CFG="$(wealthdb_abs_path "${a#*=}")"
+                    a="${a%%=*}=$FLAG_CFG" flag_cfg=1
                     ;;
                 -*) ;;
                 *) sub="$a" past=1 ;;
@@ -165,7 +147,27 @@ for a in "$@"; do
     set -- "$@" "$a"
 done
 shift "$n"
-CFG_DIR="$(dirname "$CFG")"
+
+# The config file is the -c flag's path, else WEALTHDB_CONFIG, else
+# wealthdb.cfg in the XDG config dir ($XDG_CONFIG_HOME, falling back to
+# ~/.config). It is mounted at the same path, and the variables are
+# forwarded, so the engine's own config resolution lands on the mounted
+# file. A relative path is made absolute here, in the flag too, since
+# the container's working directory is not the host's.
+#
+# The data root (the gold DB and every silver DB) follows the config
+# (wealthdb_engine_paths). For the default config it is the XDG data dir
+# ($XDG_DATA_HOME/wealthdb, falling back to ~/.local/share/wealthdb), or
+# anywhere via WEALTHDB_DATA_ROOT, e.g. a shared, ACL-gated dir outside
+# $HOME. Any other config is a setup of its own, and its folder is the
+# data root. It is mounted at the SAME path inside the container so the
+# config's ${WEALTHDB_DATA_ROOT}/... entries resolve identically on both
+# sides, and the variable is forwarded so that expansion (and the
+# collectors' own wrappers) agree. The host path must be one Docker can
+# see (for Colima, listed under `mounts:` in colima.yaml).
+wealthdb_engine_paths "$FLAG_CFG"
+ENV_CFG=""
+if [ -n "${WEALTHDB_CONFIG:-}" ]; then ENV_CFG="$(wealthdb_abs_path "$WEALTHDB_CONFIG")"; fi
 
 # `web`, `mcp` and `collect` run on the host, not in the engine: `web`
 # and `mcp` are the web/ and mcp/ components' lifecycle scripts, and
@@ -175,6 +177,8 @@ CFG_DIR="$(dirname "$CFG")"
 # wealthdb/ dir.) The global flags before the subcommand are the
 # engine's and are dropped. A -c path reaches the script as
 # WEALTHDB_CONFIG, where it reads the config's path.
+# A setup of its own also hands the script its data root and the words
+# a command it prints starts with (wealthdb_export_setup).
 host=
 case "$sub" in
     web)     host="$ROOT/web/web" ;;
@@ -184,6 +188,7 @@ esac
 if [ -n "$host" ]; then
     shift "$((lead + 1))"
     if [ "$flag_cfg" = 1 ]; then export WEALTHDB_CONFIG="$CFG"; fi
+    wealthdb_export_setup
     exec "$host" "$@"
 fi
 
@@ -241,12 +246,20 @@ fi
 # the file itself, so `config validate` on a path with no file leaves
 # none. It also gets TERM, so a terminal that cannot do raw mode gets
 # the numbered menu.
+#
+# A folder that is the data root is mounted once, as the data root:
+# Docker refuses two mounts of one path, and a setup of its own keeps
+# its config in its data root.
 CFG_MOUNT="$CFG:$CFG" MOUNTS="$CFG"
 if [ "$sub" = config ]; then
+    root="$(wealthdb_clean_path "$DATA_ROOT")"
     CFG_MOUNT="$CFG_DIR:$CFG_DIR" MOUNTS="$CFG_DIR"
+    if [ "$(wealthdb_clean_path "$CFG_DIR")" = "$root" ]; then CFG_MOUNT=""; fi
     set -- -e WEALTHDB_LOCALE="$locale" -e TERM="${TERM:-dumb}" "$IMAGE" "$@"
     if [ "$CFG_TARGET_DIR" != "$(cd "$CFG_DIR" && pwd)" ]; then
-        set -- -v "$CFG_TARGET_DIR:$CFG_TARGET_DIR" "$@"
+        if [ "$(wealthdb_clean_path "$CFG_TARGET_DIR")" != "$root" ]; then
+            set -- -v "$CFG_TARGET_DIR:$CFG_TARGET_DIR" "$@"
+        fi
         MOUNTS="$MOUNTS:$CFG_TARGET_DIR"
     fi
 else
@@ -260,8 +273,8 @@ if [ -n "${NO_COLOR+x}" ]; then
 fi
 
 # WEALTHDB_CONFIG goes to the engine as the host set it, made absolute.
-# A -c path stays a flag, so the engine still tells the two apart when
-# it names the command that sets up the config.
+# A -c path stays a flag. The engine names a config that is not the
+# default one in every command it prints, whichever way it was named.
 if [ -n "$ENV_CFG" ]; then
     set -- -e WEALTHDB_CONFIG="$ENV_CFG" "$@"
 fi
@@ -292,6 +305,6 @@ exec docker run --rm --pull=never $TTY \
     -e XDG_CONFIG_HOME="$XDG_CFG" \
     -e WEALTHDB_DATA_ROOT="$DATA_ROOT" \
     -u "$(id -u):$(id -g)" \
-    -v "$CFG_MOUNT" \
+    ${CFG_MOUNT:+-v "$CFG_MOUNT"} \
     -v "$DATA_ROOT:$DATA_ROOT" \
     "$@"

@@ -506,8 +506,8 @@ func (w *setup) dataSummary() string {
 	return tilde(w.opts.DataRoot)
 }
 
-// showData says where the data lives. The environment names the folder,
-// so it is shown, not asked.
+// showData says where the data lives. The environment names the
+// folder, or the config's own place does, so it is shown, not asked.
 func (w *setup) showData() error {
 	fmt.Fprintf(w.out, "Data folder: %s\n", w.opts.DataRoot)
 	w.out.help("The database and the data of every bank live here.")
@@ -520,7 +520,11 @@ func (w *setup) showData() error {
 		return nil
 	}
 	fmt.Fprintf(w.out, "The database: %s\n", g)
-	if w.opts.DataRootFromEnv {
+	switch {
+	case w.opts.OwnSetup:
+		w.out.help("This config is a setup of its own, and its folder is the data folder.\n" +
+			"To move the setup, move the folder.")
+	case w.opts.DataRootFromEnv:
 		w.out.help("To move the folder, move it and set WEALTHDB_DATA_ROOT to its new place.")
 	}
 	return nil

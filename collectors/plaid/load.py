@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sqlite3
 import sys
 import time
@@ -450,8 +451,8 @@ def _rebuild(tree: Path, db_path: Path, runs: list[Path]) -> int:
                     lambda conn, version: _load_runs(conn, tree, runs,
                                                      version))
     log.info("%s: rebuilt %s. Its change number is the newest run's start, "
-             "as before, so gold takes it in on `wealthdb reload <source>`.",
-             tree.name, db_path)
+             "as before, so gold takes it in on `%s reload <source>`.",
+             tree.name, db_path, os.environ.get("WEALTHDB_PROGRAM", "wealthdb"))
     return len(runs)
 
 
@@ -538,7 +539,8 @@ def main(argv: list[str] | None = None) -> int:
     found = trees.select(args.bronze_dir, args.item)
     if not found:
         log.info("no Item tree under %s; nothing to load. Download first: "
-                 "wealthdb-collect plaid download", args.bronze_dir)
+                 "%s plaid download", args.bronze_dir,
+                 os.environ.get("WEALTHDB_COLLECT", "wealthdb-collect"))
         return 0
     status = 0
     for tree in found:

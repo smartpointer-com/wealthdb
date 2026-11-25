@@ -18,7 +18,8 @@ WRAPPER = HERE / "plaid"
 
 
 @pytest.mark.parametrize("script,flag", [
-    ("link.py", "--require"), ("login.py", "--check"),
+    ("link.py", "--require"), ("link.py", "--new-link"),
+    ("login.py", "--check"),
     ("download.py", "--lookback"),
     ("load.py", "--force"), ("prune.py", "--min-age-hours")])
 def test_each_entry_point_builds_its_help(script, flag):
@@ -29,8 +30,10 @@ def test_each_entry_point_builds_its_help(script, flag):
 
 
 def _wrapper(tmp_path, *argv, **env):
+    # No terminal at stdin, however the suite is started.
     return subprocess.run(
         [str(WRAPPER), *argv], capture_output=True, text=True,
+        stdin=subprocess.DEVNULL,
         env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path),
              "WEALTHDB_DATA_ROOT": str(tmp_path / "data"),
              "WEALTHDB_SECRETS_DIR": str(tmp_path / "secrets"), **env})
@@ -85,10 +88,56 @@ def test_link_without_the_keys_says_what_to_set_up(tmp_path):
     assert not (tmp_path / "secrets").exists()
 
 
+def test_a_new_production_link_with_no_terminal_ends_before_plaid(tmp_path):
+    # No one can answer the question before a new production link, so
+    # the run ends there. The proxy is a closed port: a call to Plaid
+    # would fail on it and end the run another way.
+    closed = "http://127.0.0.1:9"
+    (tmp_path / "secrets").mkdir(mode=0o700)
+    result = _wrapper(tmp_path, "link", "--item", "bank",
+                      PLAID_CLIENT_ID="synthetic-id",
+                      PLAID_SECRET="synthetic-secret",
+                      HTTPS_PROXY=closed, https_proxy=closed)
+    assert result.returncode == 2, result.stderr
+    assert ("plaid: a new production link needs a yes. Run this in a "
+            "terminal, or pass --new-link.") in result.stderr
+    assert result.stdout == ""
+    assert not list((tmp_path / "secrets").glob("plaid-*.json"))
+
+
 def test_login_with_no_item_names_link_first(tmp_path):
     result = _wrapper(tmp_path, "login")
     assert result.returncode == 0, result.stderr
     assert "wealthdb-collect plaid link --item <name>" in result.stderr
+
+
+def test_a_setup_of_its_own_names_its_config_in_the_first_step(tmp_path):
+    # The words the launcher hands a setup of its own reach the texts of
+    # the setup declaration.
+    words = "wealthdb -c /x/try/wealthdb.cfg collect"
+    result = _wrapper(tmp_path, "login", WEALTHDB_COLLECT=words)
+    assert result.returncode == 0, result.stderr
+    assert f"{words} plaid link --item <name>" in result.stderr
+    assert "wealthdb-collect" not in result.stderr
+    result = _wrapper(tmp_path, "link", "--item", "bank",
+                      WEALTHDB_COLLECT=words, WEALTHDB_PROGRAM="wealthdb -c /x/try/wealthdb.cfg")
+    assert result.returncode == 78
+    assert f"Then run: {words} plaid link --item bank" in result.stderr
+    assert "wealthdb -c /x/try/wealthdb.cfg load -a" in result.stderr
+
+
+def test_a_setup_of_its_own_keeps_its_data_in_its_folder(tmp_path):
+    # A config that is not the default one: the data folder is in the
+    # config's folder, whatever WEALTHDB_DATA_ROOT names.
+    setup = tmp_path / "try"
+    words = f"wealthdb -c {setup}/wealthdb.cfg collect"
+    result = _wrapper(tmp_path, "load", WEALTHDB_CONFIG=f"{setup}/wealthdb.cfg",
+                      WEALTHDB_COLLECT=words)
+    assert result.returncode == 0, result.stderr
+    assert (f"no Item tree under {setup}/plaid; nothing to load. "
+            f"Download first: {words} plaid download") in result.stderr
+    assert (setup / "plaid").is_dir()
+    assert not (tmp_path / "data").exists()
 
 
 def test_login_with_nothing_left_open_is_a_clean_no_op(tmp_path):

@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import sys
 import time
@@ -138,7 +139,8 @@ def discover_portfolios(page) -> list[dict]:
     page.goto(ENTER_COINS_URL, wait_until="networkidle", timeout=45_000)
     if not is_authenticated(page):
         raise RuntimeError(
-            "session unauthenticated; run `wealthdb-collect cointracking login` first"
+            "session unauthenticated; run "
+            f"`{os.environ.get('WEALTHDB_COLLECT', 'wealthdb-collect')} cointracking login` first"
         )
 
     # Wait for late-JS anchor injection to settle before scraping.

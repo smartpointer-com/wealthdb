@@ -39,9 +39,9 @@ case "$VERB" in
         # cheapest answer instead.
         host_login_probe download.py
         setup_print_first
-        cat >&2 <<'EOF'
+        cat >&2 <<EOF
 curves: no-op: there is no session to mint. To ask each portal for its
-cheapest answer, run: wealthdb-collect curves login --check
+cheapest answer, run: ${WEALTHDB_COLLECT:-wealthdb-collect} curves login --check
 EOF
         ;;
     download) host_run download.py --bronze-dir "$DATA_DIR" ;;

@@ -41,11 +41,11 @@ case "$VERB" in
         # the key and asks FRED for one observation, so a key that is present
         # but rejected fails here rather than at the next download.
         host_login_probe download.py
-        cat >&2 <<'EOF'
+        cat >&2 <<EOF
 fred: nothing to sign in to. FRED takes an API key, read from FRED_API_KEY
 in the env file of the secrets folder. To test the key, run:
 
-  wealthdb-collect fred login --check
+  ${WEALTHDB_COLLECT:-wealthdb-collect} fred login --check
 EOF
         ;;
     download) host_run download.py --bronze-dir "$DATA_DIR" ;;

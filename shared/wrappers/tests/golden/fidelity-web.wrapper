@@ -178,6 +178,12 @@ exit: 0
 === download
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/fidelity-web:latest
+docker
   ps
   --filter
   name=^fidelity-web$
@@ -188,12 +194,6 @@ docker
   rm
   -f
   fidelity-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/fidelity-web:latest
 docker
   run
   --rm
@@ -270,6 +270,12 @@ exit: 0
 --- stderr
 === vnc-login
 --- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/fidelity-web:latest
 lsof
   -nP
   -iTCP:5900
@@ -285,12 +291,6 @@ docker
   rm
   -f
   fidelity-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/fidelity-web:latest
 docker
   run
   --rm
@@ -340,6 +340,12 @@ exit: 0
 --- stderr
 === explore
 --- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/fidelity-web:latest
 lsof
   -nP
   -iTCP:5900
@@ -355,12 +361,6 @@ docker
   rm
   -f
   fidelity-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/fidelity-web:latest
 docker
   run
   --rm
@@ -411,6 +411,12 @@ exit: 0
 === sh
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/fidelity-web:latest
+docker
   ps
   --filter
   name=^fidelity-web$
@@ -421,12 +427,6 @@ docker
   rm
   -f
   fidelity-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/fidelity-web:latest
 docker
   run
   --rm
@@ -473,6 +473,12 @@ exit: 0
 === bash
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/fidelity-web:latest
+docker
   ps
   --filter
   name=^fidelity-web$
@@ -483,12 +489,6 @@ docker
   rm
   -f
   fidelity-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/fidelity-web:latest
 docker
   run
   --rm
@@ -553,6 +553,12 @@ fidelity-web: 'login' folds into 'download' — nothing to persist.
 === download --dry-run --lookback 1w
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/fidelity-web:latest
+docker
   ps
   --filter
   name=^fidelity-web$
@@ -563,12 +569,6 @@ docker
   rm
   -f
   fidelity-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/fidelity-web:latest
 docker
   run
   --rm
@@ -662,6 +662,12 @@ exit: 0
 === download --secrets-dir <TMP>/w-fidelity-web/alt-secrets
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/fidelity-web:latest
+docker
   ps
   --filter
   name=^fidelity-web$
@@ -672,12 +678,6 @@ docker
   rm
   -f
   fidelity-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/fidelity-web:latest
 docker
   run
   --rm
@@ -724,6 +724,12 @@ exit: 0
 === download --secrets-dir=<TMP>/w-fidelity-web/alt-secrets
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/fidelity-web:latest
+docker
   ps
   --filter
   name=^fidelity-web$
@@ -734,12 +740,6 @@ docker
   rm
   -f
   fidelity-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/fidelity-web:latest
 docker
   run
   --rm
@@ -786,6 +786,12 @@ exit: 0
 === bogus-verb
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/fidelity-web:latest
+docker
   ps
   --filter
   name=^fidelity-web$
@@ -796,12 +802,6 @@ docker
   rm
   -f
   fidelity-web
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/fidelity-web:latest
 docker
   run
   --rm

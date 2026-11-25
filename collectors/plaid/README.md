@@ -187,7 +187,15 @@ active. It then reports that nothing is linked yet.
   slot. Link each institution once, and renew it under the same name.
   [When a link stops working](#when-a-link-stops-working) has the one
   exception.
-- **Sandbox is free.** Items made with `--sandbox` do not count.
+- **`link` asks before a new production link.** It says that a team on
+  the Trial plan has ten links in all, that a link counts once it is
+  made, and that removing it does not give its place back. It also
+  says how many production links are stored on this computer. Only `y`
+  or `yes` goes on; any other answer makes no link. `--new-link`
+  answers yes without the question. A run with no terminal and without
+  the flag stops. A renewal and `--sandbox` ask nothing.
+- **Sandbox is free.** Items made with `--sandbox` do not count. A
+  trial run of wealthdb uses `--sandbox`.
 - **Some institutions take days.** Plaid enables some OAuth institutions
   on its own. This can take several business days.
 - **Some institutions keep one link per login.** A second link there
@@ -243,9 +251,10 @@ institution on the sign-in page.
 
 ## The sign-in page
 
-`link` prints a URL and waits. The page stays valid for one hour, or
-as long as `--mfa-timeout` says. It shows these screens, in this order.
-Some institutions leave one out.
+`link` prints a URL and waits. For a new production link it asks first
+([Limits to know before the first sign-in](#limits-to-know-before-the-first-sign-in)).
+The page stays valid for one hour, or as long as `--mfa-timeout` says.
+It shows these screens, in this order. Some institutions leave one out.
 
 1. **A phone number.** Plaid offers to sign in or sign up with it. It is
    optional: "Continue without phone number" skips it. With a number

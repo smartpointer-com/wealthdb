@@ -50,8 +50,10 @@ them with their docs. validate checks the file as every command reads
 it, and exits 0 when it is valid: run it after an edit by hand. It
 needs no terminal.
 
--c names another config file, to try a setup or keep several. The data
-folder is WEALTHDB_DATA_ROOT, else $XDG_DATA_HOME/wealthdb, else
+-c names another config file, to try a setup or keep several. Such a
+config is a setup of its own: its data folder is the folder of the
+config file. The data folder of the default config is
+WEALTHDB_DATA_ROOT, else $XDG_DATA_HOME/wealthdb, else
 ~/.local/share/wealthdb. The setup needs an interactive terminal.
 `, sectionList())
 	}
@@ -95,12 +97,13 @@ folder is WEALTHDB_DATA_ROOT, else $XDG_DATA_HOME/wealthdb, else
 	if err := os.MkdirAll(filepath.Dir(g.ConfigPath), 0o755); err != nil {
 		return errs.Wrap(errs.ExitOpenFailed, fmt.Errorf("create config dir: %w", err))
 	}
-	root, fromEnv := dataRoot()
+	root, fromEnv := config.DataRoot(g.ConfigPath)
 	kind, _ := engineKind()
 	return wizard.Run(wizard.Options{
 		ConfigPath:      g.ConfigPath,
 		DataRoot:        root,
 		DataRootFromEnv: fromEnv,
+		OwnSetup:        !config.IsDefault(g.ConfigPath),
 		Locale:          hostLocale(),
 		In:              stdin,
 		Out:             stdout,
@@ -108,6 +111,7 @@ folder is WEALTHDB_DATA_ROOT, else $XDG_DATA_HOME/wealthdb, else
 		Wizard:          *walk,
 		Section:         fs.Arg(0),
 		Program:         commandFor(g.ConfigPath, ""),
+		Collect:         collectFor(g.ConfigPath, ""),
 		InContainer:     kind == engineContainer,
 		Colors:          colors(stdout),
 		Actions: wizard.Actions{
@@ -230,20 +234,6 @@ func stopOnSignal(fd int, out io.Writer, p wizard.Palette, command string) func(
 		close(sig)
 		restore()
 	}
-}
-
-// dataRoot is the data folder the wrapper names, made absolute, and
-// whether WEALTHDB_DATA_ROOT names it: the variable, else
-// $XDG_DATA_HOME/wealthdb, else ~/.local/share/wealthdb.
-func dataRoot() (string, bool) {
-	if v := os.Getenv("WEALTHDB_DATA_ROOT"); v != "" {
-		return absPath(v), true
-	}
-	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
-		return absPath(filepath.Join(xdg, "wealthdb")), false
-	}
-	home, _ := os.UserHomeDir()
-	return absPath(filepath.Join(home, ".local", "share", "wealthdb")), false
 }
 
 // hostLocale is the locale the wrapper forwards from the host, else the

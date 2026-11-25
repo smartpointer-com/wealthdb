@@ -17,6 +17,11 @@ institution login is one Plaid Item with a local name. Subcommands:
                       login with brokerage accounts only). A wait that
                       stops claims an Item the page made; the sign-in's
                       record stays only while its page is open.
+                      A new link in production asks first: a Trial plan
+                      has ten links in all, and removing one does not
+                      give its place back. --new-link answers yes, and
+                      a run with no terminal needs it. --sandbox makes
+                      a test link and asks nothing.
   login               Settle the sign-ins link left open: claim an Item
                       one made, remove the record of a page that has
                       closed. Opens no page; with none left open, it
@@ -82,6 +87,11 @@ institution login is one Plaid Item with a local name. Subcommands:
                       login with brokerage accounts only). A wait that
                       stops claims an Item the page made; the sign-in's
                       record stays only while its page is open.
+                      A new link in production asks first: a Trial plan
+                      has ten links in all, and removing one does not
+                      give its place back. --new-link answers yes, and
+                      a run with no terminal needs it. --sandbox makes
+                      a test link and asks nothing.
   login               Settle the sign-ins link left open: claim an Item
                       one made, remove the record of a page that has
                       closed. Opens no page; with none left open, it

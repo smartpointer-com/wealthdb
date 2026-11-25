@@ -2,10 +2,10 @@
 # removes, and how a build decides to skip and waits its turn: the
 # inputs hash and its label (wealthdb_inputs_hash,
 # wealthdb_build_unchanged) and the build lock (wealthdb_build_lock).
-# It also holds the engine's host paths (wealthdb_engine_paths), which
-# the engine wrapper and mcp mount alike. POSIX sh; sourced by the
-# engine wrappers, the collector wrappers, mcp and web, and by the
-# Makefile.
+# It also holds the engine's host paths and the rule of a setup of its
+# own (wealthdb_engine_paths), which the engine wrapper, mcp, web and the
+# collectors' path helper resolve alike. POSIX sh; sourced by the engine
+# wrappers, the collector wrappers, mcp and web, and by the Makefile.
 #
 # WEALTHDB_IMAGE_TAG wins when it is set. Otherwise the first line of
 # .image-tag at the repository root names the tag: the file is
@@ -279,6 +279,29 @@ except OSError:
 PY
 }
 
+# wealthdb_image_state IMAGE asks Docker for IMAGE, once, and sets
+# IMAGE_STATE to the answer: present (IMAGE_ID then holds the image's
+# id), missing, noclient (no docker program on PATH, so nothing was
+# asked) or down (Docker did not answer; DOCKER_ERROR holds the first
+# line of what it said instead).
+wealthdb_image_state() {
+    IMAGE_ID='' DOCKER_ERROR=''
+    if ! command -v docker >/dev/null 2>&1; then
+        IMAGE_STATE=noclient
+        return 0
+    fi
+    if IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$1" 2>&1)"; then
+        IMAGE_STATE=present
+        return 0
+    fi
+    case "$IMAGE_ID" in
+        *"No such image"*|*"No such object"*) IMAGE_STATE=missing ;;
+        *)  IMAGE_STATE=down
+            DOCKER_ERROR="$(printf '%s\n' "$IMAGE_ID" | sed -n '1p')" ;;
+    esac
+    IMAGE_ID=''
+}
+
 # wealthdb_require_image WHO IMAGE HINT — return 1, with a message that
 # ends in HINT, the sentence that says how IMAGE is built, when Docker
 # has no image of that name. Each run passes --pull=never as well: a
@@ -287,14 +310,10 @@ PY
 # computer's folders mounted. Any other failure (no daemon) returns 0
 # and is left to the run, which says what is wrong.
 wealthdb_require_image() {
-    _wri="$(docker image inspect --format '{{.Id}}' "$2" 2>&1)" && return 0
-    case "$_wri" in
-        *"No such image"*|*"No such object"*)
-            echo "$1: the image $2 is not built yet. $3" >&2
-            return 1
-            ;;
-    esac
-    return 0
+    wealthdb_image_state "$2"
+    [ "$IMAGE_STATE" = missing ] || return 0
+    echo "$1: the image $2 is not built yet. $3" >&2
+    return 1
 }
 
 # wealthdb_require_local_bases WHO DOCKERFILE HINT — return 1, with a
@@ -336,16 +355,103 @@ wealthdb_abs_path() {
     esac
 }
 
-# wealthdb_engine_paths sets the engine's host paths, which the engine
-# wrapper mounts at the same path in its container, each absolute:
-# DATA_ROOT (gold and every silver; WEALTHDB_DATA_ROOT, else
-# $XDG_DATA_HOME/wealthdb, else ~/.local/share/wealthdb), XDG_CFG
-# ($XDG_CONFIG_HOME, else ~/.config), CFG (the config file:
-# WEALTHDB_CONFIG, else wealthdb.cfg in XDG_CFG) and CFG_DIR, the folder
-# that holds CFG. The engine wrapper also takes CFG from a -c flag.
+# wealthdb_clean_path PATH prints PATH absolute and lexically clean: no
+# empty part, no `.`, and each `..` taken with the part before it. No
+# link is followed and no file is read, so two spellings of one path
+# compare equal.
+wealthdb_clean_path() (
+    IFS=/
+    set -f
+    clean=
+    for part in $(wealthdb_abs_path "$1"); do
+        case "$part" in
+            '' | .) ;;
+            ..) clean="${clean%/*}" ;;
+            *)  clean="$clean/$part" ;;
+        esac
+    done
+    printf '%s\n' "${clean:-/}"
+)
+
+# wealthdb_shell_word TEXT prints TEXT as one word of a shell command: as
+# it is when it holds only letters, digits and _ . / : @ % + = , -, which
+# no shell acts on, else in single quotes. A single quote of its own
+# ends the quoted piece, stands escaped, and starts the next piece. The
+# engine quotes a path by the same rule (shellWord), so a command reads
+# the same from either.
+wealthdb_shell_word() (
+    LC_ALL=C
+    export LC_ALL
+    case "$1" in
+        '' | *[!A-Za-z0-9_./:@%+=,-]*)
+            printf "'%s'\n" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+            ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+)
+
+# wealthdb_setup_name DIR prints the name a setup kept in DIR gives its
+# servers: the last part of DIR's clean path in lower case, each byte
+# outside a-z 0-9 _ . - read as -, and `setup` when nothing is left (the
+# root folder). It reads bytes, never the locale, so a server started at
+# login gets the name a terminal gave it.
+wealthdb_setup_name() (
+    LC_ALL=C
+    export LC_ALL
+    dir="$(wealthdb_clean_path "$1")"
+    name="$(printf '%s' "${dir##*/}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_.-' '-')"
+    printf '%s\n' "${name:-setup}"
+)
+
+# wealthdb_engine_paths [CONFIG] sets the engine's host paths, which the
+# engine wrapper mounts at the same path in its container, each
+# absolute: XDG_CFG ($XDG_CONFIG_HOME, else ~/.config), CFG (the config
+# file: CONFIG, else WEALTHDB_CONFIG, else wealthdb.cfg in XDG_CFG),
+# CFG_DIR, the folder that holds CFG, and DATA_ROOT (gold and every
+# silver). The engine wrapper passes the path of its -c flag as CONFIG.
+#
+# The default config is wealthdb.cfg in XDG_CFG. For it, OWN_SETUP is 0,
+# DATA_ROOT is WEALTHDB_DATA_ROOT, else $XDG_DATA_HOME/wealthdb, else
+# ~/.local/share/wealthdb, and PROGRAM, the words a command to run
+# starts with, is `wealthdb`.
+#
+# Any other config, by its clean path, is a setup of its own, kept in
+# the config's folder: OWN_SETUP is 1, SETUP_DIR is that folder and
+# DATA_ROOT the same, whatever WEALTHDB_DATA_ROOT holds, SETUP_NAME is
+# the name its servers take (wealthdb_setup_name), and PROGRAM is
+# `wealthdb -c CFG`, the path as one shell word, so a command a message
+# names acts on this setup.
 wealthdb_engine_paths() {
-    DATA_ROOT="$(wealthdb_abs_path "${WEALTHDB_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb}")"
     XDG_CFG="$(wealthdb_abs_path "${XDG_CONFIG_HOME:-$HOME/.config}")"
-    CFG="$(wealthdb_abs_path "${WEALTHDB_CONFIG:-$XDG_CFG/wealthdb.cfg}")"
+    CFG="$(wealthdb_abs_path "${1:-${WEALTHDB_CONFIG:-$XDG_CFG/wealthdb.cfg}}")"
     CFG_DIR="$(dirname "$CFG")"
+    _wep_cfg="$(wealthdb_clean_path "$CFG")"
+    if [ "$_wep_cfg" = "$(wealthdb_clean_path "$XDG_CFG/wealthdb.cfg")" ]; then
+        OWN_SETUP=0 SETUP_DIR='' SETUP_NAME='' PROGRAM=wealthdb
+        DATA_ROOT="$(wealthdb_abs_path "${WEALTHDB_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb}")"
+    else
+        OWN_SETUP=1
+        SETUP_DIR="${_wep_cfg%/*}"
+        SETUP_DIR="${SETUP_DIR:-/}"
+        SETUP_NAME="$(wealthdb_setup_name "$SETUP_DIR")"
+        DATA_ROOT="$SETUP_DIR"
+        PROGRAM="wealthdb -c $(wealthdb_shell_word "$CFG")"
+    fi
+}
+
+# wealthdb_export_setup hands the commands this shell starts the setup
+# that wealthdb_engine_paths resolved. A setup of its own exports its
+# data root as WEALTHDB_DATA_ROOT, and the words a command to run starts
+# with, so a command that a server or a collector prints acts on this
+# setup when it is pasted: WEALTHDB_PROGRAM before an engine command
+# (`wealthdb -c CFG`) and WEALTHDB_COLLECT before a collector's source
+# and verb (`wealthdb -c CFG collect`). The default config sets neither
+# and removes one it inherited: a reader then prints `wealthdb` and
+# `wealthdb-collect`.
+wealthdb_export_setup() {
+    if [ "$OWN_SETUP" = 1 ]; then
+        export WEALTHDB_DATA_ROOT="$DATA_ROOT" WEALTHDB_PROGRAM="$PROGRAM" WEALTHDB_COLLECT="$PROGRAM collect"
+    else
+        unset WEALTHDB_PROGRAM WEALTHDB_COLLECT
+    fi
 }

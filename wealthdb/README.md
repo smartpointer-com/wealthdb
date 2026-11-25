@@ -150,15 +150,21 @@ wealthdb config validate                         # is the config valid?
 wealthdb -c ~/experiments/test.cfg config validate  # another file
 ```
 
+A config that is not the default file is a setup of its own, kept in
+the config's folder: the example above reads and writes its data in
+`~/experiments`, and its servers have names of their own
+([docs/DESIGN.md §4.2](docs/DESIGN.md#a-setup-of-its-own)).
+
 [docs/DESIGN.md §5](docs/DESIGN.md) describes every field and §4.9 the
 setup.
 
 ## Where the data goes
 
 The gold database and the collectors' silver databases live under one
-data root: `$WEALTHDB_DATA_ROOT` when set, else
-`${XDG_DATA_HOME:-~/.local/share}/wealthdb`. The engine reads silver
-and never writes it. Reports print to standard output.
+data root. For the default config it is `$WEALTHDB_DATA_ROOT` when
+set, else `${XDG_DATA_HOME:-~/.local/share}/wealthdb`. For any other
+config it is the config's folder. The engine reads silver and never
+writes it. Reports print to standard output.
 
 `wealthdb config` points each source at its collector's own folder in
 the data root. A collector moved elsewhere with its `<PREFIX>_DATA_DIR`

@@ -41,11 +41,14 @@ PYTHON3="$(wealthdb_tool "$ROOT" PYTHON python3)"
 # ---- settings ---------------------------------------------------------
 
 # _resolve_knobs sets the operational knobs from env overrides +
-# defaults. Pure (no Docker, no config round-trip); unit-tested.
+# defaults. Pure (no Docker, no config round-trip); unit-tested. The
+# container's name and the data folder follow the config
+# (_service_knobs): wealthdb-metabase and the XDG data dir for the
+# default config, and for a setup of its own a name with its folder's
+# and the folder web in it.
 _resolve_knobs() {
     IMAGE="${WEALTHDB_WEB_IMAGE:-wealthdb/metabase:$WEALTHDB_IMAGE_TAG}"
-    CONTAINER="${WEALTHDB_WEB_CONTAINER:-wealthdb-metabase}"
-    DATA_DIR="${WEALTHDB_WEB_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb/web}"
+    _service_knobs metabase
     BIND="${WEALTHDB_WEB_BIND:-both}"   # both | v4 | v6
     H2_DIR="$DATA_DIR/metabase"
     SNAP="$DATA_DIR/snapshot/wealthdb.db"
@@ -169,12 +172,12 @@ if len(b) == 20 and b[8:12] == b"DUCK":
 _snapshot() {
     local src="$1" dst="$2"
     if [ ! -f "$src" ]; then
-        echo "web: gold DB not found at '$src' (run 'wealthdb init' / 'wealthdb load' first)" >&2
+        echo "web: gold DB not found at '$src' (run '$PROGRAM init' / '$PROGRAM load' first)" >&2
         return 1
     fi
     if [ -e "${src}.wal" ]; then
         echo "web: '$src' has a .wal sidecar — gold is mid-write or not checkpointed." >&2
-        echo "     Run 'wealthdb web refresh' after 'wealthdb load' finishes (gold at rest)." >&2
+        echo "     Run '$PROGRAM web refresh' after '$PROGRAM load' finishes (gold at rest)." >&2
         return 1
     fi
     mkdir -p "$(dirname "$dst")" || return 1
@@ -201,7 +204,7 @@ _snapshot() {
     # A storage number `[` cannot compare is refused too.
     if ! [ "$storage" -le "$SNAPSHOT_MAX_STORAGE" ] 2>/dev/null; then
         echo "web: '$src' is in DuckDB storage format $storage; the dashboards read $SNAPSHOT_MAX_STORAGE at most." >&2
-        echo "     'wealthdb compact' rewrites it in the format they read. $(_snapshot_kept "$dst")" >&2
+        echo "     '$PROGRAM compact' rewrites it in the format they read. $(_snapshot_kept "$dst")" >&2
         rm -f "$tmp"
         return 1
     fi
@@ -298,14 +301,14 @@ _require_native_web() {
         return 1
     fi
     if [ ! -f "$MB_JAR" ] || [ ! -f "$DRIVER_JAR" ]; then
-        echo "web: the dashboards' program is not downloaded yet. Run: wealthdb web build" >&2
+        echo "web: the dashboards' program is not downloaded yet. Run: $PROGRAM web build" >&2
         return 1
     fi
 }
 
 _require_enabled() {
     if [ "$ENABLED" != 1 ]; then
-        echo "web: the dashboards are off. Run: wealthdb config dashboards" >&2
+        echo "web: the dashboards are off. Run: $PROGRAM config dashboards" >&2
         return 1
     fi
 }
@@ -316,7 +319,7 @@ _require_enabled() {
 # container does, so a day in a dashboard is the engine's day.
 web_serve() {
     if [ "$SERVICE_MODE" != native ]; then
-        echo "web: 'serve' runs the native server. This tree runs Metabase in a container: wealthdb web start" >&2
+        echo "web: 'serve' runs the native server. This tree runs Metabase in a container: $PROGRAM web start" >&2
         return 2
     fi
     _load_config || return 1
@@ -342,8 +345,9 @@ web_start() {
         _timed config _load_config || return 1
     fi
     _require_enabled || return 1
+    _start_guard || return 1
     if _is_running; then
-        echo "web: already running ($(_where)). Use 'wealthdb web restart'." >&2
+        echo "web: already running ($(_where)). Use '$PROGRAM web restart'." >&2
         return 1
     fi
     # The server's program or image is checked before any work is done.
@@ -354,7 +358,7 @@ web_start() {
         _loopback_host "$BIND" >/dev/null || return 1
         _native_stop
     else
-        wealthdb_require_image web "$IMAGE" "Build it with: wealthdb web build" || return 1
+        wealthdb_require_image web "$IMAGE" "Build it with: $PROGRAM web build" || return 1
         _exists && docker rm "$CONTAINER" >/dev/null 2>&1 || true
     fi
     mkdir -p "$H2_DIR" "$(dirname "$SNAP")" "$SPILL_DIR"
@@ -396,7 +400,7 @@ web_start() {
     # what does and fails.
     if [ "$PROV_RC" = "$PROV_STALE_SNAPSHOT" ]; then
         echo "web: the gold snapshot is older than the dashboards need, so they were left as they were." >&2
-        echo "     'wealthdb web refresh' re-snapshots a migrated gold." >&2
+        echo "     '$PROGRAM web refresh' re-snapshots a migrated gold." >&2
         return "$PROV_RC"
     fi
 }
@@ -426,10 +430,10 @@ web_status() {
     if [ -f "$SNAP" ]; then
         echo "     snapshot: $SNAP  (as of $(_mtime "$SNAP"))"
     else
-        echo "     snapshot: none yet — created on 'wealthdb web start' / 'refresh'"
+        echo "     snapshot: none yet — created on '$PROGRAM web start' / 'refresh'"
     fi
     echo "     live gold: ${GOLD_DB:-<unset>}"
-    [ "$ENABLED" = 1 ] || echo "     note: the dashboards are off (wealthdb config dashboards)"
+    [ "$ENABLED" = 1 ] || echo "     note: the dashboards are off ($PROGRAM config dashboards)"
 }
 
 # _epoch is seconds since the epoch, with a fraction. macOS date has no %N.
@@ -546,7 +550,10 @@ web_refresh() {
         && [ "$(_stat st_mtime_ns "$SNAP")" -ge "$(_stat st_mtime_ns "$GOLD_DB")" ]; then
         stale=0
     fi
-    if _is_running; then running=1; fi
+    # A server of this name that another setup runs is not this
+    # refresh's: the snapshot is refreshed, and that server is left as
+    # it is (_start_guard).
+    if _is_running && _start_guard 2>/dev/null; then running=1; fi
     if [ "$stale" -eq 0 ] && { [ "$running" -eq 0 ] || _snapshot_served; }; then
         echo "web: snapshot unchanged" >&2
         if [ "$running" -eq 1 ]; then
@@ -766,7 +773,7 @@ EOF
   Private Markets dashboards, most with a privacy twin that hides
   absolute values (all in the 'wealthdb (pre-defined)' collection;
   duplicate before customizing).
-  Run 'wealthdb web refresh' after each 'wealthdb load' to update.
+  Run '$PROGRAM web refresh' after each '$PROGRAM load' to update.
 
   ${PROV_LOGIN:-create the admin account in the browser}
 EOF
@@ -813,23 +820,32 @@ Metabase is a container where the engine runs in one. Where the engine
 is a program on this computer, Metabase is a Java program here too: on
 a Mac it starts again at login and after a crash.
 
+A config elsewhere (wealthdb -c FILE, or WEALTHDB_CONFIG) is a setup of
+its own, kept in the config's folder. Its dashboards have a container
+of their own (wealthdb-metabase-<folder>), their files in <folder>/web
+and an env file of their own in the secrets folder,
+wealthdb-web-<folder>.env. A start never replaces the server of another
+setup: it refuses a name that one holds.
+
 Auto-provision (default on): creates the admin + pre-adds the gold DB,
 skipping the browser setup wizard. Credentials:
   WEALTHDB_WEB_ADMIN_EMAIL     (default admin@wealthdb.local)
   WEALTHDB_WEB_ADMIN_PASSWORD  (unset = generated + saved chmod 600)
   WEALTHDB_WEB_NO_PROVISION=1  (skip it; use the browser wizard instead)
-Secrets may also live in wealthdb-web.env in the secrets folder.
+Secrets may also live in wealthdb-web.env in the secrets folder
+(wealthdb-web-<folder>.env for a setup of its own).
 
 When the gold snapshot is older than the dashboards need, start, restart
 and refresh leave Metabase running with the dashboards it had and exit 3.
 'refresh' re-snapshots a migrated gold.
 
-env overrides: WEALTHDB_CONFIG (non-default wealthdb.cfg path),
+env overrides: WEALTHDB_CONFIG (another wealthdb.cfg: a setup of its own),
 WEALTHDB_IMAGE_TAG (the image's tag; unset, the checkout's .image-tag,
 else latest), WEALTHDB_WEB_IMAGE,
 WEALTHDB_WEB_CONTAINER, WEALTHDB_WEB_DATA_DIR,
 WEALTHDB_WEB_BIND (both|v4|v6), WEALTHDB_WEB_ENV_FILE (default
-wealthdb-web.env in $WEALTHDB_SECRETS_DIR, else ~/.secrets, read for the
+wealthdb-web.env in $WEALTHDB_SECRETS_DIR, else ~/.secrets, and
+wealthdb-web-<folder>.env there for a setup of its own, read for the
 variables above), WEALTHDB_NO_LAUNCHD=1 (on a Mac, the native server as
 a plain background process: no start at login, no restart).
 EOF
@@ -847,7 +863,7 @@ web_main() {
         start)            web_start ;;
         stop)             web_stop ;;
         status)           web_status ;;
-        restart)          web_stop; web_start ;;
+        restart)          _start_guard || return 1; web_stop; web_start ;;
         refresh)          web_refresh ;;
         logs)             web_logs ;;
         serve)            web_serve ;;

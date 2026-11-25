@@ -133,12 +133,211 @@ def test_production_is_the_default_environment(plaid, secrets, capsys):
     fake = plaid("production")
     fake.link_docs = [linked()]
     will_exchange(fake)
-    assert run(secrets, "--item", "bank") == 0
+    assert run(secrets, "--item", "bank", "--new-link") == 0
     assert items.load_item(secrets, "bank").environment == "production"
     out = capsys.readouterr().out
     # A production Item is one of ten for good: the count is stated.
     assert "1 production Item(s)" in out and "does not return" in out
     assert "user_good" not in out
+
+
+# ---- the question before a new production link ---------------------------------
+
+QUESTION = (
+    "This makes a new link at Plaid. On Plaid's Trial plan a team has ten\n"
+    "links in all. A link counts once it is made, and removing it does not\n"
+    "give its place back. {n} production link(s) are stored on this computer.\n"
+    "To try wealthdb without using one, run this with --sandbox.\n")
+PROMPT = "Make the new link? [y/N]: "
+
+
+def a_person_answers(monkeypatch, answer):
+    """A person at the terminal who answers the question with `answer`,
+    or ends the input for EOFError. Returns the prompts they were shown."""
+    shown = []
+
+    def ask(prompt):
+        shown.append(prompt)
+        if answer is EOFError:
+            raise EOFError
+        return answer
+
+    monkeypatch.setattr(link, "_on_terminal", lambda: True)
+    monkeypatch.setattr(link, "_ask", ask)
+    return shown
+
+
+def no_question(monkeypatch, *, terminal):
+    """Fail the test if the question is asked."""
+    def ask(prompt):
+        raise AssertionError(f"asked: {prompt}")
+
+    monkeypatch.setattr(link, "_on_terminal", lambda: terminal)
+    monkeypatch.setattr(link, "_ask", ask)
+
+
+@pytest.mark.parametrize("answer", ["", "n", "N", "no", "ja", " ", "yes please",
+                                    EOFError])
+def test_a_new_production_link_asks_first_and_stops_without_a_yes(
+        plaid, secrets, capsys, monkeypatch, answer):
+    fake = plaid("production")
+    shown = a_person_answers(monkeypatch, answer)
+
+    assert run(secrets, "--item", "bank") == 0
+
+    out = capsys.readouterr().out
+    assert out.startswith(QUESTION.format(n=0))
+    assert shown == [PROMPT]
+    assert out.splitlines()[-1] == "No link was made."
+    # Plaid was asked nothing, and nothing is left behind.
+    assert fake.calls == []
+    assert list(secrets.iterdir()) == []
+
+
+@pytest.mark.parametrize("answer", ["y", "Y", "yes", "YES", " Yes "])
+def test_a_yes_makes_the_new_production_link(plaid, secrets, capsys,
+                                             monkeypatch, answer):
+    fake = plaid("production")
+    fake.link_docs = [linked()]
+    will_exchange(fake)
+    shown = a_person_answers(monkeypatch, answer)
+
+    assert run(secrets, "--item", "bank") == 0
+
+    assert shown == [PROMPT]
+    assert len(fake.called("new_link")) == 1
+    assert items.load_item(secrets, "bank").environment == "production"
+    out = capsys.readouterr().out
+    # The question comes before the page's address.
+    assert out.startswith(QUESTION.format(n=0))
+    assert HOSTED_URL in out and "No link was made." not in out
+
+
+def test_the_question_counts_the_production_links_stored_here(
+        plaid, secrets, capsys, monkeypatch):
+    fake = plaid("production")
+    store(secrets, "one", environment="production", n=1)
+    store(secrets, "two", environment="production", n=2)
+    store(secrets, "test", environment="sandbox", n=3)
+    a_person_answers(monkeypatch, "n")
+
+    assert run(secrets, "--item", "bank") == 0
+
+    assert QUESTION.format(n=2) in capsys.readouterr().out
+    assert fake.calls == []
+
+
+def test_new_link_answers_yes_without_the_question(plaid, secrets, capsys,
+                                                   monkeypatch):
+    fake = plaid("production")
+    fake.link_docs = [linked()]
+    will_exchange(fake)
+    no_question(monkeypatch, terminal=True)
+
+    assert run(secrets, "--item", "bank", "--new-link") == 0
+
+    assert len(fake.called("new_link")) == 1
+    assert items.load_item(secrets, "bank").environment == "production"
+    assert "This makes a new link" not in capsys.readouterr().out
+
+
+def test_no_terminal_and_no_flag_makes_no_new_production_link(
+        plaid, secrets, capsys, monkeypatch):
+    fake = plaid("production")
+    no_question(monkeypatch, terminal=False)
+
+    assert run(secrets, "--item", "bank") == 2
+
+    said = capsys.readouterr()
+    assert said.err == ("plaid: a new production link needs a yes. Run this "
+                        "in a terminal, or pass --new-link.\n")
+    assert said.out == ""
+    assert fake.calls == []
+    assert list(secrets.iterdir()) == []
+
+
+def test_a_renewal_in_production_asks_nothing(plaid, secrets, monkeypatch):
+    fake = plaid("production")
+    store(secrets, environment="production")
+    fake.link_docs = [{"link_sessions": [link_session(
+        public_tokens=[public_token()])]}]
+    no_question(monkeypatch, terminal=True)
+
+    assert run(secrets, "--item", "bank") == 0
+
+    assert len(fake.called("update_link")) == 1
+    assert fake.called("new_link") == []
+
+
+@pytest.mark.parametrize("terminal", [True, False])
+def test_a_sandbox_link_asks_nothing(plaid, secrets, capsys, monkeypatch,
+                                     terminal):
+    fake = plaid()
+    fake.link_docs = [linked()]
+    will_exchange(fake)
+    no_question(monkeypatch, terminal=terminal)
+
+    assert run(secrets, "--item", "bank", "--sandbox") == 0
+
+    assert len(fake.called("new_link")) == 1
+    assert "This makes a new link" not in capsys.readouterr().out
+
+
+def test_a_sandbox_institution_asks_nothing(plaid, secrets, monkeypatch):
+    fake = plaid()
+    will_exchange(fake)
+    no_question(monkeypatch, terminal=True)
+
+    assert run(secrets, "--item", "bank", "--sandbox-institution",
+               "ins_000") == 0
+
+    assert items.load_item(secrets, "bank").environment == "sandbox"
+
+
+def test_a_production_page_left_open_is_waited_on_without_the_question(
+        plaid, secrets, monkeypatch):
+    # The page was opened by an earlier run: this one starts no sign-in.
+    fake = plaid("production")
+    leave_pending(secrets, plaid.clock, environment="production")
+    fake.link_docs = [{"link_sessions": []}, linked()]
+    will_exchange(fake)
+    no_question(monkeypatch, terminal=False)
+
+    assert run(secrets, "--item", "bank") == 0
+
+    assert fake.called("new_link") == []
+    assert items.load_item(secrets, "bank").environment == "production"
+
+
+def test_login_settles_a_production_sign_in_without_the_question(
+        plaid, secrets, monkeypatch):
+    fake = plaid("production")
+    leave_pending(secrets, plaid.clock, environment="production")
+    fake.link_docs = [linked()]
+    will_exchange(fake)
+    no_question(monkeypatch, terminal=False)
+
+    assert login.main(["--secrets-dir", str(secrets)]) == 0
+
+    assert fake.called("new_link") == []
+    assert items.load_item(secrets, "bank").environment == "production"
+
+
+def test_a_closed_production_page_is_replaced_only_after_a_yes(
+        plaid, secrets, capsys, monkeypatch):
+    # The earlier page has closed, so a new sign-in would start: it is
+    # settled first, then the question stands before the new page.
+    fake = plaid("production")
+    leave_pending(secrets, plaid.clock, environment="production", age=7200)
+    fake.link_docs = [{"link_sessions": []}]
+    shown = a_person_answers(monkeypatch, "n")
+
+    assert run(secrets, "--item", "bank") == 0
+
+    assert shown == [PROMPT]
+    assert fake.called("new_link") == []
+    assert not (secrets / "plaid-link-bank.json").exists()
+    assert capsys.readouterr().out.splitlines()[-1] == "No link was made."
 
 
 def test_the_sandbox_page_names_the_test_login(plaid, secrets, capsys):

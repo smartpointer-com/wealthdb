@@ -328,6 +328,9 @@ def plaid(monkeypatch):
     monkeypatch.setattr(link, "_sleep", clock.sleep)
     monkeypatch.setattr(link, "_monotonic", clock.monotonic)
     monkeypatch.setattr(link, "_time", clock.time)
+    # No one is at stdin, however the suite is started. A test of the
+    # question before a new production link puts a person there.
+    monkeypatch.setattr(link, "_on_terminal", lambda: False)
     monkeypatch.delenv("PLAID_ENV_FILE", raising=False)
     monkeypatch.delenv("PLAID_COUNTRY_CODES", raising=False)
     make = fake_plaids(monkeypatch, link, login)

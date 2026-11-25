@@ -347,12 +347,21 @@ else
 fi
 
 # A wealthdb/ base that is not local stops the build: `docker build`
-# would ask a registry for it. STUB_FAIL fails every inspect.
-out="$(STUB_FAIL=1 skip_build "" 2>&1)"; rc=$?
+# would ask a registry for it. STUB_FAIL fails every inspect, as Docker
+# does for an image it does not hold under STUB_MISSING.
+out="$(STUB_FAIL=1 STUB_MISSING=1 skip_build "" 2>&1)"; rc=$?
 [ "$rc" = 2 ] && ok "a base image that is not local: build exits 2" || bad "a base image that is not local: build exits $rc"
 has "...naming the make target that builds the bases first" \
     "testcol: the base image wealthdb/base-python:feature is not built yet. In a checkout, run: make build-testcol" "$out"
 lacks "...and docker build never runs" "BUILT" "$out"
+# A Docker that does not answer stops the build before `docker build`
+# says so in its own words: the message says what to do, and Docker's
+# first line follows it.
+out="$(STUB_DOWN=1 STUB_FAIL=1 skip_build "" 2>&1)"; rc=$?
+[ "$rc" = 2 ] && ok "a Docker that does not answer: build exits 2" || bad "a Docker that does not answer: build exits $rc"
+[ "$out" = "testcol: Docker does not answer. Start it, then run this again. With Colima: colima start
+    Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" ] &&
+    ok "...with what to do, Docker's own line below it, and nothing else" || bad "a Docker that does not answer: build says: $out"
 # An installed copy has no Makefile and no base images' Dockerfiles.
 INST="$TMP/installed"
 mkdir -p "$INST/shared/wrappers"
@@ -372,20 +381,20 @@ inst_verb() {
         wrapper_main "$@"
     )
 }
-out="$(STUB_FAIL=1 inst_verb build 2>&1)"; rc=$?
-[ "$rc" = 2 ] && ok "an installed copy, no base image: build exits 2" || bad "an installed copy, no base image: build exits $rc"
-has "...naming a checkout, since the copy builds none" \
-    "testcol: the base image wealthdb/base-python:feature is not built yet. An installed copy builds no image. Run this collector from a checkout." "$out"
-lacks "...and docker build never runs" "BUILT" "$out"
-lacks "...and no make target, which the copy does not have" "make build-" "$out"
+INSTALLED="testcol: this collector runs in a container, and an installed copy has no image for it yet. Run it from a checkout of wealthdb."
+for stub in "STUB_FAIL=1 STUB_MISSING=1" "STUB_FAIL=1 STUB_DOWN=1" "STUB_ID=sha256:base"; do
+    # shellcheck disable=SC2086
+    out="$(export $stub; inst_verb build 2>&1)"; rc=$?
+    [ "$rc" = 2 ] && ok "an installed copy ($stub): build exits 2" || bad "an installed copy ($stub): build exits $rc"
+    [ "$out" = "$INSTALLED" ] && ok "...naming a checkout, since the copy builds none, and nothing else" ||
+        bad "an installed copy ($stub): build says: $out"
+done
 out="$(STUB_FAIL=1 STUB_MISSING=1 inst_verb load 2>&1)"; rc=$?
 [ "$rc" = 2 ] && ok "an installed copy, no image: a verb exits 2" || bad "an installed copy, no image: a verb exits $rc"
-has "...naming a checkout" \
-    "testcol: the image wealthdb/testcol:feature is not built yet. An installed copy builds no image. Run this collector from a checkout." "$out"
-lacks "...and no build command of the wrapper" "testcol build" "$out"
+[ "$out" = "$INSTALLED" ] && ok "...naming a checkout, and nothing else" || bad "an installed copy, no image: a verb says: $out"
 # A base of another name is the build's to fetch.
 printf 'FROM python:3.12-slim\n' > "$skipdir/Dockerfile"
-out="$(STUB_FAIL=1 skip_build "" 2>&1)"
+out="$(STUB_FAIL=1 STUB_MISSING=1 skip_build "" 2>&1)"
 has "an upstream base that is not local is left to docker build" "BUILT" "$out"
 printf 'FROM wealthdb/base-python:${WEALTHDB_IMAGE_TAG}\n' > "$skipdir/Dockerfile"
 

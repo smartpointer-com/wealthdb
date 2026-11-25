@@ -80,8 +80,8 @@ func createGold(ctx context.Context, g globalFlags, cfg *config.Config, stdout i
 
 // initNextStep is what follows a database: the setup when no source is
 // configured, else the collect commands of the sources without data,
-// then the load. The engine commands it names read the config at
-// configPath (commandFor).
+// then the load. The commands it names read the config at configPath
+// (commandFor, collectFor).
 func initNextStep(p wizard.Palette, configPath string, cfg *config.Config) string {
 	if len(cfg.SilverSources) == 0 {
 		return wizard.ToDo(p, []wizard.Step{{Command: setupCommand(configPath), Does: "Adds a bank or a broker to read."}})
@@ -90,5 +90,5 @@ func initNextStep(p wizard.Palette, configPath string, cfg *config.Config) strin
 	for i := range cfg.SilverSources {
 		feeds[i] = cfg.SilverSources[i].Feeds()
 	}
-	return wizard.NextSteps(p, commandFor(configPath, "load -a"), feeds)
+	return wizard.NextSteps(p, collectFor(configPath, ""), commandFor(configPath, "load -a"), feeds)
 }

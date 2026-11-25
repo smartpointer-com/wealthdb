@@ -75,7 +75,7 @@ or below the high watermark. Reload forces a full re-projection.`)
 	if err != nil {
 		return err
 	}
-	run, specs, err := prepareLoad(cfg, "reload", ids, stdout, stderr)
+	run, specs, err := prepareLoad(cfg, g.ConfigPath, "reload", ids, stdout, stderr)
 	if err != nil {
 		return err
 	}

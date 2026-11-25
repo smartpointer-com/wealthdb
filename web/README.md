@@ -51,6 +51,20 @@ Operational knobs are environment variables, not config: the image,
 the container name, the data dir, the address family to bind, and the
 admin login. `wealthdb web help` lists them.
 
+A config that is not the default file is a setup of its own
+([DESIGN.md §4.2](../wealthdb/docs/DESIGN.md#a-setup-of-its-own)):
+
+- Its server is named `wealthdb-metabase-<name>`, `<name>` from the
+  config's folder.
+- Its files, the generated admin password among them, are in `web/` in
+  that folder.
+- Its env file is `wealthdb-web-<name>.env` in the secrets folder.
+- `WEALTHDB_WEB_CONTAINER`, `WEALTHDB_WEB_DATA_DIR` and
+  `WEALTHDB_WEB_ENV_FILE` each still win.
+
+A start never takes over a server of that name that belongs to another
+setup. It refuses, says so, and removes nothing.
+
 ## Quick start
 
 ```sh

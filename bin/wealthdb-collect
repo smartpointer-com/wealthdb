@@ -27,7 +27,8 @@
 #
 # flags:
 #   --secrets-dir <dir>   where credentials / sessions live (default ~/.secrets)
-#   --data-dir <dir>      where downloaded data is written (default $XDG_DATA_HOME/wealthdb/<source>)
+#   --data-dir <dir>      where downloaded data is written (default $XDG_DATA_HOME/wealthdb/<source>;
+#                         with `wealthdb -c FILE collect`, <source> in FILE's folder)
 #   --silver-db <path>    the database file to build (default <data-dir>/<source>.db;
 #                         cointracking's is <data-dir>/cointracking.duckdb, and
 #                         plaid builds one per Item, <data-dir>/<item>/<item>.db).
@@ -69,6 +70,15 @@ done
 _here="$(cd -P "$(dirname "$_src")" && pwd)"
 REPO="${WEALTHDB_REPO:-$(cd "$_here/.." && pwd)}"
 COLLECTORS_DIR="$REPO/collectors"
+
+# A config that is not the default one (WEALTHDB_CONFIG, which
+# `wealthdb -c FILE collect` sets) is a setup of its own. Its collectors
+# keep their data in the config's folder, and a command one prints names
+# the config (wealthdb_engine_paths, wealthdb_export_setup).
+# shellcheck disable=SC1091
+. "$REPO/shared/wrappers/image-tag.sh"
+wealthdb_engine_paths
+wealthdb_export_setup
 
 # Print the leading comment block (everything between the shebang and the
 # first line of code) as the help text.

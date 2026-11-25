@@ -357,7 +357,7 @@ func (w *setup) askNumber(f field, cur any, set bool, reset string) (any, error)
 // data folder: the container engine mounts only the config and that
 // folder, and the setup holds a config to what both kinds of engine can
 // read. The path is written through ${WEALTHDB_DATA_ROOT} when the
-// variable names that folder. nil: no change.
+// variable stands for that folder (dataPath). nil: no change.
 func (w *setup) askFile(f field, cur any, set bool) (any, error) {
 	w.out.help("The file must be in the data folder, %s.", tilde(w.opts.DataRoot))
 	w.out.help("Type its path, such as %s.", tilde(filepath.Join(w.opts.DataRoot, "ledgers", f.example)))
@@ -376,7 +376,7 @@ func (w *setup) askFile(f field, cur any, set bool) (any, error) {
 		case ans == "-":
 			return nil, w.removeField(f)
 		}
-		p, err := config.ExpandPath(ans, filepath.Dir(w.store.path))
+		p, err := config.ExpandPath(ans, w.store.path)
 		if err != nil {
 			w.out.fail("  %s", err.Error())
 			continue

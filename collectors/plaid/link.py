@@ -18,6 +18,13 @@ What `--item NAME` does depends on what is stored under that name:
 * a sign-in that was started and never settled: it is settled first. An
   Item it made is claimed; a page still open is waited on again.
 
+A new Item in production is asked for first. On Plaid's Trial plan a
+team has ten links in all: a link counts once it is made, and removing
+it does not give its place back. Only `y` or `yes` goes on, and any
+other answer makes no link. `--new-link` answers yes without the
+question; a run with no terminal needs it. A renewal and `--sandbox` ask
+nothing.
+
 A wait for a new Item can stop without one: Ctrl-C, an exit on the page,
 or the time running out. Plaid is then asked once more how the sign-in
 went. An Item it made is claimed. A page that has closed leaves nothing
@@ -29,7 +36,8 @@ reaches real institutions; `--sandbox` reaches Plaid's test institutions
 and sees only the Items made there.
 
 Usage:
-    link.py --item NAME [--require PRODUCT] [--sandbox] [--mfa-timeout S]
+    link.py --item NAME [--require PRODUCT] [--sandbox] [--new-link]
+            [--mfa-timeout S]
     link.py --item NAME --sandbox-institution ID [--require PRODUCT]
 """
 
@@ -66,6 +74,12 @@ DEFAULT_REQUIRED = "transactions"
 _sleep = time.sleep
 _monotonic = time.monotonic
 _time = time.time
+_ask = input
+
+
+def _on_terminal() -> bool:
+    """Is there a person at stdin to answer a question?"""
+    return sys.stdin.isatty()
 
 
 class LinkFailed(Exception):
@@ -116,6 +130,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "brokerage accounts. The other data products are requested as "
              f"optional. Default: {DEFAULT_REQUIRED}.")
     add_country_codes(p, "Countries whose institutions the page offers.")
+    p.add_argument(
+        "--new-link", action="store_true",
+        help="Make a new production link without the question that comes "
+             "before one. On Plaid's Trial plan a team has ten links in "
+             "all, and removing one does not give its place back. A run "
+             "with no terminal needs this flag to make a new link.")
     p.add_argument(
         "--mfa-timeout", type=int, default=DEFAULT_WAIT_SECONDS,
         metavar="SECONDS",
@@ -588,6 +608,37 @@ def _stopped(client: plaidapi.Client, secrets_dir: Path,
 
 # ---- the three ways a link starts ------------------------------------------
 
+def _confirm_new_link(args: argparse.Namespace, stored: int) -> int | None:
+    """The question before a new production Item, asked before Plaid is
+    asked for a sign-in page: a Trial plan has ten links for good, so
+    one is never used by a slip. `stored` is the count of production
+    Items on this computer. Returns None to go on, else the exit status:
+    0 for an answer that is not yes, 2 where no one can answer."""
+    if args.new_link:
+        return None
+    if not _on_terminal():
+        print("plaid: a new production link needs a yes. Run this in a "
+              "terminal, or pass --new-link.", file=sys.stderr)
+        return 2
+    say("This makes a new link at Plaid. On Plaid's Trial plan a team has "
+        "ten")
+    say("links in all. A link counts once it is made, and removing it does "
+        "not")
+    say(f"give its place back. {stored} production link(s) are stored on "
+        f"this computer.")
+    say("To try wealthdb without using one, run this with --sandbox.")
+    try:
+        answer = _ask("Make the new link? [y/N]: ")
+    except EOFError:
+        # The prompt's line is still open.
+        say()
+        answer = ""
+    if answer.strip().lower() in ("y", "yes"):
+        return None
+    say("No link was made.")
+    return 0
+
+
 def _announce(url: str, environment: str, seconds: float, *,
               renew: bool) -> None:
     say()
@@ -737,10 +788,16 @@ def _link(args: argparse.Namespace, client: plaidapi.Client) -> int:
     # Storing a new Item reads every stored Item. A file that cannot be
     # read stops the run here, before a sign-in makes an Item that could
     # not be stored.
-    items.of_environment(secrets_dir, client.environment)
+    stored = items.of_environment(secrets_dir, client.environment)
     if args.sandbox_institution:
         return _finish(client, secrets_dir, name, _sandbox_item(client, args))
     if pending is None:
+        # A new sign-in page can make a new Item. In production that
+        # takes a yes first; a page an earlier run opened had its own.
+        if client.environment == "production":
+            status = _confirm_new_link(args, len(stored))
+            if status is not None:
+                return status
         pending = _start(client, secrets_dir, args)
     remaining = max(1, pending.expires_at - _time())
     seconds = min(args.mfa_timeout, remaining)

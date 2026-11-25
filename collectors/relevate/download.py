@@ -57,6 +57,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import tempfile
 import time
@@ -152,7 +153,7 @@ def new_session_from_state(
     if state is None:
         raise FileNotFoundError(
             f"state file missing: {state_path}. Run "
-            "`wealthdb-collect relevate login` first.",
+            f"`{os.environ.get('WEALTHDB_COLLECT', 'wealthdb-collect')} relevate login` first.",
         )
     session = requests.Session()
     session.headers.update({
@@ -880,8 +881,9 @@ def do_download(args: argparse.Namespace) -> int:
 
     if not step_probe(session):
         logger.error(
-            "session probe failed — run `wealthdb-collect relevate login` "
+            "session probe failed — run `%s relevate login` "
             "to mint a fresh session.",
+            os.environ.get("WEALTHDB_COLLECT", "wealthdb-collect"),
         )
         return cli.EXIT_NEEDS_PERSON
 

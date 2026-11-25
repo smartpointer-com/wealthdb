@@ -143,6 +143,9 @@ wrapper_golden() {
     cp -p "$REPO/collectors/$name/$name" "$REPO/collectors/$name/setup.txt" \
         "$root/tree/collectors/$name/"
     cp -p "$REPO/shared/wrappers/"*.sh "$root/tree/shared/wrappers/"
+    # The tree is a checkout, which its Makefile tells: an installed
+    # copy runs no verb without its image and builds none.
+    : > "$root/tree/Makefile"
     w="$root/tree/collectors/$name/$name"
     local decl="$root/tree/collectors/$name/setup.txt"
     # The env file sets each variable the wrapper forwards, and one more

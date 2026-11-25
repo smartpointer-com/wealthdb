@@ -28,11 +28,15 @@ import (
 type Options struct {
 	// ConfigPath is the config file the setup edits.
 	ConfigPath string
-	// DataRoot is the data folder: the database and every collector's
-	// data. DataRootFromEnv says WEALTHDB_DATA_ROOT names it, so the
-	// paths the setup writes go through the variable.
+	// DataRoot is the data folder of the config's setup: the database
+	// and every collector's data (config.DataRoot). DataRootFromEnv
+	// says WEALTHDB_DATA_ROOT names it. OwnSetup says the config is not
+	// the default one, so the data folder is the config's folder. In
+	// both cases ${WEALTHDB_DATA_ROOT} stands for the folder in the
+	// config, and the paths the setup writes go through the variable.
 	DataRoot        string
 	DataRootFromEnv bool
+	OwnSetup        bool
 	// Locale is the host's locale, whose region guesses the currency.
 	Locale string
 	In     io.Reader
@@ -48,6 +52,11 @@ type Options struct {
 	// program, with the flag that names a config other than the default
 	// one (`wealthdb -c <file>`). Empty: `wealthdb`.
 	Program string
+	// Collect is how every collect command the setup names starts:
+	// `wealthdb-collect`, or `wealthdb -c <file> collect` for a config
+	// other than the default one, so that the collector writes into
+	// this setup's data folder. Empty: `wealthdb-collect`.
+	Collect string
 	// InContainer says the engine runs in a container, where localhost
 	// is the container itself and not this computer.
 	InContainer bool
@@ -83,6 +92,19 @@ type Actions struct {
 // `wealthdb <args>`, with the config flag of Program.
 func (o Options) command(args string) string {
 	return cmp.Or(o.Program, "wealthdb") + " " + args
+}
+
+// collect is the collect command args as this setup runs it: the
+// collector and its verb, after Collect.
+func (o Options) collect(args string) string {
+	return collectCommand(o.Collect, args)
+}
+
+// collectCommand is the collect command args after collect, how such a
+// command starts for the config a run reads: `wealthdb-collect` when
+// empty.
+func collectCommand(collect, args string) string {
+	return cmp.Or(collect, "wealthdb-collect") + " " + args
 }
 
 // setup is one run.
@@ -236,7 +258,7 @@ func (w *setup) todo() []Step {
 		for _, e := range es {
 			unloaded = unloaded || !loaded[e.src.ID]
 		}
-		steps = append(steps, collectSteps(feedsOf(es), unloaded, w.cmd("load -a"))...)
+		steps = append(steps, collectSteps(feedsOf(es), unloaded, w.opts.Collect, w.cmd("load -a"))...)
 	}
 	return append(steps, w.then...)
 }
@@ -326,22 +348,23 @@ func feedsOf(es []entry) [][]config.Feed {
 
 // NextSteps is the to-do block that follows a new database: the first
 // sign-in of each collector whose data is not there yet, then the load.
-// sources are the feeds of each configured source, and loadAll the
-// command that loads them all.
-func NextSteps(p Palette, loadAll string, sources [][]config.Feed) string {
-	return ToDo(p, collectSteps(sources, true, loadAll))
+// sources are the feeds of each configured source, collect how a
+// collect command starts (Options.Collect), and loadAll the command
+// that loads them all.
+func NextSteps(p Palette, collect, loadAll string, sources [][]config.Feed) string {
+	return ToDo(p, collectSteps(sources, true, collect, loadAll))
 }
 
 // collectSteps are the first sign-in of each collector whose data is
-// not there yet, in config order, then loadAll, the command that loads
-// every source, when load says a source is not loaded or a collector
-// waits.
-func collectSteps(sources [][]config.Feed, load bool, loadAll string) []Step {
+// not there yet, in config order, each as collect starts it
+// (collectCommand), then loadAll, the command that loads every source,
+// when load says a source is not loaded or a collector waits.
+func collectSteps(sources [][]config.Feed, load bool, collect, loadAll string) []Step {
 	var steps []Step
 	var waiting []string
 	for _, feeds := range sources {
 		for _, f := range feeds {
-			command := config.CollectCommand(f)
+			command := collectCommand(collect, config.CollectArgs(f))
 			if f.Collector == "" || exists(f.Path) || slices.Contains(waiting, command) {
 				continue
 			}

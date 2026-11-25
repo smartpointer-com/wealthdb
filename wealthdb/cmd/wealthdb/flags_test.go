@@ -10,54 +10,71 @@ import (
 	"testing"
 )
 
-// The config default follows the XDG Base Directory spec:
-// $XDG_CONFIG_HOME when set, ~/.config otherwise (an empty value
-// counts as unset, per the spec).
-func TestDefaultConfigPathHonorsXDGConfigHome(t *testing.T) {
+// Without -c, a run reads the default config, which follows the XDG
+// Base Directory spec: $XDG_CONFIG_HOME when set, ~/.config otherwise
+// (an empty value counts as unset, per the spec).
+func TestEnvConfigPathHonorsXDGConfigHome(t *testing.T) {
 	t.Setenv("WEALTHDB_CONFIG", "")
 	t.Setenv("XDG_CONFIG_HOME", "/xdg/conf")
-	if got, want := defaultConfigPath(), filepath.Join("/xdg/conf", "wealthdb.cfg"); got != want {
-		t.Errorf("defaultConfigPath() = %q, want %q", got, want)
+	if got, want := envConfigPath(), filepath.Join("/xdg/conf", "wealthdb.cfg"); got != want {
+		t.Errorf("envConfigPath() = %q, want %q", got, want)
 	}
 }
 
-func TestDefaultConfigPathFallsBackToDotConfig(t *testing.T) {
+func TestEnvConfigPathFallsBackToDotConfig(t *testing.T) {
 	t.Setenv("WEALTHDB_CONFIG", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skipf("no home dir: %v", err)
 	}
-	if got, want := defaultConfigPath(), filepath.Join(home, ".config", "wealthdb.cfg"); got != want {
-		t.Errorf("defaultConfigPath() = %q, want %q", got, want)
+	if got, want := envConfigPath(), filepath.Join(home, ".config", "wealthdb.cfg"); got != want {
+		t.Errorf("envConfigPath() = %q, want %q", got, want)
 	}
 }
 
 // WEALTHDB_CONFIG names the config file in place of the XDG default,
-// as the engine wrapper and the web and mcp scripts read it.
-func TestDefaultConfigPathHonorsWealthdbConfig(t *testing.T) {
+// as the engine wrapper and the web and mcp scripts read it. The file
+// it names is not the default config for that: it is a setup of its
+// own, as one -c names is.
+func TestEnvConfigPathHonorsWealthdbConfig(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/xdg/conf")
 	t.Setenv("WEALTHDB_CONFIG", "/elsewhere/my.cfg")
-	if got, want := defaultConfigPath(), "/elsewhere/my.cfg"; got != want {
-		t.Errorf("defaultConfigPath() = %q, want %q", got, want)
+	if got, want := envConfigPath(), "/elsewhere/my.cfg"; got != want {
+		t.Errorf("envConfigPath() = %q, want %q", got, want)
+	}
+	g, _, err := parseGlobal([]string{"status"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := commandFor(g.ConfigPath, "load -a"), "wealthdb -c /elsewhere/my.cfg load -a"; got != want {
+		t.Errorf("commandFor = %q, want %q", got, want)
+	}
+	if got, want := collectFor(g.ConfigPath, "viac login"), "wealthdb -c /elsewhere/my.cfg collect viac login"; got != want {
+		t.Errorf("collectFor = %q, want %q", got, want)
+	}
+	// The variable naming the default config changes nothing.
+	t.Setenv("WEALTHDB_CONFIG", "/xdg/conf/../conf/wealthdb.cfg")
+	if g, _, _ = parseGlobal([]string{"status"}, io.Discard); commandFor(g.ConfigPath, "load -a") != "wealthdb load -a" {
+		t.Errorf("WEALTHDB_CONFIG names the default config: commandFor = %q", commandFor(g.ConfigPath, "load -a"))
 	}
 }
 
 // A relative path in either variable is made absolute against the
 // working directory, as the engine wrapper makes it before it mounts.
-func TestDefaultConfigPathIsAbsolute(t *testing.T) {
+func TestEnvConfigPathIsAbsolute(t *testing.T) {
 	wd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WEALTHDB_CONFIG", "rel/my.cfg")
-	if got, want := defaultConfigPath(), filepath.Join(wd, "rel", "my.cfg"); got != want {
-		t.Errorf("WEALTHDB_CONFIG relative: defaultConfigPath() = %q, want %q", got, want)
+	if got, want := envConfigPath(), filepath.Join(wd, "rel", "my.cfg"); got != want {
+		t.Errorf("WEALTHDB_CONFIG relative: envConfigPath() = %q, want %q", got, want)
 	}
 	t.Setenv("WEALTHDB_CONFIG", "")
 	t.Setenv("XDG_CONFIG_HOME", "rel/conf")
-	if got, want := defaultConfigPath(), filepath.Join(wd, "rel", "conf", "wealthdb.cfg"); got != want {
-		t.Errorf("XDG_CONFIG_HOME relative: defaultConfigPath() = %q, want %q", got, want)
+	if got, want := envConfigPath(), filepath.Join(wd, "rel", "conf", "wealthdb.cfg"); got != want {
+		t.Errorf("XDG_CONFIG_HOME relative: envConfigPath() = %q, want %q", got, want)
 	}
 	// A path -c names is made absolute and clean the same way.
 	for _, flag := range []string{"-c", "--config"} {
@@ -74,10 +91,12 @@ func TestDefaultConfigPathIsAbsolute(t *testing.T) {
 // A command a message names carries -c for a config that is not the
 // default one, and none for the default.
 func TestCommandForNamesTheConfig(t *testing.T) {
-	t.Setenv("WEALTHDB_CONFIG", "/x/default.cfg")
+	t.Setenv("XDG_CONFIG_HOME", "/x")
+	// WEALTHDB_CONFIG names the config a run reads, not the default one.
+	t.Setenv("WEALTHDB_CONFIG", "/x/try.cfg")
 	for _, tc := range []struct{ path, rest, want string }{
-		{"/x/default.cfg", "init", "wealthdb init"},
-		{"/x/default.cfg", "", "wealthdb"},
+		{"/x/wealthdb.cfg", "init", "wealthdb init"},
+		{"/x/wealthdb.cfg", "", "wealthdb"},
 		{"/x/try.cfg", "load -a", "wealthdb -c /x/try.cfg load -a"},
 		{"/x/try.cfg", "", "wealthdb -c /x/try.cfg"},
 		// A path the shell would act on is quoted, so the command works
@@ -116,26 +135,25 @@ func TestCommandForNamesTheConfig(t *testing.T) {
 	}
 }
 
-// The data folder is absolute too, whichever variable names it.
-func TestDataRootIsAbsolute(t *testing.T) {
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("WEALTHDB_DATA_ROOT", "rel/data")
-	if got, named := dataRoot(); got != filepath.Join(wd, "rel", "data") || !named {
-		t.Errorf("WEALTHDB_DATA_ROOT relative: dataRoot() = %q, %v", got, named)
-	}
-	t.Setenv("WEALTHDB_DATA_ROOT", "")
-	t.Setenv("XDG_DATA_HOME", "rel/xdg")
-	if got, named := dataRoot(); got != filepath.Join(wd, "rel", "xdg", "wealthdb") || named {
-		t.Errorf("XDG_DATA_HOME relative: dataRoot() = %q, %v", got, named)
-	}
-	// With no home directory either, the folder is still absolute.
-	t.Setenv("XDG_DATA_HOME", "")
-	t.Setenv("HOME", "")
-	if got, named := dataRoot(); got != filepath.Join(wd, ".local", "share", "wealthdb") || named {
-		t.Errorf("no home directory: dataRoot() = %q, %v", got, named)
+// A collect command a message names is `wealthdb-collect` for the
+// default config, as a bare one acts on the default setup, and
+// `wealthdb -c <config> collect` for any other, with the path quoted as
+// commandFor quotes it.
+func TestCollectForNamesTheConfig(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "/x")
+	t.Setenv("WEALTHDB_CONFIG", "")
+	for _, tc := range []struct{ path, rest, want string }{
+		{"/x/wealthdb.cfg", "viac login", "wealthdb-collect viac login"},
+		{"/x/wealthdb.cfg", "", "wealthdb-collect"},
+		{"/x/try/wealthdb.cfg", "viac login", "wealthdb -c /x/try/wealthdb.cfg collect viac login"},
+		{"/x/try/wealthdb.cfg", "", "wealthdb -c /x/try/wealthdb.cfg collect"},
+		{"/x/my setup/wealthdb.cfg", "plaid link --item first",
+			"wealthdb -c '/x/my setup/wealthdb.cfg' collect plaid link --item first"},
+		{"/x/it's/try.cfg", "viac login", `wealthdb -c '/x/it'\''s/try.cfg' collect viac login`},
+	} {
+		if got := collectFor(tc.path, tc.rest); got != tc.want {
+			t.Errorf("collectFor(%q, %q) = %q, want %q", tc.path, tc.rest, got, tc.want)
+		}
 	}
 }
 

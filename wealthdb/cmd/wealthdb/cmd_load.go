@@ -57,7 +57,7 @@ See docs/DESIGN.md §8 for the load semantics.`)
 	if id != "" {
 		ids = []string{id}
 	}
-	run, specs, err := prepareLoad(cfg, "load", ids, stdout, stderr)
+	run, specs, err := prepareLoad(cfg, g.ConfigPath, "load", ids, stdout, stderr)
 	if err != nil {
 		return err
 	}
@@ -77,7 +77,7 @@ See docs/DESIGN.md §8 for the load semantics.`)
 	}
 	specs, missingErr := run.keepCollected(specs, registered, id != "")
 	if id == "" {
-		printUnlisted(cfg, setupCommand(g.ConfigPath), stdout)
+		printUnlisted(cfg, g.ConfigPath, stdout)
 	}
 	if missingErr != nil && id != "" {
 		return missingErr
@@ -93,7 +93,7 @@ See docs/DESIGN.md §8 for the load semantics.`)
 // a source gold has never loaded (registered are the ones it has), none
 // of whose silver files exists, and a subsource of such a source whose
 // file does not exist. Each gets a line that names the command
-// collecting it. A source named alone (single) with no data at all is an
+// collecting it, for the config the run read. A source named alone (single) with no data at all is an
 // error.
 //
 // A source gold HAS loaded keeps every feed: a file of it that is
@@ -119,7 +119,7 @@ func (r loadRun) keepCollected(specs []loader.SourceSpec, registered []string, s
 			lost = append(lost, spec.ID)
 			continue
 		case len(missing) == len(src.Feeds()):
-			msg := spec.ID + ": " + noDataLine(missing)
+			msg := spec.ID + ": " + noDataLine(r.configPath, missing)
 			if single {
 				return nil, errors.New(msg)
 			}
@@ -134,7 +134,7 @@ func (r loadRun) keepCollected(specs []loader.SourceSpec, registered []string, s
 			}
 			spec.Subsources = kept
 			for _, f := range missing {
-				fmt.Fprintf(r.stdout, "%s: %s: %s: %s\n", r.verb, spec.ID, f.Subsource, noDataLine([]config.Feed{f}))
+				fmt.Fprintf(r.stdout, "%s: %s: %s: %s\n", r.verb, spec.ID, f.Subsource, noDataLine(r.configPath, []config.Feed{f}))
 			}
 		}
 		out = append(out, spec)
@@ -145,22 +145,23 @@ func (r loadRun) keepCollected(specs []loader.SourceSpec, registered []string, s
 	return out, nil
 }
 
-// printUnlisted says which collected data the config does not name, for
-// the collectors it does name, and the command that adds it: a load
-// reads only what the config names, so a bank linked after the setup
-// would stay out in silence.
-func printUnlisted(cfg *config.Config, setup string, stdout io.Writer) {
+// printUnlisted says which collected data the config at configPath does
+// not name, for the collectors it does name, and the command that adds
+// it: a load reads only what the config names, so a bank linked after
+// the setup would stay out in silence. The data is looked for in the
+// data folder of that config's setup (config.DataRoot).
+func printUnlisted(cfg *config.Config, configPath string, stdout io.Writer) {
 	feeds := make([][]config.Feed, len(cfg.SilverSources))
 	for i := range cfg.SilverSources {
 		feeds[i] = cfg.SilverSources[i].Feeds()
 	}
-	root, _ := dataRoot()
+	root, _ := config.DataRoot(configPath)
 	names := wizard.Unlisted(root, feeds)
 	if len(names) == 0 {
 		return
 	}
 	fmt.Fprintf(stdout, "load: collected, but not in the config, so not loaded: %s\n", strings.Join(names, ", "))
-	fmt.Fprintf(stdout, "load: to add it, run: %s banks\n", setup)
+	fmt.Fprintf(stdout, "load: to add it, run: %s banks\n", setupCommand(configPath))
 }
 
 // missingFeeds are the feeds of src whose silver file does not exist.
@@ -198,12 +199,13 @@ func goldHasTransactions(ctx context.Context, db *sql.DB) (bool, error) {
 }
 
 // noDataLine says there is no data yet and how to collect it: the
-// collect command of each collector, or the missing file where no
-// collector is known. missing holds a feed at least.
-func noDataLine(missing []config.Feed) string {
+// collect command of each collector, for the config at configPath
+// (collectFor), or the missing file where no collector is known.
+// missing holds a feed at least.
+func noDataLine(configPath string, missing []config.Feed) string {
 	var run, files []string
 	for _, f := range missing {
-		switch c := config.CollectCommand(f); {
+		switch c := collectFor(configPath, config.CollectArgs(f)); {
 		case f.Collector == "":
 			files = append(files, "the file "+f.Path+" does not exist")
 		case !slices.Contains(run, c):
@@ -216,11 +218,15 @@ func noDataLine(missing []config.Feed) string {
 	return "no data yet. Run: " + strings.Join(append([]string{strings.Join(run, " and ")}, files...), "; ")
 }
 
-// loadRun is one load, reload or rebuild: the config, what it applies
-// beside the sources, the verb its lines start with and where they go.
+// loadRun is one load, reload or rebuild: the config and its path, what
+// it applies beside the sources, the verb its lines start with and
+// where they go.
 type loadRun struct {
-	verb           string
-	cfg            *config.Config
+	verb string
+	cfg  *config.Config
+	// configPath is the config the run read: a command a line names
+	// reads it too (commandFor, collectFor).
+	configPath     string
 	in             loadInputs
 	stdout, stderr io.Writer
 	// priorTransactions: gold held transactions before the run, so a
@@ -234,7 +240,7 @@ type loadRun struct {
 // else the named ones in that order. It runs before gold is opened
 // read-write, so a ledger or a source this build refuses fails the
 // command before anything is migrated or loaded.
-func prepareLoad(cfg *config.Config, verb string, ids []string, stdout, stderr io.Writer) (loadRun, []loader.SourceSpec, error) {
+func prepareLoad(cfg *config.Config, configPath, verb string, ids []string, stdout, stderr io.Writer) (loadRun, []loader.SourceSpec, error) {
 	in, err := readLoadInputs(cfg)
 	if err != nil {
 		return loadRun{}, nil, err
@@ -247,7 +253,7 @@ func prepareLoad(cfg *config.Config, verb string, ids []string, stdout, stderr i
 	for _, s := range targets {
 		specs = append(specs, buildSourceSpec(s, cfg, in.transfers))
 	}
-	return loadRun{verb: verb, cfg: cfg, in: in, stdout: stdout, stderr: stderr}, specs, nil
+	return loadRun{verb: verb, cfg: cfg, configPath: configPath, in: in, stdout: stdout, stderr: stderr}, specs, nil
 }
 
 // loadTargets is every configured source for ids nil (-a), or the

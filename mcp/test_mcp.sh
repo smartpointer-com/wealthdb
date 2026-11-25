@@ -14,6 +14,9 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+# No ambient config reaches the script: every case runs the default
+# config unless it names another.
+unset WEALTHDB_CONFIG WEALTHDB_COLLECT WEALTHDB_PROGRAM
 
 # Nothing here reads a real env file or reaches launchd. The secrets
 # folder is an empty one under $tmp, the servers are plain processes,
@@ -43,16 +46,19 @@ export WEALTHDB_BUILD_CONFIG=/dev/null
 
 # Docker stub: records each call's argv (one arg per line; every call as
 # one line of docker-calls) and answers the queries from STUB_*
-# variables. With STUB_HANG it is a daemon that does not answer.
+# variables. STUB_RUNNING is a container that runs, STUB_EXISTS one that
+# does not. It mounts a config (STUB_CFG_MOUNT) and a token (STUB_MOUNT).
+# With STUB_HANG it is a daemon that does not answer.
 cat > "$tmp/bin/docker" <<EOF
 #!/bin/sh
 printf '%s\n' "\$@" > "$tmp/docker-args"
 echo "\$*" >> "$tmp/docker-calls"
 [ -z "\${STUB_HANG:-}" ] || exec sleep 30
 case "\$1 \$2" in
-    "ps -q"|"ps -aq") [ -n "\${STUB_RUNNING:-}" ] && echo abc123 ;;
-    "container inspect") [ -n "\${STUB_RUNNING:-}" ] || exit 1
-                         [ "\$3" != -f ] || printf '%s\n' /cfg/wealthdb.cfg "\${STUB_MOUNT:-/elsewhere/mcp/token}" ;;
+    "ps -q")          [ -n "\${STUB_RUNNING:-}" ] && echo abc123 ;;
+    "ps -aq")         [ -n "\${STUB_RUNNING:-}\${STUB_EXISTS:-}" ] && echo abc123 ;;
+    "container inspect") [ -n "\${STUB_RUNNING:-}\${STUB_EXISTS:-}" ] || exit 1
+                         [ "\$3" != -f ] || printf '%s\n' "\${STUB_CFG_MOUNT:-/cfg/wealthdb.cfg}" "\${STUB_MOUNT:-/elsewhere/mcp/token}" ;;
     "inspect -f")     echo "\${STUB_RUNNING_IMAGE:-sha256:one}" ;;
     "image inspect")  [ -n "\${STUB_NO_IMAGE:-}" ] && { echo "Error response from daemon: No such image: \$3" >&2; exit 1; }; echo "\${STUB_CURRENT_IMAGE:-sha256:one}" ;;
 esac
@@ -279,6 +285,202 @@ echo "== _resolve_knobs (image tag) =="
 WEALTHDB_IMAGE_TAG=feature _resolve_knobs
 check     "image follows the tag"  "wealthdb:feature"                             "$IMAGE"
 
+# ---- a setup of its own -------------------------------------------------
+# A config that is not the default one keeps its server apart: the
+# container's name, the data folder, the env file and the data root
+# follow the config's folder, and each override still wins.
+
+# knobs NAME=VALUE...: what _resolve_knobs gives in an environment that
+# holds HOME, the config dir /cfg and the pairs given.
+knobs() {
+    (
+        unset WEALTHDB_MCP_DATA_DIR WEALTHDB_MCP_CONTAINER WEALTHDB_MCP_ENV_FILE \
+            WEALTHDB_CONFIG WEALTHDB_DATA_ROOT XDG_DATA_HOME
+        export HOME=/home/u XDG_CONFIG_HOME=/cfg WEALTHDB_IMAGE_TAG=latest
+        for kv in "$@"; do export "${kv?}"; done
+        _resolve_knobs
+        printf '%s\n' "container=$CONTAINER" "data=$DATA_DIR" "token=$TOKEN_FILE" "root=$DATA_ROOT" \
+            "cfg=$CFG" "program=$PROGRAM"
+        if [ -n "${SHOW_ARGS:-}" ]; then
+            PORT=3300 AUTH=token
+            _docker_run_args
+            echo "args=${DOCKER_ARGS[*]}"
+        fi
+    )
+}
+echo "== _resolve_knobs: the default config =="
+out="$(knobs)"
+if [ "$out" = "container=wealthdb-mcp
+data=/home/u/.local/share/wealthdb/mcp
+token=/home/u/.local/share/wealthdb/mcp/token
+root=/home/u/.local/share/wealthdb
+cfg=/cfg/wealthdb.cfg
+program=wealthdb" ]; then pass "wealthdb-mcp, the XDG data folder and plain commands"
+else fail "the default config resolves another way: $out"; fi
+out="$(knobs WEALTHDB_DATA_ROOT=/data XDG_DATA_HOME=/xdg)"
+check     "WEALTHDB_DATA_ROOT names the data root" "root=/data" "$out"
+check     "XDG_DATA_HOME moves the data folder" "data=/xdg/wealthdb/mcp" "$out"
+out="$(knobs WEALTHDB_CONFIG=/cfg//wealthdb.cfg WEALTHDB_DATA_ROOT=/data)"
+check     "WEALTHDB_CONFIG on the default config: the same container" "container=wealthdb-mcp" "$out"
+check     "...and the data root of the environment" "root=/data" "$out"
+out="$(knobs WEALTHDB_MCP_CONTAINER=mine WEALTHDB_MCP_DATA_DIR=/d)"
+check     "WEALTHDB_MCP_CONTAINER names the container" "container=mine" "$out"
+check     "WEALTHDB_MCP_DATA_DIR names the data folder" "token=/d/token" "$out"
+# A demo's call: the config dir, the config and the data root are one
+# folder, and the names are given.
+out="$(knobs XDG_CONFIG_HOME=/srv/demo WEALTHDB_CONFIG=/srv/demo/wealthdb.cfg WEALTHDB_DATA_ROOT=/srv/demo \
+    WEALTHDB_MCP_CONTAINER=wealthdb-mcp-demo WEALTHDB_MCP_DATA_DIR=/srv/demo/mcp)"
+if [ "$out" = "container=wealthdb-mcp-demo
+data=/srv/demo/mcp
+token=/srv/demo/mcp/token
+root=/srv/demo
+cfg=/srv/demo/wealthdb.cfg
+program=wealthdb" ]; then pass "a demo's call: the names and the folders it gives"
+else fail "a demo's call resolves another way: $out"; fi
+out="$(knobs XDG_CONFIG_HOME=/srv/demo WEALTHDB_CONFIG=/srv/demo/wealthdb.cfg WEALTHDB_DATA_ROOT=/srv/demo)"
+check     "...and with no names given it is the default config's server" "container=wealthdb-mcp" "$out"
+
+echo "== _resolve_knobs: a setup of its own =="
+out="$(SHOW_ARGS=1 knobs "WEALTHDB_CONFIG=/home/u/My Try/wealthdb.cfg" WEALTHDB_DATA_ROOT=/data XDG_DATA_HOME=/xdg)"
+check     "the container is named after the folder" "container=wealthdb-mcp-my-try" "$out"
+check     "the data folder is in it" "data=/home/u/My Try/mcp" "$out"
+check     "the data root is the folder" "root=/home/u/My Try" "$out"
+check_not "WEALTHDB_DATA_ROOT is not read" "/data" "$out"
+check_not "nor the XDG data dir" "/xdg" "$out"
+check     "commands name the config, quoted" "program=wealthdb -c '/home/u/My Try/wealthdb.cfg'" "$out"
+check     "the container gets that name" "--name wealthdb-mcp-my-try" "$out"
+check     "...mounts the folder as the data root" "-v /home/u/My Try:/home/u/My Try:ro" "$out"
+check     "...is told so" "-e WEALTHDB_DATA_ROOT=/home/u/My Try" "$out"
+check     "...mounts the config" "-v /home/u/My Try/wealthdb.cfg:/home/u/My Try/wealthdb.cfg:ro" "$out"
+check     "...and the setup's own token" "-v /home/u/My Try/mcp/token:/run/wealthdb-mcp/token:ro" "$out"
+out="$(knobs WEALTHDB_CONFIG=/home/u/TRY/wealthdb.cfg)"
+check     "an upper-case folder gives a lower-case name" "container=wealthdb-mcp-try" "$out"
+out="$(knobs WEALTHDB_CONFIG=/wealthdb.cfg)"
+check     "a config in the root folder: the name is setup" "container=wealthdb-mcp-setup" "$out"
+check     "...and the data folder /mcp" "data=/mcp" "$out"
+out="$(knobs WEALTHDB_CONFIG=/home/u/try/wealthdb.cfg WEALTHDB_MCP_CONTAINER=mine)"
+check     "WEALTHDB_MCP_CONTAINER still names the container" "container=mine" "$out"
+check     "...and the data folder stays the setup's" "data=/home/u/try/mcp" "$out"
+out="$(knobs WEALTHDB_CONFIG=/home/u/try/wealthdb.cfg WEALTHDB_MCP_DATA_DIR=/d)"
+check     "WEALTHDB_MCP_DATA_DIR still names the data folder" "data=/d" "$out"
+check     "...and the container stays the setup's" "container=wealthdb-mcp-try" "$out"
+
+echo "== the env file: in the secrets folder, named after a setup of its own =="
+# env_marker NAME=VALUE...: the marker the env file that was read sets.
+mkdir -p "$tmp/Own Setup" "$tmp/envs"
+printf 'ENV_MARKER=the-default-file\n' > "$tmp/secrets/wealthdb-mcp.env"
+printf 'ENV_MARKER=the-file-of-the-setup\n' > "$tmp/secrets/wealthdb-mcp-own-setup.env"
+printf 'ENV_MARKER=a-file-in-the-folder\n' > "$tmp/Own Setup/wealthdb-mcp.env"
+printf 'ENV_MARKER=the-named-file\n' > "$tmp/envs/named.env"
+env_marker() {
+    (
+        unset WEALTHDB_CONFIG WEALTHDB_MCP_ENV_FILE ENV_MARKER
+        export XDG_CONFIG_HOME="$tmp/cfg"
+        for kv in "$@"; do export "${kv?}"; done
+        _source_env_file && echo "${ENV_MARKER:-none}"
+    )
+}
+check     "the default config reads wealthdb-mcp.env in the secrets folder" "the-default-file" "$(env_marker)"
+check     "a setup of its own reads the file named after its folder, there too" "the-file-of-the-setup" \
+    "$(env_marker "WEALTHDB_CONFIG=$tmp/Own Setup/wealthdb.cfg")"
+check     "...and neither the default file nor one in its own folder" "none" \
+    "$(rm -f "$tmp/secrets/wealthdb-mcp-own-setup.env"; env_marker "WEALTHDB_CONFIG=$tmp/Own Setup/wealthdb.cfg")"
+printf 'ENV_MARKER=the-file-of-the-setup\n' > "$tmp/secrets/wealthdb-mcp-own-setup.env"
+mkdir -p "$tmp/secrets-alt"
+printf 'ENV_MARKER=the-file-in-the-other-secrets-folder\n' > "$tmp/secrets-alt/wealthdb-mcp-own-setup.env"
+check     "WEALTHDB_SECRETS_DIR moves it, as it moves the default file" "the-file-in-the-other-secrets-folder" \
+    "$(env_marker "WEALTHDB_CONFIG=$tmp/Own Setup/wealthdb.cfg" "WEALTHDB_SECRETS_DIR=$tmp/secrets-alt")"
+check     "WEALTHDB_MCP_ENV_FILE wins for a setup of its own" "the-named-file" \
+    "$(env_marker "WEALTHDB_CONFIG=$tmp/Own Setup/wealthdb.cfg" "WEALTHDB_MCP_ENV_FILE=$tmp/envs/named.env")"
+check     "...and for the default config" "the-named-file" "$(env_marker "WEALTHDB_MCP_ENV_FILE=$tmp/envs/named.env")"
+rm -f "$tmp/secrets/wealthdb-mcp.env" "$tmp/secrets/wealthdb-mcp-own-setup.env" "$tmp/secrets-alt/wealthdb-mcp-own-setup.env"
+mkdir -p "$tmp/own setup"
+
+echo "== a start never takes over another setup's server =="
+# The knobs of the cases above: the config /cfg/wealthdb.cfg, and the
+# data folder that holds the token.
+HOME=/home/u XDG_DATA_HOME= XDG_CONFIG_HOME=/cfg WEALTHDB_DATA_ROOT=/data WEALTHDB_CONFIG= WEALTHDB_IMAGE_TAG=latest \
+    WEALTHDB_MCP_DATA_DIR="$tmp/mcpdata" _resolve_knobs
+config 1 3300 token 0
+# changed: the calls that stop, remove or start a container.
+changed() { grep -E '^(stop|rm|run|kill) ' "$tmp/docker-calls" | cut -d' ' -f1 | tr '\n' ' ' | sed 's/ $//'; }
+REFUSAL="mcp: wealthdb-mcp is the server of another setup (its files are not in $tmp/mcpdata). Stop that one first, or name this one with WEALTHDB_MCP_CONTAINER."
+: > "$tmp/docker-calls"
+out="$(STUB_EXISTS=1 STUB_CFG_MOUNT=/other/wealthdb.cfg mcp_start 2>&1)"; rc=$?
+check     "a container of another config and another data folder stops the start" "1 $REFUSAL" "$rc $out"
+check     "nothing is stopped, removed or started" "[]" "[$(changed)]"
+: > "$tmp/docker-calls"
+out="$(STUB_RUNNING=1 STUB_CFG_MOUNT=/other/wealthdb.cfg mcp_start 2>&1)"; rc=$?
+check     "one that runs stops it too, with the same message" "1 $REFUSAL" "$rc $out"
+check_not "...and not with the advice to restart" "already running" "$out"
+check     "...and nothing is changed" "[]" "[$(changed)]"
+# restart is a command of mcp_main, which resolves the knobs anew.
+restart() {
+    (
+        export HOME="$tmp/home" XDG_DATA_HOME= XDG_CONFIG_HOME=/cfg WEALTHDB_DATA_ROOT=/data WEALTHDB_CONFIG= \
+            WEALTHDB_MCP_DATA_DIR="$tmp/mcpdata"
+        mcp_main restart
+    ) 2>&1
+}
+: > "$tmp/docker-calls"
+out="$(STUB_RUNNING=1 STUB_CFG_MOUNT=/other/wealthdb.cfg restart)"; rc=$?
+check     "a restart is refused before it stops anything" "1 $REFUSAL" "$rc $out"
+check     "...and nothing is changed" "[]" "[$(changed)]"
+: > "$tmp/docker-calls"
+out="$(STUB_EXISTS=1 STUB_CFG_MOUNT=/other/wealthdb.cfg STUB_MOUNT="$TOKEN_FILE" mcp_start 2>&1)"; rc=$?
+check     "a container that mounts this setup's token is its own, and is replaced" "0" "$rc"
+check     "...removed, then started" "[rm run]" "[$(changed)]"
+# A server with no token mounts nothing of its data folder: the config
+# it mounts tells whose it is.
+config 1 3300 none 1
+: > "$tmp/docker-calls"
+out="$(STUB_EXISTS=1 mcp_start 2>&1)"; rc=$?
+check     "a container that mounts this setup's config is its own too" "0" "$rc"
+check     "...removed, then started" "[rm run]" "[$(changed)]"
+: > "$tmp/docker-calls"
+out="$(STUB_EXISTS=1 STUB_CFG_MOUNT=/cfg/wealthdb.cfg.bak mcp_start 2>&1)"; rc=$?
+check     "a config whose name only starts the same is another config" "1 $REFUSAL" "$rc $out"
+out="$(STUB_RUNNING=1 mcp_start 2>&1)"; rc=$?
+check     "this setup's own server that runs: use restart" "mcp: already running (container wealthdb-mcp). Use 'wealthdb mcp restart'." "$out"
+config 1 3300 token 0
+
+echo "== the commands a setup of its own is told to run =="
+OWNCFG="$tmp/own setup/wealthdb.cfg"
+OWNCMD="wealthdb -c '$OWNCFG'"
+# own_run CMD...: CMD with that config named, as `wealthdb -c` names it.
+own_run() {
+    (
+        export WEALTHDB_CONFIG="$OWNCFG" XDG_CONFIG_HOME=/cfg
+        unset WEALTHDB_MCP_DATA_DIR WEALTHDB_DATA_ROOT
+        _resolve_knobs
+        "$@" 2>&1
+    )
+}
+out="$(own_run eval 'ENABLED=0; _require_enabled')"
+check     "turning the server on" "mcp: the MCP server is off. Run: $OWNCMD config mcp-server" "$out"
+out="$(own_run eval 'PORT=3300 AUTH=token GOLD_DB="$tmp/none.db"; _start_banner')"
+check     "the banner's url" "Run '$OWNCMD mcp url' for the URL" "$out"
+check     "the banner's stdio" "'$OWNCMD mcp stdio' as the command instead." "$out"
+check     "the banner's restart" "After rebuilding the image, run '$OWNCMD mcp restart'." "$out"
+check     "the banner's first load" "until '$OWNCMD init' and '$OWNCMD load -a' have run." "$out"
+check     "the banner names the setup's container" "mcp: wealthdb-mcp-own-setup is up" "$out"
+out="$(STUB_RUNNING=1 STUB_CFG_MOUNT="$OWNCFG" own_run mcp_start)"
+check     "a server that runs" "mcp: already running (container wealthdb-mcp-own-setup). Use '$OWNCMD mcp restart'." "$out"
+out="$(STUB_RUNNING=1 STUB_RUNNING_IMAGE=sha256:old STUB_CURRENT_IMAGE=sha256:new own_run mcp_status)"
+check     "status, with an image that was rebuilt" "run '$OWNCMD mcp restart'" "$out"
+check     "status names the token of the setup" "auth: bearer token in $tmp/own setup/mcp/token ('$OWNCMD mcp url' prints it)" "$out"
+out="$(own_run mcp_url)"
+check     "url, with no token yet" "mcp: no token yet; '$OWNCMD mcp start' generates one" "$out"
+out="$(STUB_NO_IMAGE=1 own_run mcp_start)"
+check     "a missing image names the build with the config" "Build it with: $OWNCMD build" "$out"
+out="$(STUB_EXISTS=1 own_run mcp_start)"
+check     "the guard names the setup's own container and folder" \
+    "mcp: wealthdb-mcp-own-setup is the server of another setup (its files are not in $tmp/own setup/mcp)." "$out"
+[ ! -e "$tmp/own setup/mcp" ] && pass "a refused start makes no folder" || fail "a refused start made the data folder"
+# Back to the default config's knobs.
+HOME=/home/u XDG_DATA_HOME= XDG_CONFIG_HOME=/cfg WEALTHDB_DATA_ROOT=/data WEALTHDB_CONFIG= WEALTHDB_IMAGE_TAG=latest \
+    WEALTHDB_MCP_DATA_DIR="$tmp/mcpdata" _resolve_knobs
+
 # ---- the native server -------------------------------------------------
 # The same script in a tree of the native engine: mcp is sourced again
 # with a record that says so, in a subshell, and with launchd out of
@@ -338,6 +540,8 @@ native_cases() {
     check_not "as a job of the standard kind" "ProcessType"    "$out"
     check     "it hands on the config path, escaped" "<string>/cfg/a&lt;b&gt;.cfg</string>" "$out"
     check     "the knobs both servers have" "<key>WEALTHDB_MCP_BIND</key>" "$out"
+    check     "always the data folder, which tells whose server it is" \
+        "<key>WEALTHDB_MCP_DATA_DIR</key>|        <string>$tmp/native-data</string>" "$(printf '%s\n' "$out" | grep -A1 WEALTHDB_MCP_DATA_DIR | tr '\n' '|')"
     check     "and the MCP server's own" "<key>WEALTHDB_MCP_CHARS</key>" "$out"
     check_not "and never the token"     "synthetic-token-marker" "$out"
     check_not "nor its variable"        "WEALTHDB_MCP_TOKEN"   "$out"
@@ -543,6 +747,18 @@ EOS
         domain="gui/$(id -u)" label=com.smartpointer.wealthdb.mcp
         plist="$tmp/home/Library/LaunchAgents/$label.plist"
         log="$tmp/home/Library/Logs/wealthdb/mcp.log"
+        # An agent of this label that another setup wrote, whose file
+        # names that setup's data folder, is not this start's to replace.
+        (DATA_DIR=/elsewhere/mcp; _write_plist)
+        cp "$plist" "$tmp/other.plist"
+        : > "$tmp/launchctl-calls"
+        out="$(mcp_start 2>&1)"; rc=$?
+        check     "a start over another setup's agent is refused" \
+            "1 mcp: $label is the server of another setup (its files are not in $tmp/native-data). Stop that one first, or name this one with WEALTHDB_MCP_CONTAINER." "$rc $out"
+        check     "launchd is asked for nothing" "[]" "[$(cat "$tmp/launchctl-calls")]"
+        if cmp -s "$plist" "$tmp/other.plist"; then pass "and the agent file is as it was"; else fail "the start changed the agent file"; fi
+        # This setup's own agent, left by a server that died, is replaced.
+        _write_plist
         : > "$tmp/launchctl-calls"
         out="$(mcp_start 2>&1)"; rc=$?
         check     "start succeeds"          "0"                    "$rc"

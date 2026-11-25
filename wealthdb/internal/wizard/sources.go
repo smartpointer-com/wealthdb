@@ -72,7 +72,7 @@ func (w *setup) expand(p string) string {
 	if p == "" {
 		return ""
 	}
-	if exp, err := config.ExpandPath(p, filepath.Dir(w.store.path)); err == nil {
+	if exp, err := config.ExpandPath(p, w.store.path); err == nil {
 		return exp
 	}
 	return p
@@ -180,10 +180,11 @@ func discover(dataRoot string, sources [][]config.Feed) []found {
 }
 
 // dataPath is a path under the data folder as the config writes it:
-// through ${WEALTHDB_DATA_ROOT} when the variable names the folder,
-// else absolute.
+// through ${WEALTHDB_DATA_ROOT} when the variable stands for the folder
+// in this config (the environment names it, or the config is a setup of
+// its own), else absolute.
 func (w *setup) dataPath(parts ...string) string {
-	if w.opts.DataRootFromEnv {
+	if w.opts.DataRootFromEnv || w.opts.OwnSetup {
 		return "${WEALTHDB_DATA_ROOT}/" + strings.Join(parts, "/")
 	}
 	return filepath.Join(append([]string{w.opts.DataRoot}, parts...)...)
@@ -348,10 +349,10 @@ func (w *setup) pick(c silver.Collector) error {
 		w.out.help("It links one bank at a time. Choose a short name for the bank you want\n" +
 			"to add, such as chase or schwab. After this setup, you link the bank\n" +
 			"with that name:")
-		w.out.command(config.CollectCommand(config.Feed{Collector: c.Name, Item: "<name>"}))
+		w.out.command(w.opts.collect(config.CollectArgs(config.Feed{Collector: c.Name, Item: "<name>"})))
 		if c.Logins != "" {
 			w.out.help("A bank you linked already keeps its name. To see those names, run:")
-			w.out.command("wealthdb-collect " + c.Name + " " + c.Logins)
+			w.out.command(w.opts.collect(c.Name + " " + c.Logins))
 		}
 		item, err = w.p.askValid("Name for the bank (Enter to go back)", "", func(s string) (string, error) {
 			if s == "" {
@@ -379,7 +380,7 @@ func (w *setup) pick(c silver.Collector) error {
 		return nil
 	case collectFirst:
 		w.out.say("The %s source is loaded already, and %s has no data yet. Collect it first:", c.Kind, c.Display)
-		w.out.command(config.CollectCommand(config.Feed{Collector: c.Name, Item: item}))
+		w.out.command(w.opts.collect(config.CollectArgs(config.Feed{Collector: c.Name, Item: item})))
 		w.out.say("Then run %s again: the data shows under \"Collected, but not in the list\".", w.cmd("config"))
 		return nil
 	default:
@@ -511,7 +512,7 @@ func (w *setup) afterAdd(abs string) error {
 // run it.
 func (w *setup) printNext(f config.Feed) {
 	c, _ := silver.CollectorNamed(f.Collector)
-	w.runLater("To collect the data of "+cmp.Or(c.Display, f.Collector), config.CollectCommand(f))
+	w.runLater("To collect the data of "+cmp.Or(c.Display, f.Collector), w.opts.collect(config.CollectArgs(f)))
 }
 
 // offerLoad offers to load e's collected data, when the database exists

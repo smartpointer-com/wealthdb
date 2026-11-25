@@ -221,6 +221,12 @@ The wrapper therefore:
   (`$XDG_DATA_HOME` defaults to `~/.local/share` per the XDG Base
   Directory spec, so the default data root is `~/.local/share/wealthdb`.)
 
+  The two data columns on the right are the default config's. For a
+  setup of its own, `wealthdb -c <file> collect <name> <verb>`, the
+  default is `<name>` in the config's folder, and `WEALTHDB_DATA_ROOT`
+  is not read
+  ([DESIGN.md §4.2](../wealthdb/docs/DESIGN.md#a-setup-of-its-own)).
+
 - forwards `--lookback` to every `download` — the one window flag, accepted
   everywhere; see the date contract under
   [Collector CLI conventions](#collector-cli-conventions). A full-history
@@ -258,13 +264,23 @@ themselves. The library bind-mounts the dirs listed under Docker mounts
 and Caches, plus the checkout over `/app` (and `/silver` and `/debug`
 when applicable), and runs as `--user $(id -u):$(id -g)`.
 
-The library runs only an image built on this computer. A missing image
-stops the run and names `make build-<name>`, which builds the base
-images first. Every run passes `--pull=never`, so no registry is asked
-for an image of that name. `wealthdb-collect <name> build` refuses when
-a `wealthdb/` base image is not local, so no registry is asked for one
-either. An installed copy builds no image: there the message says to
-run the collector from a checkout.
+The library runs only an image built on this computer. It checks the
+image first, before any folder is made or a credential is asked for:
+
+- In a checkout, a missing image stops the run and names
+  `make build-<name>`, which builds the base images first.
+- A Docker that does not answer stops the run with `Docker does not
+  answer. Start it, then run this again. With Colima: colima start`
+  and Docker's own first line.
+- An installed copy holds no image and builds none. Every such run,
+  and `build`, end with `this collector runs in a container, and an
+  installed copy has no image for it yet. Run it from a checkout of
+  wealthdb.`
+
+Every run passes `--pull=never`, so no registry is asked for an image
+of that name. `wealthdb-collect <name> build` refuses when a
+`wealthdb/` base image is not local, so no registry is asked for one
+either.
 
 In a tree of the native engine, a verb that writes silver runs its
 container with a lock on the database held
@@ -372,7 +388,10 @@ runs before each verb of `checks`, in both wrapper families:
 
 A message or a help text names a collector's command as
 `wealthdb-collect <name> <verb>`, never as `./<name>`: the reader's
-working directory is not known.
+working directory is not known. A declaration writes its commands for
+the default setup. For a setup of its own they are printed with the
+config: `wealthdb -c <file> collect <name> <verb>`
+([DESIGN.md §4.2](../wealthdb/docs/DESIGN.md#a-setup-of-its-own)).
 
 The check is skipped for `--help`, `-h`, `--check` (a session probe),
 `--env-file` (a file named on the command line), the flags of `skip`,

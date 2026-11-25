@@ -118,8 +118,11 @@ passes it:
 - `command` is the full path to the `wealthdb` wrapper.
 - `PATH` must hold the directory `docker` is in, where the server is a
   container.
-- `WEALTHDB_DATA_ROOT` is needed only when the data root is not the
-  default. The same holds for `XDG_CONFIG_HOME` and the config file.
+- `WEALTHDB_DATA_ROOT` is needed only when the default config's data
+  root is not the default folder. The same holds for `XDG_CONFIG_HOME`
+  and the config file.
+- `WEALTHDB_CONFIG` names a config elsewhere. Its folder is then the
+  data root, and `WEALTHDB_DATA_ROOT` is not read.
 
 When wealthdb runs on another host, the command is `ssh`. It needs no
 tunnel, no port and no token:
@@ -219,11 +222,24 @@ the redacted stdio form.
 ## Knobs
 
 Environment variables, not config: `WEALTHDB_CONFIG`,
-`WEALTHDB_IMAGE_TAG`, `WEALTHDB_MCP_CONTAINER`, `WEALTHDB_MCP_DATA_DIR`, `WEALTHDB_MCP_BIND`
-(`both`, `v4` or `v6`), `WEALTHDB_MCP_TOKEN`, `WEALTHDB_MCP_AUTH` and
-`WEALTHDB_MCP_INSECURE`, `WEALTHDB_MCP_CHARS` (characters per result,
-default 16000), `WEALTHDB_MCP_ALLOW_HOSTS`, `WEALTHDB_MCP_ENV_FILE`.
-`wealthdb mcp help` describes each.
+`WEALTHDB_IMAGE_TAG`, `WEALTHDB_MCP_CONTAINER`, `WEALTHDB_MCP_DATA_DIR`,
+`WEALTHDB_MCP_BIND` (`both`, `v4` or `v6`), `WEALTHDB_MCP_TOKEN`,
+`WEALTHDB_MCP_AUTH` and `WEALTHDB_MCP_INSECURE`, `WEALTHDB_MCP_CHARS`
+(characters per result, default 16000), `WEALTHDB_MCP_ALLOW_HOSTS`,
+`WEALTHDB_MCP_ENV_FILE`. `wealthdb mcp help` describes each.
+
+A config that is not the default file is a setup of its own
+([DESIGN.md §4.2](../wealthdb/docs/DESIGN.md#a-setup-of-its-own)):
+
+- Its server is named `wealthdb-mcp-<name>`, `<name>` from the config's
+  folder.
+- Its token and its other files are in `mcp/` in that folder.
+- Its env file is `wealthdb-mcp-<name>.env` in the secrets folder.
+- `WEALTHDB_MCP_CONTAINER`, `WEALTHDB_MCP_DATA_DIR` and
+  `WEALTHDB_MCP_ENV_FILE` each still win.
+
+A start never takes over a server of that name that belongs to another
+setup. It refuses, says so, and removes nothing.
 
 A call sets its own budget with `max_chars`. A result that does not fit
 ends with a line that says how many rows and characters it holds in

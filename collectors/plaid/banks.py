@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -92,10 +93,13 @@ def state(data_dir: Path, name: str) -> str:
 def report(secrets_dir: Path, data_dir: Path, environment: str) -> int:
     linked = items.of_environment(secrets_dir, environment)
     sandbox = " --sandbox" if environment == "sandbox" else ""
+    # The words a command to run starts with: `wealthdb-collect`, or the
+    # ones the launcher hands a setup of its own.
+    collect = os.environ.get("WEALTHDB_COLLECT", "wealthdb-collect")
     if not linked:
         say(f"No bank is linked through Plaid yet ({environment}). Link one:")
         say()
-        say(f"    wealthdb-collect plaid link --item <name>{sandbox}")
+        say(f"    {collect} plaid link --item <name>{sandbox}")
         say()
         say("<name> is a short name of your choice for the bank, such as "
             "chase.")
@@ -112,16 +116,16 @@ def report(secrets_dir: Path, data_dir: Path, environment: str) -> int:
         say()
         for p in left:
             say(f"A sign-in for {p.name} is left open, started "
-                f"{_day(p.created_at)}. `wealthdb-collect plaid login"
+                f"{_day(p.created_at)}. `{collect} plaid login"
                 f"{sandbox}` settles it.")
     say()
     say(f"The name in the first column is the one the other commands take, "
         f"as in --item {linked[0].name}.")
     say()
     say("To link another bank:")
-    say(f"    wealthdb-collect plaid link --item <name>{sandbox}")
+    say(f"    {collect} plaid link --item <name>{sandbox}")
     say("To check that each link still works at Plaid:")
-    say(f"    wealthdb-collect plaid login --check{sandbox}")
+    say(f"    {collect} plaid login --check{sandbox}")
     return 0
 
 

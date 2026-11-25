@@ -115,6 +115,12 @@ paths resolve the same way; the differences are `:ro` and the
 hardening. The token travels as a file, because `docker inspect` prints
 the environment.
 
+A config that is not the default file is a setup of its own
+([DESIGN.md §4.2](../wealthdb/docs/DESIGN.md#a-setup-of-its-own)). Its
+container is `wealthdb-mcp-<name>` and its `DATA_DIR` is `mcp/` in the
+config's folder. A start replaces only its own server: it refuses a
+name that the server of another setup holds.
+
 ## 5. Security
 
 - Loopback only, both address families, with an IPv4-only retry.

@@ -140,6 +140,12 @@ exit: 0
 === login
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   ps
   --filter
   name=^firstcitizens$
@@ -150,12 +156,6 @@ docker
   rm
   -f
   firstcitizens
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/firstcitizens:latest
 docker
   run
   --rm
@@ -195,6 +195,12 @@ exit: 0
 --- stderr
 === vnc-login
 --- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
 lsof
   -nP
   -iTCP:5900
@@ -210,12 +216,6 @@ docker
   rm
   -f
   firstcitizens
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/firstcitizens:latest
 docker
   run
   --rm
@@ -260,6 +260,12 @@ exit: 0
 === download
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   ps
   --filter
   name=^firstcitizens$
@@ -270,12 +276,6 @@ docker
   rm
   -f
   firstcitizens
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/firstcitizens:latest
 docker
   run
   --rm
@@ -316,6 +316,12 @@ exit: 0
 === load
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   ps
   --filter
   name=^firstcitizens$
@@ -326,12 +332,6 @@ docker
   rm
   -f
   firstcitizens
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/firstcitizens:latest
 docker
   run
   --rm
@@ -382,6 +382,12 @@ exit: 0
 --- stderr
 === explore
 --- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
 lsof
   -nP
   -iTCP:5900
@@ -397,12 +403,6 @@ docker
   rm
   -f
   firstcitizens
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/firstcitizens:latest
 docker
   run
   --rm
@@ -447,6 +447,12 @@ exit: 0
 === sh
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   ps
   --filter
   name=^firstcitizens$
@@ -457,12 +463,6 @@ docker
   rm
   -f
   firstcitizens
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/firstcitizens:latest
 docker
   run
   --rm
@@ -503,6 +503,12 @@ exit: 0
 === bash
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   ps
   --filter
   name=^firstcitizens$
@@ -513,12 +519,6 @@ docker
   rm
   -f
   firstcitizens
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/firstcitizens:latest
 docker
   run
   --rm
@@ -559,6 +559,12 @@ exit: 0
 === over
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   ps
   --filter
   name=^firstcitizens$
@@ -569,12 +575,6 @@ docker
   rm
   -f
   firstcitizens
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/firstcitizens:latest
 docker
   run
   --rm
@@ -615,6 +615,12 @@ exit: 0
 === login --check
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   ps
   --filter
   name=^firstcitizens$
@@ -625,12 +631,6 @@ docker
   rm
   -f
   firstcitizens
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/firstcitizens:latest
 docker
   run
   --rm
@@ -672,6 +672,12 @@ exit: 0
 === download --dry-run --lookback 1w
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   ps
   --filter
   name=^firstcitizens$
@@ -682,12 +688,6 @@ docker
   rm
   -f
   firstcitizens
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/firstcitizens:latest
 docker
   run
   --rm
@@ -731,6 +731,12 @@ exit: 0
 === load --silver-db <TMP>/w-firstcitizens/silver/x.db
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   ps
   --filter
   name=^firstcitizens$
@@ -741,12 +747,6 @@ docker
   rm
   -f
   firstcitizens
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/firstcitizens:latest
 docker
   run
   --rm
@@ -791,6 +791,12 @@ exit: 0
 === load --silver-db=<TMP>/w-firstcitizens/silver/x.db
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   ps
   --filter
   name=^firstcitizens$
@@ -801,12 +807,6 @@ docker
   rm
   -f
   firstcitizens
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/firstcitizens:latest
 docker
   run
   --rm
@@ -851,6 +851,12 @@ exit: 0
 === load --data-dir <TMP>/w-firstcitizens/alt-data
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   ps
   --filter
   name=^firstcitizens$
@@ -861,12 +867,6 @@ docker
   rm
   -f
   firstcitizens
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/firstcitizens:latest
 docker
   run
   --rm
@@ -907,6 +907,12 @@ exit: 0
 === load --data-dir=<TMP>/w-firstcitizens/alt-data
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   ps
   --filter
   name=^firstcitizens$
@@ -917,12 +923,6 @@ docker
   rm
   -f
   firstcitizens
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/firstcitizens:latest
 docker
   run
   --rm
@@ -963,6 +963,12 @@ exit: 0
 === download --secrets-dir <TMP>/w-firstcitizens/alt-secrets
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   ps
   --filter
   name=^firstcitizens$
@@ -973,12 +979,6 @@ docker
   rm
   -f
   firstcitizens
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/firstcitizens:latest
 docker
   run
   --rm
@@ -1019,6 +1019,12 @@ exit: 0
 === download --secrets-dir=<TMP>/w-firstcitizens/alt-secrets
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   ps
   --filter
   name=^firstcitizens$
@@ -1029,12 +1035,6 @@ docker
   rm
   -f
   firstcitizens
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/firstcitizens:latest
 docker
   run
   --rm
@@ -1075,6 +1075,12 @@ exit: 0
 === bogus-verb
 --- calls
 docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/firstcitizens:latest
+docker
   ps
   --filter
   name=^firstcitizens$
@@ -1085,12 +1091,6 @@ docker
   rm
   -f
   firstcitizens
-docker
-  image
-  inspect
-  --format
-  {{.Id}}
-  wealthdb/firstcitizens:latest
 docker
   run
   --rm

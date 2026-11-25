@@ -45,14 +45,19 @@ INSECURE_WARNING="INSECURE: authentication is off; any process on this machine c
 # defaults. Pure (no Docker, no config round-trip); unit-tested. The
 # data root and config resolve as the engine wrapper resolves them
 # (wealthdb_engine_paths: WEALTHDB_CONFIG names another config file),
-# so the same-path mounts land where the config expects.
+# so the same-path mounts land where the config expects. The
+# container's name and the data folder follow the config too
+# (_service_knobs): wealthdb-mcp and the XDG data dir for the default
+# config, and for a setup of its own a name with its folder's and the
+# folder mcp in it.
 _resolve_knobs() {
     IMAGE="wealthdb:$WEALTHDB_IMAGE_TAG"
-    CONTAINER="${WEALTHDB_MCP_CONTAINER:-wealthdb-mcp}"
-    DATA_DIR="${WEALTHDB_MCP_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb/mcp}"
+    _service_knobs mcp
+    # The container mounts the config, which tells whose server it is
+    # where it mounts no token.
+    SERVICE_CONFIG="$CFG"
     BIND="${WEALTHDB_MCP_BIND:-both}"   # both | v4 | v6
     TOKEN_FILE="$DATA_DIR/token"
-    wealthdb_engine_paths
     CHARS="${WEALTHDB_MCP_CHARS:-}"
     ALLOW_HOSTS="${WEALTHDB_MCP_ALLOW_HOSTS:-}"
     ENGINE_BIN="$(wealthdb_native_engine "$ROOT")"
@@ -252,7 +257,7 @@ _base_url() {
 
 _require_enabled() {
     if [ "$ENABLED" != 1 ]; then
-        echo "mcp: the MCP server is off. Run: wealthdb config mcp-server" >&2
+        echo "mcp: the MCP server is off. Run: $PROGRAM config mcp-server" >&2
         return 1
     fi
 }
@@ -265,7 +270,7 @@ _require_engine() {
         echo "mcp: the engine is not built yet. Run: make all" >&2
         return 1
     fi
-    wealthdb_require_image mcp "$IMAGE" "Build it with: wealthdb build"
+    wealthdb_require_image mcp "$IMAGE" "Build it with: $PROGRAM build"
 }
 
 # _ready is what `start` and `serve` do before a server runs, once the
@@ -279,7 +284,7 @@ _ready() {
         _loopback_host "$BIND" >/dev/null || return 1
     fi
     if _is_running; then
-        echo "mcp: already running ($(_where)). Use 'wealthdb mcp restart'." >&2
+        echo "mcp: already running ($(_where)). Use '$PROGRAM mcp restart'." >&2
         return 1
     fi
     if [ "$AUTH" = token ]; then
@@ -294,6 +299,7 @@ _ready() {
 mcp_start() {
     _load_config || return 1
     _require_enabled || return 1
+    _start_guard || return 1
     _ready || return 1
     if [ "$SERVICE_MODE" = native ]; then
         _native_start || return 1
@@ -329,7 +335,7 @@ mcp_status() {
             echo "mcp: running   pid=$(_native_pid)   port=$PORT (bind=$BIND)"
             echo "     url: $(_base_url)/mcp   privacy: $(_base_url)/mcp/privacy"
             if _engine_outdated; then
-                echo "     engine: outdated — it was rebuilt or upgraded; run 'wealthdb mcp restart'"
+                echo "     engine: outdated — it was rebuilt or upgraded; run '$PROGRAM mcp restart'"
             else
                 echo "     engine: current"
             fi
@@ -343,7 +349,7 @@ mcp_status() {
         echo "mcp: running   container=$CONTAINER   port=$PORT (bind=$BIND)"
         echo "     url: $(_base_url)/mcp   privacy: $(_base_url)/mcp/privacy"
         if _engine_outdated; then
-            echo "     image: outdated — $IMAGE was rebuilt; run 'wealthdb mcp restart'"
+            echo "     image: outdated — $IMAGE was rebuilt; run '$PROGRAM mcp restart'"
         else
             echo "     image: current"
         fi
@@ -353,13 +359,13 @@ mcp_status() {
         echo "mcp: not running   (no container $CONTAINER)"
     fi
     if [ "$AUTH" = token ]; then
-        echo "     auth: bearer token in $TOKEN_FILE ('wealthdb mcp url' prints it)"
+        echo "     auth: bearer token in $TOKEN_FILE ('$PROGRAM mcp url' prints it)"
     else
         echo "     auth: none"
         echo "     $INSECURE_WARNING"
     fi
     echo "     live gold: ${GOLD_DB:-<unset>}"
-    [ "$ENABLED" = 1 ] || echo "     note: the MCP server is off (wealthdb config mcp-server)"
+    [ "$ENABLED" = 1 ] || echo "     note: the MCP server is off ($PROGRAM config mcp-server)"
     return 0
 }
 
@@ -371,7 +377,7 @@ mcp_url() {
     echo "Privacy URL:  $base/mcp/privacy"
     if [ "$AUTH" = token ]; then
         if [ ! -s "$TOKEN_FILE" ]; then
-            echo "mcp: no token yet; 'wealthdb mcp start' generates one" >&2
+            echo "mcp: no token yet; '$PROGRAM mcp start' generates one" >&2
             return 1
         fi
         local token
@@ -410,7 +416,7 @@ mcp_stdio() {
 # computer where no one is signed in.
 mcp_serve() {
     if [ "$SERVICE_MODE" != native ]; then
-        echo "mcp: 'serve' runs the native engine's server. This tree runs the server in a container: wealthdb mcp start" >&2
+        echo "mcp: 'serve' runs the native engine's server. This tree runs the server in a container: $PROGRAM mcp start" >&2
         return 2
     fi
     _load_config || return 1
@@ -437,16 +443,16 @@ _start_banner() {
 mcp: $name is up → MCP on $(_base_url)/mcp
      (redacted: $(_base_url)/mcp/privacy)
 
-  Run 'wealthdb mcp url' for the URL and the Authorization header, ready
+  Run '$PROGRAM mcp url' for the URL and the Authorization header, ready
   to paste into a client. For a client that starts its own process, use
-  'wealthdb mcp stdio' as the command instead.
+  '$PROGRAM mcp stdio' as the command instead.
 
   Calls read live gold read-only; nothing needs refreshing after a load.
-  $after, run 'wealthdb mcp restart'.
+  $after, run '$PROGRAM mcp restart'.
 EOF
     if [ -n "${GOLD_DB:-}" ] && [ ! -f "$GOLD_DB" ]; then
         echo "  Note: there is no database at the configured path yet; calls say so" >&2
-        echo "  until 'wealthdb init' and 'wealthdb load -a' have run." >&2
+        echo "  until '$PROGRAM init' and '$PROGRAM load -a' have run." >&2
     fi
     if [ "$AUTH" != token ]; then
         echo "mcp: $INSECURE_WARNING" >&2
@@ -485,11 +491,18 @@ It listens on loopback only: 127.0.0.1, and as a container [::1] too.
 WEALTHDB_MCP_BIND=v6 moves a native server to [::1]. Turn it on with
 'wealthdb config mcp-server', which writes the "mcp" block of wealthdb.cfg.
 
+A config elsewhere (wealthdb -c FILE, or WEALTHDB_CONFIG) is a setup of
+its own, kept in the config's folder. Its server has a container of its
+own (wealthdb-mcp-<folder>), its token in <folder>/mcp and an env file
+of its own in the secrets folder, wealthdb-mcp-<folder>.env. A start
+never replaces the server of another setup: it refuses a name that one
+holds.
+
 HTTP asks for a bearer token, generated on first start (chmod 600).
 Turning it off takes both "auth": "none" and "insecure": true; "none"
 alone is refused, and every start and status warns while it is off.
 
-env overrides: WEALTHDB_CONFIG (non-default wealthdb.cfg path),
+env overrides: WEALTHDB_CONFIG (another wealthdb.cfg: a setup of its own),
 WEALTHDB_IMAGE_TAG (the engine image's tag; unset, the checkout's
 .image-tag, else latest),
 WEALTHDB_MCP_CONTAINER, WEALTHDB_MCP_DATA_DIR, WEALTHDB_MCP_BIND
@@ -497,8 +510,9 @@ WEALTHDB_MCP_CONTAINER, WEALTHDB_MCP_DATA_DIR, WEALTHDB_MCP_BIND
 WEALTHDB_MCP_INSECURE (the config fields' env forms), WEALTHDB_MCP_CHARS
 (characters per result, default 16000), WEALTHDB_MCP_ALLOW_HOSTS (Host
 names to answer besides loopback, comma-separated), WEALTHDB_MCP_ENV_FILE
-(default wealthdb-mcp.env in $WEALTHDB_SECRETS_DIR, else ~/.secrets, read
-for the variables above), WEALTHDB_NO_LAUNCHD=1 (on a Mac, the native
+(default wealthdb-mcp.env in $WEALTHDB_SECRETS_DIR, else ~/.secrets, and
+wealthdb-mcp-<folder>.env there for a setup of its own, read for the
+variables above), WEALTHDB_NO_LAUNCHD=1 (on a Mac, the native
 server as a plain background process: no start at login, no restart).
 EOF
 }
@@ -514,7 +528,7 @@ mcp_main() {
         start)            mcp_start ;;
         stop)             mcp_stop ;;
         status)           mcp_status ;;
-        restart)          mcp_stop; mcp_start ;;
+        restart)          _start_guard || return 1; mcp_stop; mcp_start ;;
         logs)             mcp_logs ;;
         serve)            mcp_serve ;;
         stdio)            mcp_stdio "$@" ;;

@@ -10,8 +10,11 @@
 # with no file leaves none. Every run names host.docker.internal, where
 # an AI model on this computer is reached. `web`, `mcp` and `collect`
 # reach their host-side scripts, also behind global flags, and a -c path
-# reaches them as WEALTHDB_CONFIG. A stubbed docker on PATH prints the
-# argv; nothing real runs.
+# reaches them as WEALTHDB_CONFIG. A config that is not the default one
+# is a setup of its own: its folder is the data root, mounted once, and
+# a host-side script is handed that folder and the words its printed
+# commands start with. A stubbed docker on PATH prints the argv; nothing
+# real runs.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -32,13 +35,20 @@ cd "$TMP/work" || exit 1
 cp "$ROOT/wealthdb/wealthdb" "$TREE/wealthdb/"
 cp "$ROOT/shared/wrappers/image-tag.sh" "$ROOT/shared/wrappers/engine-mode.sh" "$TREE/shared/wrappers/"
 # The host-side scripts are stand-ins that print their name, the config
-# path they are told and their arguments.
+# path they are told and their arguments. With STUB_SHOW_SETUP they
+# print what a setup of its own hands them instead of the arguments.
 mkdir -p "$TREE/web" "$TREE/mcp" "$TREE/bin"
 for s in web/web mcp/mcp bin/wealthdb-collect; do
     cat > "$TREE/$s" <<EOF
 #!/bin/sh
 echo "host:$s"
 echo "config:\${WEALTHDB_CONFIG-unset}"
+if [ -n "\${STUB_SHOW_SETUP:-}" ]; then
+    echo "root:\${WEALTHDB_DATA_ROOT-unset}"
+    echo "collect:\${WEALTHDB_COLLECT-unset}"
+    echo "program:\${WEALTHDB_PROGRAM-unset}"
+    exit 0
+fi
 for a in "\$@"; do printf '%s\n' "\$a"; done
 EOF
     chmod +x "$TREE/$s"
@@ -196,6 +206,78 @@ status" "$(run -c web mcp status)"
 [ ! -e "$TMP/work/h.cfg" ] && [ ! -e "$TMP/work/web" ] && [ ! -e "$CFG" ] &&
     ok "a host-side command makes no config file" || bad "a host-side command made a config file"
 [ ! -e "$TMP/other" ] && ok "...and no config folder" || bad "a host-side command made a config folder"
+
+echo "a setup of its own:"
+OWN="$TMP/try"
+out="$(run -c "$OWN/wealthdb.cfg" status)"
+has_item "-c elsewhere: the config's folder is the data root" "$OWN:$OWN" "$out"
+has_item "...forwarded so" "WEALTHDB_DATA_ROOT=$OWN" "$out"
+lacks_item "...and the data root of the environment is not mounted" "$DATA:$DATA" "$out"
+lacks_item "...nor forwarded" "WEALTHDB_DATA_ROOT=$DATA" "$out"
+has_item "the config file is mounted in it" "$OWN/wealthdb.cfg:$OWN/wealthdb.cfg" "$out"
+has_item "the engine checks both mounts" "WEALTHDB_MOUNTS=$OWN/wealthdb.cfg:$OWN" "$out"
+[ -d "$OWN" ] && ok "the folder is made" || bad "no folder $OWN"
+out="$(runw "$OWN/wealthdb.cfg" status)"
+has_item "WEALTHDB_CONFIG elsewhere: the same data root" "$OWN:$OWN" "$out"
+has_item "...forwarded so" "WEALTHDB_DATA_ROOT=$OWN" "$out"
+lacks_item "...and never the environment's" "WEALTHDB_DATA_ROOT=$DATA" "$out"
+out="$(run -c "$OWN/./x/..//wealthdb.cfg" status)"
+has_item "a path spelled another way: the clean folder" "$OWN:$OWN" "$out"
+rm -f "$OWN/wealthdb.cfg"
+for args in "-c $OWN/wealthdb.cfg config" "-c $OWN/./wealthdb.cfg config"; do
+    # shellcheck disable=SC2086
+    out="$(run $args)"
+    n="$(grep -c -x -F -- "$OWN:$OWN" <<<"$out")"
+    [ "$n" = 1 ] && ok "$args: the folder is mounted once, as the data root" || bad "$args: the folder is mounted $n times"
+    lacks_item "$args: the folder is not mounted under another spelling" "$OWN/.:$OWN/." "$out"
+    lacks_item "$args: the config is not mounted as a file" "$OWN/wealthdb.cfg:$OWN/wealthdb.cfg" "$out"
+done
+[ ! -e "$OWN/wealthdb.cfg" ] && ok "config makes no file in it" || bad "config made an empty file"
+out="$(run -c "$CFG" status)"
+has_item "-c on the default config: the data root of the environment" "$DATA:$DATA" "$out"
+has_item "...forwarded so" "WEALTHDB_DATA_ROOT=$DATA" "$out"
+# A demo's call: the config dir, the config and the data root are one
+# folder, so the config is the default one under that config dir.
+demo() {
+    env PATH="$TMP/bin:$PATH" HOME="$TMP/home" XDG_CONFIG_HOME="$TMP/demo" WEALTHDB_DATA_ROOT="$TMP/demo" \
+        WEALTHDB_IMAGE_TAG=t LANG=C TERM=xterm "$TREE/wealthdb/wealthdb" "$@"
+}
+out="$(demo -c "$TMP/demo/wealthdb.cfg" load -a)"
+has_item "a demo's call: its root is the data root" "$TMP/demo:$TMP/demo" "$out"
+has_item "...and its config the file mounted" "$TMP/demo/wealthdb.cfg:$TMP/demo/wealthdb.cfg" "$out"
+out="$(demo config)"
+n="$(grep -c -x -F -- "$TMP/demo:$TMP/demo" <<<"$out")"
+[ "$n" = 1 ] && ok "a config folder that is the data root is mounted once" || bad "the demo folder is mounted $n times"
+
+# What the host-side scripts are handed.
+shown() { STUB_SHOW_SETUP=1 "$@"; }
+SP="$TMP/my try/wealthdb.cfg"
+for sub in web mcp collect; do
+    script="$sub/$sub"
+    [ "$sub" = collect ] && script=bin/wealthdb-collect
+    is_out "-c elsewhere, $sub: the folder and the words of its commands" "host:$script
+config:$SP
+root:$TMP/my try
+collect:wealthdb -c '$SP' collect
+program:wealthdb -c '$SP'" "$(shown run -c "$SP" "$sub" start)"
+done
+is_out "WEALTHDB_CONFIG elsewhere: the same, and the variable as it was set" "host:web/web
+config:$OWN/wealthdb.cfg
+root:$OWN
+collect:wealthdb -c $OWN/wealthdb.cfg collect
+program:wealthdb -c $OWN/wealthdb.cfg" "$(shown runw "$OWN/wealthdb.cfg" web status)"
+is_out "the default config: the data root of the environment, and no words" "host:bin/wealthdb-collect
+config:unset
+root:$DATA
+collect:unset
+program:unset" "$(shown run collect testcol load)"
+is_out "...also behind -c, and inherited words go" "host:mcp/mcp
+config:$CFG
+root:$DATA
+collect:unset
+program:unset" "$(WEALTHDB_COLLECT=stale WEALTHDB_PROGRAM=stale shown run -c "$CFG" mcp status)"
+[ ! -e "$TMP/my try" ] && ok "a host-side command makes no folder for the setup" || bad "a host-side command made the setup's folder"
+rm -rf "$OWN" "$TMP/demo"
 
 echo "relative and spaced folders:"
 rel() {
