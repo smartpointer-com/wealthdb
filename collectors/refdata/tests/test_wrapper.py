@@ -22,7 +22,8 @@ def wrapper(tmp_path):
     (home / ".venv" / "bin").mkdir(parents=True)
     (tmp_path / "shared" / "wrappers").mkdir(parents=True)
     shutil.copy(HERE / "refdata", home / "refdata")
-    for lib in ("host-lib.sh", "engine-mode.sh", "envfile-lib.sh", "paths-lib.sh", "setup-lib.sh"):
+    for lib in ("host-lib.sh", "image-tag.sh", "engine-mode.sh", "envfile-lib.sh", "paths-lib.sh",
+                "setup-lib.sh"):
         shutil.copy(ROOT / "shared" / "wrappers" / lib, tmp_path / "shared" / "wrappers" / lib)
     python = home / ".venv" / "bin" / "python"
     python.write_text('#!/bin/sh\n'

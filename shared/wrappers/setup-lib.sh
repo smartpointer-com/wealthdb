@@ -4,8 +4,9 @@
 # that every credential it needs is in place. A missing one prints
 # step-by-step instructions and stops the verb with SETUP_EXIT. A
 # complete setup prints nothing. Sourced by wrapper-lib.sh and
-# host-lib.sh. The declaration format is in collectors/README.md,
-# "The setup declaration".
+# host-lib.sh, after image-tag.sh (wealthdb_abs_path) and paths-lib.sh
+# (collector_env_prefix). The declaration format is in
+# collectors/README.md, "The setup declaration".
 #
 # Caller must SET (before calling):
 #   NAME         short collector name, e.g. "viac".
@@ -35,7 +36,7 @@ _SETUP_FLEET_SKIP="--help -h --check --env-file"
 # whose first character is `#` are skipped, and so is a keyword this
 # version does not know.
 setup_read() {
-    _S_VARS=() _S_NEED=() _S_KIND=() _S_SHAPE=() _S_LABEL=()
+    _S_VARS=() _S_NEED=() _S_SHAPE=() _S_LABEL=()
     _S_ALIAS=() _S_FLAG=() _S_FILES=() _S_KEYS=() _S_KEYLABEL=()
     _S_SESSIONS=() _S_PROVIDER=() _S_SIGNIN=() _S_FIRST=() _S_THEN=()
     _S_CHECKS="" _S_SKIP="" _S_DOCS=""
@@ -50,9 +51,10 @@ setup_read() {
         rest="${rest# }"
         case "$kw" in
             var)
+                # The third field, the variable's kind, is for a reader of
+                # the declaration alone.
                 read -r a b c d e <<< "$rest"
-                _S_VARS+=("$a") _S_NEED+=("$b") _S_KIND+=("$c")
-                _S_SHAPE+=("$d") _S_LABEL+=("$e")
+                _S_VARS+=("$a") _S_NEED+=("$b") _S_SHAPE+=("$d") _S_LABEL+=("$e")
                 ;;
             alias)    _S_ALIAS+=("$rest") ;;
             flag)     _S_FLAG+=("$rest") ;;
@@ -109,14 +111,6 @@ _setup_q() {
     fi
 }
 
-# _setup_abs PATH — PATH made absolute against the working directory.
-_setup_abs() {
-    case "$1" in
-        /*) printf '%s\n' "$1" ;;
-        *)  printf '%s\n' "$PWD/$1" ;;
-    esac
-}
-
 # _setup_resolve_files SECRETS OVERRIDE — set, for each envfile line i,
 # _S_PATH[i] (the file the collector reads, or "" when none exists) and
 # _S_TARGET[i] (where to create it). A line names the file and its
@@ -132,7 +126,7 @@ _setup_resolve_files() {
         first="$1"
         ovar="$(collector_env_prefix "${first%.env}")_ENV_FILE"
         if [[ "$override" == 1 && -n "${!ovar:-}" ]]; then
-            _S_TARGET[i]="$(_setup_abs "${!ovar}")"
+            _S_TARGET[i]="$(wealthdb_abs_path "${!ovar}")"
             _S_PATH[i]=""
             [[ -f "${!ovar}" ]] && _S_PATH[i]="${!ovar}"
             continue
@@ -238,7 +232,7 @@ _setup_present() {
 # exits SETUP_EXIT after printing what to do.
 setup_check() {
     local mode="$1" secrets
-    secrets="$(_setup_abs "$2")"
+    secrets="$(wealthdb_abs_path "$2")"
     shift 2
     local decl="$HERE/setup.txt" verb="${1:-}"
     [[ -f "$decl" ]] || return 0
@@ -323,7 +317,7 @@ Open the file in a text editor and check each line:
 Keep each value in single quotes. Write a single quote inside a value
 as '\''.
 
-Then run: wealthdb-collect $NAME $2
+Then run: $(_setup_verb_command "$2")
 EOF
 }
 
@@ -410,7 +404,7 @@ setup_print_instructions() {
         if [[ ${#_S_MISSING_KEYS[@]} -gt 0 ]]; then
             step=$((step + 1))
             echo
-            echo "$step. Put these files in the secrets folder:"
+            echo "$(_setup_paint 1 "$step. Put these files in the secrets folder:")"
             echo
             for i in "${_S_MISSING_KEYS[@]}"; do
                 echo "     $(_setup_q "$secrets/${_S_KEYS[$i]}")  ${_S_KEYLABEL[$i]}"

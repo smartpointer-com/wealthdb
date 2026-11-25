@@ -66,27 +66,29 @@ exit: 0
 exit: 0
 --- stdout
 --- stderr
-manual: no-op. This collector has no source to fetch from — the CSVs are
-the source of truth. Maintain the CSVs by hand in the data dir (default
-$XDG_DATA_HOME/wealthdb/manual/): positions.csv, valuations.csv, and
-optionally accounts.csv to give positions their own tax sleeve and
-management style, cost_basis.csv for capital paid in over time, and
-exits.csv for what a position was sold for — then run `wealthdb-collect manual load` to
-validate them and rebuild the silver. See README.md for the columns and how
-to maintain them.
+manual: Nothing to sign in to. Put positions.csv and valuations.csv in
+manual: the data folder, $XDG_DATA_HOME/wealthdb/manual by default.
+manual: collectors/manual/examples holds a skeleton to copy.
+manual: no-op. The CSVs are the source of truth, kept by hand. Three
+more are optional: accounts.csv gives a position its own tax sleeve and
+management style, cost_basis.csv holds the capital paid in over time,
+and exits.csv what a position was sold for.
+`wealthdb-collect manual load` checks the files and rebuilds the silver.
+README.md has the columns and how to keep them.
 === login
 --- calls
 exit: 0
 --- stdout
 --- stderr
-manual: no-op. This collector has no source to fetch from — the CSVs are
-the source of truth. Maintain the CSVs by hand in the data dir (default
-$XDG_DATA_HOME/wealthdb/manual/): positions.csv, valuations.csv, and
-optionally accounts.csv to give positions their own tax sleeve and
-management style, cost_basis.csv for capital paid in over time, and
-exits.csv for what a position was sold for — then run `wealthdb-collect manual load` to
-validate them and rebuild the silver. See README.md for the columns and how
-to maintain them.
+manual: Nothing to sign in to. Put positions.csv and valuations.csv in
+manual: the data folder, $XDG_DATA_HOME/wealthdb/manual by default.
+manual: collectors/manual/examples holds a skeleton to copy.
+manual: no-op. The CSVs are the source of truth, kept by hand. Three
+more are optional: accounts.csv gives a position its own tax sleeve and
+management style, cost_basis.csv holds the capital paid in over time,
+and exits.csv what a position was sold for.
+`wealthdb-collect manual load` checks the files and rebuilds the silver.
+README.md has the columns and how to keep them.
 === prune
 --- calls
 exit: 0
@@ -106,27 +108,29 @@ exit: 0
 --- stdout
 --- stderr
 manual: no session to probe — --check has nothing to check here.
-manual: no-op. This collector has no source to fetch from — the CSVs are
-the source of truth. Maintain the CSVs by hand in the data dir (default
-$XDG_DATA_HOME/wealthdb/manual/): positions.csv, valuations.csv, and
-optionally accounts.csv to give positions their own tax sleeve and
-management style, cost_basis.csv for capital paid in over time, and
-exits.csv for what a position was sold for — then run `wealthdb-collect manual load` to
-validate them and rebuild the silver. See README.md for the columns and how
-to maintain them.
+manual: Nothing to sign in to. Put positions.csv and valuations.csv in
+manual: the data folder, $XDG_DATA_HOME/wealthdb/manual by default.
+manual: collectors/manual/examples holds a skeleton to copy.
+manual: no-op. The CSVs are the source of truth, kept by hand. Three
+more are optional: accounts.csv gives a position its own tax sleeve and
+management style, cost_basis.csv holds the capital paid in over time,
+and exits.csv what a position was sold for.
+`wealthdb-collect manual load` checks the files and rebuilds the silver.
+README.md has the columns and how to keep them.
 === download --dry-run --lookback 1w
 --- calls
 exit: 0
 --- stdout
 --- stderr
-manual: no-op. This collector has no source to fetch from — the CSVs are
-the source of truth. Maintain the CSVs by hand in the data dir (default
-$XDG_DATA_HOME/wealthdb/manual/): positions.csv, valuations.csv, and
-optionally accounts.csv to give positions their own tax sleeve and
-management style, cost_basis.csv for capital paid in over time, and
-exits.csv for what a position was sold for — then run `wealthdb-collect manual load` to
-validate them and rebuild the silver. See README.md for the columns and how
-to maintain them.
+manual: Nothing to sign in to. Put positions.csv and valuations.csv in
+manual: the data folder, $XDG_DATA_HOME/wealthdb/manual by default.
+manual: collectors/manual/examples holds a skeleton to copy.
+manual: no-op. The CSVs are the source of truth, kept by hand. Three
+more are optional: accounts.csv gives a position its own tax sleeve and
+management style, cost_basis.csv holds the capital paid in over time,
+and exits.csv what a position was sold for.
+`wealthdb-collect manual load` checks the files and rebuilds the silver.
+README.md has the columns and how to keep them.
 === load --silver-db <TMP>/w-manual/silver/x.db
 --- calls
 python3
@@ -176,27 +180,29 @@ exit: 0
 exit: 0
 --- stdout
 --- stderr
-manual: no-op. This collector has no source to fetch from — the CSVs are
-the source of truth. Maintain the CSVs by hand in the data dir (default
-$XDG_DATA_HOME/wealthdb/manual/): positions.csv, valuations.csv, and
-optionally accounts.csv to give positions their own tax sleeve and
-management style, cost_basis.csv for capital paid in over time, and
-exits.csv for what a position was sold for — then run `wealthdb-collect manual load` to
-validate them and rebuild the silver. See README.md for the columns and how
-to maintain them.
+manual: Nothing to sign in to. Put positions.csv and valuations.csv in
+manual: the data folder, $XDG_DATA_HOME/wealthdb/manual by default.
+manual: collectors/manual/examples holds a skeleton to copy.
+manual: no-op. The CSVs are the source of truth, kept by hand. Three
+more are optional: accounts.csv gives a position its own tax sleeve and
+management style, cost_basis.csv holds the capital paid in over time,
+and exits.csv what a position was sold for.
+`wealthdb-collect manual load` checks the files and rebuilds the silver.
+README.md has the columns and how to keep them.
 === download --secrets-dir=<TMP>/w-manual/alt-secrets
 --- calls
 exit: 0
 --- stdout
 --- stderr
-manual: no-op. This collector has no source to fetch from — the CSVs are
-the source of truth. Maintain the CSVs by hand in the data dir (default
-$XDG_DATA_HOME/wealthdb/manual/): positions.csv, valuations.csv, and
-optionally accounts.csv to give positions their own tax sleeve and
-management style, cost_basis.csv for capital paid in over time, and
-exits.csv for what a position was sold for — then run `wealthdb-collect manual load` to
-validate them and rebuild the silver. See README.md for the columns and how
-to maintain them.
+manual: Nothing to sign in to. Put positions.csv and valuations.csv in
+manual: the data folder, $XDG_DATA_HOME/wealthdb/manual by default.
+manual: collectors/manual/examples holds a skeleton to copy.
+manual: no-op. The CSVs are the source of truth, kept by hand. Three
+more are optional: accounts.csv gives a position its own tax sleeve and
+management style, cost_basis.csv holds the capital paid in over time,
+and exits.csv what a position was sold for.
+`wealthdb-collect manual load` checks the files and rebuilds the silver.
+README.md has the columns and how to keep them.
 === bogus-verb
 --- calls
 exit: 2

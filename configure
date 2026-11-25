@@ -15,7 +15,7 @@ usage: ./configure [--engine=container|native] [--prefix=DIR] [--bindir=DIR]
   --engine=container  the engine, the dashboards and the MCP server run in
                       containers (the default). Needs Docker.
   --engine=native     they run as programs on this computer. Only the
-                      collectors that drive a browser need Docker.
+                      collectors that run in a container need Docker.
                       Needs Go and Python; the dashboards need Java.
   --prefix=DIR        `make install` copies the tree to DIR/libexec/wealthdb
                       and links DIR/bin/wealthdb. Without it, `make install`

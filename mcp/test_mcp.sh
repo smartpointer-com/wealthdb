@@ -100,6 +100,7 @@ PORT=3300 BIND=both AUTH=token CHARS= ALLOW_HOSTS=
 _docker_run_args
 joined="${DOCKER_ARGS[*]}"
 check     "detached"               "run -d"                                       "$joined"
+check     "never pulls"            "run -d --pull=never"                          "$joined"
 check     "container name"         "--name wealthdb-mcp"                          "$joined"
 check     "restarts"               "--restart unless-stopped"                     "$joined"
 check     "config read-only"       "/cfg/wealthdb.cfg:/cfg/wealthdb.cfg:ro"       "$joined"
@@ -132,6 +133,7 @@ echo "== _stdio_args (pipe, not a terminal) =="
 _stdio_args --privacy
 joined="${DOCKER_ARGS[*]}"
 check     "interactive, removed"   "run --rm -i"                                  "$joined"
+check     "never pulls"            "run --rm -i --pull=never"                     "$joined"
 check_not "no -t"                  " -t "                                         "$joined"
 check_not "not detached"           " -d "                                         "$joined"
 check_not "no publish"             " -p "                                         "$joined"
@@ -199,7 +201,14 @@ if out="$(mcp_start 2>&1)"; then fail "refuses auth none alone"; else pass "refu
 check     "says what is missing"   "insecure"                                     "$out"
 config 1 3300 token 0
 if out="$(STUB_NO_IMAGE=1 mcp_start 2>&1)"; then fail "refuses without the image"; else pass "refuses without the image"; fi
-check     "says to build"          "wealthdb build"                               "$out"
+check     "says to build"          "mcp: the image wealthdb:latest is not built yet. Build it with: wealthdb build" "$out"
+if out="$(STUB_NO_IMAGE=1 mcp_stdio 2>&1)"; then fail "stdio refuses without the image"; else pass "stdio refuses without the image"; fi
+check     "...and says to build"   "is not built yet. Build it with: wealthdb build" "$out"
+
+echo "== mcp_help =="
+out="$(mcp_help)"
+check     "names the loopback addresses" "It listens on loopback only: 127.0.0.1, and as a container [::1] too." "$out"
+check     "...and the native server's IPv6 switch" "WEALTHDB_MCP_BIND=v6 moves a native server to [::1]." "$out"
 
 echo "== mcp_start (insecure, warned) =="
 config 1 3300 none 1

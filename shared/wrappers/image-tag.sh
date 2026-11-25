@@ -47,6 +47,15 @@ wealthdb_image_tag() {
     printf '%s\n' "$_wit_tag"
 }
 
+# wealthdb_from_refs DOCKERFILE prints the image each of its FROM lines
+# names, one per line, with ${WEALTHDB_IMAGE_TAG} replaced; nothing when
+# the file is not there.
+wealthdb_from_refs() {
+    [ -f "$1" ] || return 0
+    sed -n 's/^FROM[[:space:]][[:space:]]*\([^[:space:]]*\).*/\1/p' "$1" |
+        sed "s/\${WEALTHDB_IMAGE_TAG}/${WEALTHDB_IMAGE_TAG}/g"
+}
+
 # wealthdb_from_ref DOCKERFILE prints the image its first FROM names,
 # with ${WEALTHDB_IMAGE_TAG} replaced, or "missing" when the file is
 # not there.
@@ -55,8 +64,7 @@ wealthdb_from_ref() {
         echo missing
         return 0
     fi
-    _wfrom="$(sed -n 's/^FROM[[:space:]][[:space:]]*\([^[:space:]]*\).*/\1/p' "$1" | head -1)"
-    printf '%s\n' "$_wfrom" | sed "s/\${WEALTHDB_IMAGE_TAG}/${WEALTHDB_IMAGE_TAG}/g"
+    wealthdb_from_refs "$1" | sed -n '1p'
 }
 
 # wealthdb_dockerfile_arg DOCKERFILE NAME prints the default the file
@@ -271,21 +279,49 @@ except OSError:
 PY
 }
 
-# wealthdb_require_image WHO IMAGE BUILD — return 1, with a message that
-# names BUILD, the command that builds IMAGE, when Docker has no image of
-# that name. Each run passes --pull=never as well: a missing image is
-# never fetched from a registry, where the name may belong to anyone,
-# and whatever came back would run with this computer's folders mounted.
-# Any other failure (no daemon) returns 0 and is left to the run, which
-# says what is wrong.
+# wealthdb_require_image WHO IMAGE HINT — return 1, with a message that
+# ends in HINT, the sentence that says how IMAGE is built, when Docker
+# has no image of that name. Each run passes --pull=never as well: a
+# missing image is never fetched from a registry, where the name may
+# belong to anyone, and whatever came back would run with this
+# computer's folders mounted. Any other failure (no daemon) returns 0
+# and is left to the run, which says what is wrong.
 wealthdb_require_image() {
     _wri="$(docker image inspect --format '{{.Id}}' "$2" 2>&1)" && return 0
     case "$_wri" in
         *"No such image"*|*"No such object"*)
-            echo "$1: the image $2 is not built yet. Build it with: $3" >&2
+            echo "$1: the image $2 is not built yet. $3" >&2
             return 1
             ;;
     esac
+    return 0
+}
+
+# wealthdb_require_local_bases WHO DOCKERFILE HINT — return 1, with a
+# message that ends in HINT, the sentence that says how the base images
+# are built, unless Docker holds every wealthdb/ image DOCKERFILE builds
+# FROM. `docker build` has no --pull=never: it asks a registry for a
+# base that is not local, and a wealthdb/ name there may belong to
+# anyone. So a build FROM such an image runs only behind this check. A
+# base of another name (python, golang) is left to the build. Docker's
+# own failure (no daemon) is refused too, with its message.
+wealthdb_require_local_bases() {
+    for _wlb in $(wealthdb_from_refs "$2"); do
+        case "$_wlb" in
+            wealthdb/*) ;;
+            *) continue ;;
+        esac
+        _wlb_err="$(docker image inspect --format '{{.Id}}' "$_wlb" 2>&1)" && continue
+        case "$_wlb_err" in
+            *"No such image"*|*"No such object"*|'')
+                echo "$1: the base image $_wlb is not built yet. $3" >&2
+                ;;
+            *)
+                echo "$1: Docker could not say whether the base image $_wlb is built: $_wlb_err" >&2
+                ;;
+        esac
+        return 1
+    done
     return 0
 }
 

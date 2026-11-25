@@ -94,7 +94,9 @@ engine_stub() {
 { echo "engine"; printf '%s\n' "$@"
   echo "env:ENGINE=${WEALTHDB_ENGINE:-}"; echo "env:DATA_ROOT=${WEALTHDB_DATA_ROOT:-}"
   echo "env:XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-}"; echo "env:CONFIG=${WEALTHDB_CONFIG:-}"
-  echo "env:LOCALE=${WEALTHDB_LOCALE-unset}"; echo "env:ENTRY=${WEALTHDB_ENTRY:-}"; } >> "$STUB_LOG"
+  echo "env:LOCALE=${WEALTHDB_LOCALE-unset}"; echo "env:ENTRY=${WEALTHDB_ENTRY:-}"
+  # From the environment: bash gives itself a TERM when it has none.
+  echo "env:TERM=$(env | sed -n 's/^TERM=//p')"; } >> "$STUB_LOG"
 # hold-lock FILE -- COMMAND...: run the command, as the engine does.
 if [ "${1:-}" = hold-lock ]; then shift 3; exec "$@"; fi
 STUB
@@ -119,6 +121,8 @@ has "Python is recorded" "PYTHON=/" "$mk"
 lacks "no prefix is recorded when none is given" "PREFIX=" "$mk"
 lacks "and no bin directory" "BINDIR=" "$mk"
 has "it names the next command" "Run: make all" "$(cat "$TMP/out")"
+has "the usage says what still needs Docker" "collectors that run in a container need Docker." \
+    "$(cd "$TREE" && ./configure --help)"
 
 configure --engine=native --prefix=/opt/w
 mk="$(cat "$TREE/config.mk")"
@@ -219,6 +223,12 @@ out="$(WEALTHDB_CONFIG="$TMP/other/w.cfg" run "$TREE/wealthdb/wealthdb" status)"
 has_item "WEALTHDB_CONFIG reaches the engine" "env:CONFIG=$TMP/other/w.cfg" "$out"
 out="$(LANG=de_CH.UTF-8 run "$TREE/wealthdb/wealthdb" config)"
 lacks_item "config gets a locale" "env:LOCALE=unset" "$out"
+out="$(run env -u TERM "$TREE/wealthdb/wealthdb" config)"
+has_item "config with no TERM gets dumb, as in a container" "env:TERM=dumb" "$out"
+out="$(TERM=xterm run "$TREE/wealthdb/wealthdb" config)"
+has_item "config keeps a TERM that is set" "env:TERM=xterm" "$out"
+out="$(run env -u TERM "$TREE/wealthdb/wealthdb" status)"
+has_item "no TERM is made up outside config" "env:TERM=" "$out"
 
 echo "the command a server is started by (WEALTHDB_ENTRY):"
 out="$(run "$TREE/wealthdb/wealthdb" status)"
@@ -279,6 +289,13 @@ out="$(run "$TREE/wealthdb/wealthdb" collect testcol load --x)"
 testcol
 load
 --x" ] && ok "collect reaches the dispatcher with its arguments" || bad "collect: $out"
+out="$(cd "$TMP" && run "$TREE/wealthdb/wealthdb" -r -c rel2/host.cfg collect testcol load -c y)"
+[ "$out" = "collect
+testcol
+load
+-c
+y" ] && ok "collect behind global flags reaches the dispatcher, the flags dropped" || bad "-r -c FILE collect: $out"
+[ ! -e "$TMP/rel2" ] && ok "...and makes no config folder" || bad "-c FILE collect made $TMP/rel2"
 out="$(run "$TREE/wealthdb/wealthdb-go" vet ./...)"
 [ "$out" = "go
 vet

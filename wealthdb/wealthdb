@@ -41,12 +41,8 @@ MODE="$(wealthdb_engine_mode "$ROOT")" || exit 2
 # `build`, `web`, `mcp` and `collect` are handled here, not by the
 # engine. `build` builds the engine: the image with `docker build`, which
 # it skips when the image was built from the same inputs and no extra
-# argument is given, or the native program with `go build`. `web` and
-# `mcp` delegate to the web/ and mcp/ components' lifecycle scripts, and
-# `collect` to the collectors' dispatcher. Docker isn't reachable from
-# inside the engine container, so the servers and the collectors are
-# orchestrated on the host. (web/, mcp/ and bin/ are siblings of this
-# inner wealthdb/ dir.)
+# argument is given, or the native program with `go build`. The other
+# three are found past the global flags, below.
 case "${1:-}" in
     build)
         shift
@@ -123,18 +119,6 @@ case "${1:-}" in
             --build-arg WEALTHDB_COMMIT="$commit" \
             -t "$IMAGE" "$REPO" "$@"
         ;;
-    web)
-        shift
-        exec "$ROOT/web/web" "$@"
-        ;;
-    mcp)
-        shift
-        exec "$ROOT/mcp/mcp" "$@"
-        ;;
-    collect)
-        shift
-        exec "$ROOT/bin/wealthdb-collect" "$@"
-        ;;
 esac
 
 # Data root (gold DB + every silver DB) defaults to the XDG data dir
@@ -158,28 +142,50 @@ ENV_CFG="${WEALTHDB_CONFIG:+$CFG}"
 # One pass over the global flags (-c PATH, -r, in their -x, --x and
 # --x=V forms): a -c path is made absolute in place and names the
 # config, and the first argument past them is the subcommand. The
-# arguments are rebuilt in order.
-sub="" want=0 past=0 n=$#
+# arguments are rebuilt in order. lead counts the arguments before the
+# subcommand, and flag_cfg is 1 when a -c named the config.
+sub="" want=0 past=0 lead=0 flag_cfg=0 n=$#
 for a in "$@"; do
     if [ "$past" = 0 ]; then
         if [ "$want" = 1 ]; then
-            a="$(wealthdb_abs_path "$a")" CFG="$a" want=0
+            a="$(wealthdb_abs_path "$a")" CFG="$a" want=0 flag_cfg=1
         else
             case "$a" in
                 -c|--c|-config|--config) want=1 ;;
                 -c=*|--c=*|-config=*|--config=*)
                     CFG="$(wealthdb_abs_path "${a#*=}")"
-                    a="${a%%=*}=$CFG"
+                    a="${a%%=*}=$CFG" flag_cfg=1
                     ;;
                 -*) ;;
                 *) sub="$a" past=1 ;;
             esac
         fi
+        [ "$past" = 1 ] || lead=$((lead + 1))
     fi
     set -- "$@" "$a"
 done
 shift "$n"
 CFG_DIR="$(dirname "$CFG")"
+
+# `web`, `mcp` and `collect` run on the host, not in the engine: `web`
+# and `mcp` are the web/ and mcp/ components' lifecycle scripts, and
+# `collect` is the collectors' dispatcher. Docker is not reachable from
+# inside the engine container, so the servers and the collectors are
+# orchestrated here. (web/, mcp/ and bin/ are siblings of this inner
+# wealthdb/ dir.) The global flags before the subcommand are the
+# engine's and are dropped. A -c path reaches the script as
+# WEALTHDB_CONFIG, where it reads the config's path.
+host=
+case "$sub" in
+    web)     host="$ROOT/web/web" ;;
+    mcp)     host="$ROOT/mcp/mcp" ;;
+    collect) host="$ROOT/bin/wealthdb-collect" ;;
+esac
+if [ -n "$host" ]; then
+    shift "$((lead + 1))"
+    if [ "$flag_cfg" = 1 ]; then export WEALTHDB_CONFIG="$CFG"; fi
+    exec "$host" "$@"
+fi
 
 mkdir -p "$CFG_DIR" "$DATA_ROOT"
 
@@ -218,11 +224,12 @@ fi
 # The native engine reads the same files under the same names, with
 # nothing to mount. It is told the paths the container engine is told,
 # and its kind, which it holds a database to (claimGoldForEngine).
+# `config` gets the locale and a TERM, as in a container (below).
 if [ "$MODE" = native ]; then
     wealthdb_require_native_engine wealthdb "$ROOT" || exit 2
     export WEALTHDB_DATA_ROOT="$DATA_ROOT" XDG_CONFIG_HOME="$XDG_CFG" WEALTHDB_ENGINE=native
     if [ -n "$ENV_CFG" ]; then export WEALTHDB_CONFIG="$ENV_CFG"; fi
-    if [ "$sub" = config ]; then export WEALTHDB_LOCALE="$locale"; fi
+    if [ "$sub" = config ]; then export WEALTHDB_LOCALE="$locale" TERM="${TERM:-dumb}"; fi
     exec "$(wealthdb_native_engine "$ROOT")" "$@"
 fi
 
@@ -274,7 +281,7 @@ set -- -e WEALTHDB_ENGINE=container "$@"
 TTY=""
 [ -t 0 ] && [ -t 1 ] && TTY="-it"
 
-wealthdb_require_image wealthdb "$IMAGE" "wealthdb build" || exit 2
+wealthdb_require_image wealthdb "$IMAGE" "Build it with: wealthdb build" || exit 2
 
 # host.docker.internal is this computer, as Docker on a Mac names it
 # already: an AI model served here is reached at that name, on Linux

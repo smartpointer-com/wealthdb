@@ -10,7 +10,8 @@
 #     when it has none;
 #   - clean-wealthdb clears the Go cache wealthdb-go uses, and
 #     test-wealthdb takes its packages and go test flags from
-#     WEALTHDB_PKGS and GO_TEST_FLAGS;
+#     WEALTHDB_PKGS and GO_TEST_FLAGS; its catalogue check leaves no
+#     scratch folder in the cache;
 #   - test-demo's scratch roots are the image tag's own, and clean-demo
 #     removes that root only when it holds the tests' marker;
 #   - lint reinstalls ruff when its pin changes, a collector's venv
@@ -25,10 +26,10 @@
 #   - an exported SHOW prints no value from make pii;
 #   - site-publish exports the env file's token, and refuses a file that
 #     does not parse without printing its lines.
-# Nothing is built: make prints, and a stub docker prints. clean-demo,
-# lint-python, build-host, update-venvs, test and site-publish run for
-# real, on roots, stub venvs, stub suites and a stub interpreter under
-# the temp dir.
+# Nothing is built: make prints, and a stub docker prints. test-wealthdb,
+# clean-demo, lint-python, build-host, update-venvs, test and
+# site-publish run for real, on a stub engine, roots, stub venvs, stub
+# suites and a stub interpreter under the temp dir.
 set -uo pipefail
 # The makes this test starts read only what it gives them: an outer
 # make's flags and command-line variables (make test-wrappers X=…) stay
@@ -108,6 +109,35 @@ has_item "test-wealthdb tests every package by default" \
 has_item "WEALTHDB_PKGS and GO_TEST_FLAGS reach go test" \
     "wealthdb/wealthdb-test -count=1 ./internal/gold/..." \
     "$(dry test-wealthdb WEALTHDB_PKGS=./internal/gold/... GO_TEST_FLAGS=-count=1)"
+# test-wealthdb for real, on a stub engine and a stub go test. The stub
+# engine prints the catalogue under test, and records the scratch root
+# the check gives it.
+catroot="$TMP/cache/wealthdb/catalogue-check-t"
+cat > "$TREE/wealthdb/wealthdb" <<'STUB'
+#!/bin/sh
+if [ "$1" = config-env ]; then
+    [ -d "$XDG_CONFIG_HOME" ] && echo "$XDG_CONFIG_HOME" > "$STUB_ROOT_SEEN"
+    for n in ${STUB_CATALOGUE:-}; do echo "$n"; done
+fi
+STUB
+printf '#!/bin/sh\n' > "$TREE/wealthdb/wealthdb-test"
+chmod +x "$TREE/wealthdb/wealthdb" "$TREE/wealthdb/wealthdb-test"
+test_wealthdb() {
+    (cd "$TREE" && env WEALTHDB_IMAGE_TAG=t XDG_CACHE_HOME="$TMP/cache" STUB_ROOT_SEEN="$TMP/cat-seen" "$@" \
+        make --no-print-directory test-wealthdb 2>&1)
+}
+out="$(test_wealthdb)"; rc=$?
+[ "$rc" = 0 ] && ok "test-wealthdb passes on a catalogue that names the collectors" || bad "test-wealthdb exit $rc: $out"
+[ "$(cat "$TMP/cat-seen" 2>/dev/null)" = "$catroot" ] && ok "the catalogue check runs the engine on a scratch root in the cache" ||
+    bad "the engine's root: $(cat "$TMP/cat-seen" 2>/dev/null)"
+[ ! -e "$catroot" ] && ok "...which is gone when the check ends" || bad "the catalogue check left $catroot"
+# What a killed run left is no part of the next one.
+mkdir -p "$catroot/old"
+out="$(test_wealthdb STUB_CATALOGUE=ghost)"; rc=$?
+[ "$rc" != 0 ] && ok "a catalogue with a collector that has no wrapper fails" || bad "test-wealthdb passed: $out"
+has "...printing the difference" "> ghost" "$out"
+[ ! -e "$catroot" ] && ok "...and removing the scratch root too" || bad "a failed catalogue check left $catroot"
+rm -f "$TREE/wealthdb/wealthdb" "$TREE/wealthdb/wealthdb-test"
 
 demo="$TMP/cache/wealthdb/demo-test-t"
 has "test-demo's scratch roots are the tag's own" \

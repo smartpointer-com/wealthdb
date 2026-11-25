@@ -111,6 +111,7 @@ joined="$(
     printf '%s' "${DOCKER_ARGS[*]}"
 )"
 check "detached"          "-d"                                                  "$joined"
+check "never pulls"       "run -d --pull=never"                                 "$joined"
 check "container name"    "--name wealthdb-metabase"                            "$joined"
 check "memory cap"        "--memory 8g"                                         "$joined"
 check "H2 volume"         "/data/web/metabase:/metabase-data"                   "$joined"
@@ -648,6 +649,30 @@ err="$(cat "$tmp/start-err")"
 check_re  "...timing the config read"       "web: timing: config [0-9]+\.[0-9]{3}s"          "$err"
 check_re  "...the container's start"        "web: timing: container start [0-9]+\.[0-9]{3}s" "$err"
 check_re  "...and the provisioning"         "web: timing: provision [0-9]+\.[0-9]{3}s"       "$err"
+# With no image, start stops at once: it takes no first snapshot and
+# makes no folder.
+noimg="$(
+    _load_config() { ENABLED=1; PORT=3000; GOLD_DB="$tmp/gold.db"; }
+    _is_running()  { return 1; }
+    _exists()      { return 1; }
+    docker() {
+        if [ "$1 $2" = "image inspect" ]; then
+            echo "Error response from daemon: No such image: img" >&2
+            return 1
+        fi
+    }
+    _materialize() { echo MATERIALIZED; }
+    _snapshot()    { echo SNAPSHOT; }
+    DATA_DIR="$tmp/noimg" H2_DIR="$tmp/noimg/metabase" SPILL_DIR="$tmp/noimg/spill"
+    SNAP="$tmp/noimg/snapshot/wealthdb.db" BIND=v4 IMAGE=img CONTAINER=wealthdb-metabase
+    web_start 2>&1; echo "rc=$?"
+)"
+check     "a start with no image names the build" \
+          "web: the image img is not built yet. Build it with: wealthdb web build" "$noimg"
+check     "...and fails"                         "rc=1"         "$noimg"
+check_not "...before gold is materialized"       "MATERIALIZED" "$noimg"
+check_not "...and before the first snapshot"     "SNAPSHOT"     "$noimg"
+if [ -e "$tmp/noimg" ]; then fail "...making no folder"; else pass "...making no folder"; fi
 # After refresh read the config, start does not read it again.
 cfg_reads="$(
     _load_config() { echo CONFIG_READ; ENABLED=1; PORT=3000; GOLD_DB="$tmp/gold.db"; }

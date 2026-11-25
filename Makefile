@@ -58,8 +58,9 @@ endif
 export WEALTHDB_IMAGE_TAG
 TAG := $(WEALTHDB_IMAGE_TAG)
 NCPU = $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
-# The build locks, the Go caches, the demo test roots and site-shots'
-# scratch dir live here: paths Docker can mount.
+# The build locks, the Go caches, the demo test roots and the scratch
+# dirs of site-shots and of test-wealthdb's catalogue check live here:
+# paths Docker can mount.
 CACHE_ROOT := $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb
 BUILD_LOCK_DIR := $(CACHE_ROOT)/build-locks
 # LOCKED NAME: a recipe prefix that holds the build lock NAME-$(TAG)
@@ -326,7 +327,9 @@ CAMOUFOX_KEEP = wealthdb/base-camoufox:keep-$(CAMOUFOX_BUILD)
 # and prints it only when the build fails, so a failing RUN step shows
 # its own error, not only its Dockerfile lines. pull refreshes the
 # upstream image a base builds FROM; a base FROM a local wealthdb/ image
-# never pulls. Without pull, a base whose wealthdb.inputs label matches
+# never pulls, and is built only when that image is local
+# (wealthdb_require_local_bases), so no registry is asked for a
+# wealthdb/ name. Without pull, a base whose wealthdb.inputs label matches
 # the hash of its inputs is kept as it is (wealthdb_build_unchanged).
 # The inputs are its own Dockerfile, collectorkit, shared/.dockerignore,
 # the helper files in shared/images that are not Dockerfiles, and its
@@ -384,6 +387,7 @@ for img in $(BASE_IMAGES); do \
 	if wealthdb_build_unchanged "wealthdb/$$img:$(TAG)" "$$hash" $(if $(2),1,0); then \
 		continue; \
 	fi; \
+	wealthdb_require_local_bases "$$img" "$$f" "Run: make base-images" || exit 1; \
 	echo "==> build base image wealthdb/$$img:$(TAG)$${pull:+ ($$pull)}$${mode:+ (browser: $$mode$$why)}"; \
 	docker build $(if $(1),--progress=plain) $$pull --provenance=false \
 		$${hash:+--label "wealthdb.inputs=$$hash"} \
@@ -417,7 +421,7 @@ camoufox-archive:
 	mkdir -p "$(CAMOUFOX_ARCHIVE_DIR)" || exit 1; \
 	tmp=$$(mktemp "$$out.XXXXXX") || exit 1; trap 'rm -f "$$tmp"' EXIT; \
 	echo "==> write $$out from $(CAMOUFOX_KEEP)"; \
-	docker run --rm --entrypoint tar "$(CAMOUFOX_KEEP)" -C /opt -czf - camoufox-cache >"$$tmp" || exit 1; \
+	docker run --rm --pull=never --entrypoint tar "$(CAMOUFOX_KEEP)" -C /opt -czf - camoufox-cache >"$$tmp" || exit 1; \
 	sum=$$($(PYTHON) shared/images/camoufox-archive.py sum "$$tmp") || exit 1; \
 	if [ "$$sum" != "$$pin" ]; then \
 		echo "camoufox-archive: the archive's checksum is $$sum, and" >&2; \
@@ -570,14 +574,16 @@ GO_TEST_FLAGS =
 # After the Go tests, the built engine's catalogue (what `wealthdb
 # config` offers) is held to the collectors: it names every directory
 # under collectors/ that has a wrapper, and nothing else. The engine runs
-# on a scratch config and data root of its own, in the cache.
+# on a scratch config and data root of its own, in the cache, removed
+# when the check ends.
 CATALOGUE_CHECK_ROOT := $(CACHE_ROOT)/catalogue-check-$(TAG)
 
 test-wealthdb: build-wealthdb
 	@echo "==> test wealthdb (go test $(strip $(GO_TEST_FLAGS) $(WEALTHDB_PKGS)))"
 	$(WEALTHDB_TEST) $(GO_TEST_FLAGS) $(WEALTHDB_PKGS)
 	@echo "==> check the engine's catalogue against collectors/"
-	@root='$(CATALOGUE_CHECK_ROOT)'; mkdir -p "$$root"; \
+	@root='$(CATALOGUE_CHECK_ROOT)'; rm -rf "$$root"; mkdir -p "$$root" || exit 1; \
+	trap 'rm -rf "$$root"' EXIT; \
 	for d in collectors/*/; do n="$${d%/}"; n="$${n##*/}"; \
 	    if [ -f "$$d$$n" ] && [ -x "$$d$$n" ]; then echo "$$n"; fi; \
 	done | sort > "$$root/want"; \
@@ -746,7 +752,7 @@ site-shots: build-wealthdb build-web base-images
 	$(call VENV,$(SITE_VENV),site/requirements.txt)
 	@echo "==> shoot the demo's dashboards"
 	@rm -rf "$(SITE_TMP)" && mkdir -p "$(SITE_TMP)" && trap 'rm -rf "$(SITE_TMP)"' EXIT && \
-	docker run --rm --user "$$(id -u):$$(id -g)" -e HOME=/tmp --add-host=host.docker.internal:host-gateway \
+	docker run --rm --pull=never --user "$$(id -u):$$(id -g)" -e HOME=/tmp --add-host=host.docker.internal:host-gateway \
 		-v "$(ROOT_DIR):/repo:ro" -v "$(DEMO_ROOT)/web/admin-password.txt:/password:ro" \
 		-v "$(SITE_TMP):/out" --entrypoint bash wealthdb/base-camoufox:$(TAG) \
 		-c 'source /opt/entrypoint-lib.sh && exec python3 /repo/site/capture.py "$$@"' capture \
@@ -941,7 +947,7 @@ test-$(1): build-$(1)
 			echo "    $(1): cannot run tests (no venv)" >&2; exit 1; \
 		fi; \
 	else \
-		docker run --rm --user "$$$$(id -u):$$$$(id -g)" -e HOME=/tmp \
+		docker run --rm --pull=never --user "$$$$(id -u):$$$$(id -g)" -e HOME=/tmp \
 			-v "$(ROOT_DIR)/collectors/$(1):/src:ro" \
 			--tmpfs "/app:exec,uid=$$$$(id -u),gid=$$$$(id -g)" \
 			--entrypoint sh "wealthdb/$(1):$(TAG)" \

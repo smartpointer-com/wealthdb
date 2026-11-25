@@ -63,8 +63,9 @@ env file is read.
 exit: 0
 --- stdout
 --- stderr
-curves: no-op. The portals are public; there is no session to mint.
-To ask each portal for its cheapest answer, run `wealthdb-collect curves login --check`.
+curves: Nothing to set up: the yield curves are public.
+curves: no-op: there is no session to mint. To ask each portal for its
+cheapest answer, run: wealthdb-collect curves login --check
 === download
 --- calls
 python3

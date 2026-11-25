@@ -168,7 +168,7 @@ else
     bad "the archive is written when its checksum is the pinned one (exit $rc: $out)"
 fi
 has "the archive comes from the kept image of the pinned build" \
-    "run --rm --entrypoint tar wealthdb/base-camoufox:keep-1.0-beta.1 -C /opt -czf - camoufox-cache" \
+    "run --rm --pull=never --entrypoint tar wealthdb/base-camoufox:keep-1.0-beta.1 -C /opt -czf - camoufox-cache" \
     "$(cat "$TMP/docker.log")"
 out="$(archive "$TMP/c.tgz")"; rc=$?
 if [ "$rc" -ne 0 ] && cmp -s "$DEST" "$TMP/a.tgz" && grep -qF "$(arc sum "$TMP/c.tgz")" <<<"$out" \

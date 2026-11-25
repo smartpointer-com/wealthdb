@@ -42,15 +42,18 @@ case "$cmd" in
         # --check is accepted for fleet uniformity; this collector is
         # load-only with no session, so there is nothing to probe.
         host_has_flag --check ${@+"$@"} && echo "manual: no session to probe — --check has nothing to check here." >&2
+        # The `first` lines of setup.txt name the two files every load
+        # needs and their folder. A `login` at a terminal ends with the
+        # commands that follow it.
+        setup_print_first
+        if [[ "$cmd" == login ]]; then setup_arm_next login ${@+"$@"}; fi
         cat >&2 <<'EOF'
-manual: no-op. This collector has no source to fetch from — the CSVs are
-the source of truth. Maintain the CSVs by hand in the data dir (default
-$XDG_DATA_HOME/wealthdb/manual/): positions.csv, valuations.csv, and
-optionally accounts.csv to give positions their own tax sleeve and
-management style, cost_basis.csv for capital paid in over time, and
-exits.csv for what a position was sold for — then run `wealthdb-collect manual load` to
-validate them and rebuild the silver. See README.md for the columns and how
-to maintain them.
+manual: no-op. The CSVs are the source of truth, kept by hand. Three
+more are optional: accounts.csv gives a position its own tax sleeve and
+management style, cost_basis.csv holds the capital paid in over time,
+and exits.csv what a position was sold for.
+`wealthdb-collect manual load` checks the files and rebuilds the silver.
+README.md has the columns and how to keep them.
 EOF
         exit 0
         ;;

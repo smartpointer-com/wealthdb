@@ -10,7 +10,9 @@
 #     reads a bare relative source as a named volume;
 #   - the VNC port is forwarded only for the VNC_SUBCOMMANDS, on the first
 #     free host port;
-#   - ENV_PREFIX is derived from NAME when the wrapper does not set it.
+#   - ENV_PREFIX is derived from NAME when the wrapper does not set it;
+#   - a run never pulls, and a missing image stops the verb with the
+#     command that builds it.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -26,10 +28,15 @@ unset WEALTHDB_DATA_ROOT TESTCOL_SECRETS_DIR TESTCOL_DATA_DIR TESTCOL_DEBUG_DIR 
 
 # A fake `docker` that prints its argv (one item per line) and exits, so
 # wrapper_main's `exec docker run ...` is captured rather than really
-# launching a container. A fake `lsof` reports host port 5900 as taken.
+# launching a container. With STUB_NO_IMAGE it holds no image. A fake
+# `lsof` reports host port 5900 as taken.
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/docker" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${1:-} ${2:-}" == "image inspect" && -n "${STUB_NO_IMAGE:-}" ]]; then
+    echo "Error response from daemon: No such image: ${*: -1}" >&2
+    exit 1
+fi
 printf '%s\n' "$@"
 EOF
 cat > "$TMP/bin/lsof" <<'EOF'
@@ -124,6 +131,15 @@ lacks_item "an empty VNC_SUBCOMMANDS, no VNC port" "VNC_HOST_PORT=5901" "$out"
 echo "wrapper-lib ENV_PREFIX:"
 out="$(TEST_NAME=test-col TEST_PREFIX='' TEST_COL_DATA_DIR=derived docker_argv login)"
 has_item "an unset ENV_PREFIX is NAME in upper snake case" "$TMP/work/derived:/data" "$out"
+
+echo "wrapper-lib image:"
+has_item "a run never pulls" "--pull=never" "$(docker_argv login)"
+out="$(STUB_NO_IMAGE=1 WEALTHDB_IMAGE_TAG=t docker_argv login 2>&1)"; rc=$?
+[[ "$rc" == 2 ]] && ok "a missing image exits 2" || bad "a missing image exits $rc"
+has "...naming the make target that builds it and its bases" \
+    "testcol: the image wealthdb/testcol:t is not built yet. In a checkout, run: make build-testcol" "$out"
+lacks "...and not the wrapper's own build, which builds no base" "testcol build" "$out"
+lacks_item "...and nothing runs" "run" "$out"
 
 echo
 summary "wrapper_main docker argv tests"

@@ -346,6 +346,7 @@ web_start() {
         echo "web: already running ($(_where)). Use 'wealthdb web restart'." >&2
         return 1
     fi
+    # The server's program or image is checked before any work is done.
     # What a server that died left behind goes first: its container, or
     # its pid file and LaunchAgent.
     if [ "$SERVICE_MODE" = native ]; then
@@ -353,6 +354,7 @@ web_start() {
         _loopback_host "$BIND" >/dev/null || return 1
         _native_stop
     else
+        wealthdb_require_image web "$IMAGE" "Build it with: wealthdb web build" || return 1
         _exists && docker rm "$CONTAINER" >/dev/null 2>&1 || true
     fi
     mkdir -p "$H2_DIR" "$(dirname "$SNAP")" "$SPILL_DIR"
@@ -370,7 +372,6 @@ web_start() {
     if [ "$SERVICE_MODE" = native ]; then
         _timed "server start" _native_start || return 1
     else
-        wealthdb_require_image web "$IMAGE" "wealthdb web build" || return 1
         _docker_run_args
         if ! _timed "container start" docker "${DOCKER_ARGS[@]}" >/dev/null; then
             if [ "$BIND" = both ]; then

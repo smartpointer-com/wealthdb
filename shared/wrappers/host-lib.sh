@@ -34,6 +34,9 @@
 # bash 3.2 compatibility: avoids namerefs / associative arrays.
 
 _HOST_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# image-tag.sh for wealthdb_abs_path alone: a host wrapper runs no image.
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/image-tag.sh"
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/envfile-lib.sh"
 # shellcheck disable=SC1091

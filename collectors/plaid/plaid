@@ -45,9 +45,10 @@
 #                       whole runs that did not complete. --dry-run prints
 #                       the plan first.
 #
-# --sandbox on link, login and download uses Plaid's test institutions, the
-# Sandbox secret, and only the Items made there. Sandbox downloads take a
-# --data-dir of their own. `<verb> --help` lists every flag of a verb.
+# --sandbox on link, banks, login and download uses Plaid's test
+# institutions, the Sandbox secret, and only the Items made there.
+# Sandbox downloads take a --data-dir of their own. `<verb> --help`
+# lists every flag of a verb.
 #
 # Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
 # > default):

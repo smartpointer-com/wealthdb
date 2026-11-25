@@ -213,14 +213,29 @@ wrapper_mounts_help() {
 # Subcommand helpers
 # ----------------------------------------------------------------------
 
-# Implement `./<wrapper> build [extra args]`. When the image's label
-# matches a hash of its inputs and of its base image, print that it is
-# unchanged and exit. The inputs are the Dockerfile and requirements.txt
-# alone: the image holds no source, so an edit to the code or the docs
-# leaves it as it is. Returning would fall through into docker run. Extra
-# arguments are passed through, and the image is built. A hash that
-# fails (no python3 on the host) builds an unlabeled image, which is
-# never skipped.
+# _wrapper_build_hint — print the sentence that says how this
+# collector's image and its base images are built. `make build-<name>`
+# builds the bases first, and only a checkout has the Makefile and their
+# Dockerfiles. An installed copy builds no image.
+_wrapper_build_hint() {
+    if [[ -f "$_WRAPPER_ROOT/Makefile" ]]; then
+        echo "In a checkout, run: make build-$NAME"
+    else
+        echo "An installed copy builds no image. Run this collector from a checkout."
+    fi
+}
+
+# Implement `./<wrapper> build [extra args]`, the step `make build-<name>`
+# runs once the base images are built. A Dockerfile FROM a wealthdb/
+# base that is not local stops the build with status 2
+# (wealthdb_require_local_bases), so no registry is asked for it. When
+# the image's label matches a hash of its inputs and of its base image,
+# print that it is unchanged and exit. The inputs are the Dockerfile and
+# requirements.txt alone: the image holds no source, so an edit to the
+# code or the docs leaves it as it is. Returning would fall through into
+# docker run. Extra arguments are passed through, and the image is
+# built. A hash that fails (no python3 on the host) builds an unlabeled
+# image, which is never skipped.
 # wrapper_main dispatches $1 == "build" here.
 # --provenance=false: buildx's default provenance attestation embeds build
 # metadata, so the image digest changes on every build even when every layer
@@ -230,6 +245,7 @@ wrapper_mounts_help() {
 # tag builds on its own bases.
 wrapper_build() {
     shift  # drop "build"
+    wealthdb_require_local_bases "$NAME" "$HERE/Dockerfile" "$(_wrapper_build_hint)" || exit 2
     # The base image's id is part of the inputs: a rebuilt base is a
     # different image even when its own inputs did not change.
     _wfrom="$(wealthdb_from_id "$HERE/Dockerfile")"
@@ -466,7 +482,7 @@ wrapper_main() {
         wrapper_safety_guard "$@"
     fi
 
-    wealthdb_require_image "$NAME" "$IMAGE" "wealthdb-collect $NAME build" || exit 2
+    wealthdb_require_image "$NAME" "$IMAGE" "$(_wrapper_build_hint)" || exit 2
     local -a docker_args=(
         --rm --pull=never --name "$CONTAINER_NAME"
         ${TTY_ARGS[@]+"${TTY_ARGS[@]}"}

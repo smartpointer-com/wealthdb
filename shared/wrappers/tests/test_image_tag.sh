@@ -36,7 +36,7 @@ cp "$ROOT/shared/wrappers/wrapper-lib.sh" "$ROOT/shared/wrappers/image-tag.sh" \
     "$ROOT/shared/wrappers/engine-mode.sh" \
     "$ROOT/shared/wrappers/envfile-lib.sh" "$ROOT/shared/wrappers/demo-root.sh" \
     "$ROOT/shared/wrappers/paths-lib.sh" "$ROOT/shared/wrappers/service-lib.sh" \
-    "$TREE/shared/wrappers/"
+    "$ROOT/shared/wrappers/setup-lib.sh" "$TREE/shared/wrappers/"
 mkdir -p "$TREE/mcp" "$TREE/web"
 cp "$ROOT/Makefile" "$TREE/"
 cp "$ROOT/mcp/mcp" "$TREE/mcp/"
@@ -251,7 +251,9 @@ fi
 # the label on the inputs inspect, STUB_ENV on the environment inspect
 # (an image that is not there with STUB_NO_IMAGE) and STUB_ID on any
 # other inspect, and prints BUILT and its argv on a build and PULLED and
-# the image on a pull.
+# the image on a pull. STUB_FAIL fails every call but a build, with
+# Docker's message for a missing image under STUB_MISSING and for a
+# daemon that is down under STUB_DOWN.
 skipdir="$TMP/skipcol"
 mkdir -p "$skipdir"
 printf 'FROM wealthdb/base-python:${WEALTHDB_IMAGE_TAG}\n' > "$skipdir/Dockerfile"
@@ -262,6 +264,12 @@ if [ "${1:-}" = build ]; then
     printf 'BUILT\n'
     printf '%s\n' "$@"
     exit 0
+fi
+if [ -n "${STUB_MISSING:-}" ] && [ "${1:-} ${2:-}" = "image inspect" ]; then
+    echo "Error response from daemon: No such image: ${*: -1}" >&2
+fi
+if [ -n "${STUB_DOWN:-}" ]; then
+    echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2
 fi
 [ -n "${STUB_FAIL:-}" ] && exit 1
 if [ "${1:-}" = pull ]; then
@@ -337,6 +345,113 @@ if grep -qx BUILT <<<"$out"; then
 else
     bad "a requirements edit rebuilds the image ($out)"
 fi
+
+# A wealthdb/ base that is not local stops the build: `docker build`
+# would ask a registry for it. STUB_FAIL fails every inspect.
+out="$(STUB_FAIL=1 skip_build "" 2>&1)"; rc=$?
+[ "$rc" = 2 ] && ok "a base image that is not local: build exits 2" || bad "a base image that is not local: build exits $rc"
+has "...naming the make target that builds the bases first" \
+    "testcol: the base image wealthdb/base-python:feature is not built yet. In a checkout, run: make build-testcol" "$out"
+lacks "...and docker build never runs" "BUILT" "$out"
+# An installed copy has no Makefile and no base images' Dockerfiles.
+INST="$TMP/installed"
+mkdir -p "$INST/shared/wrappers"
+cp "$TREE/shared/wrappers/"*.sh "$INST/shared/wrappers/"
+# inst_verb VERB: VERB of the collector in skipdir, from the installed
+# copy.
+inst_verb() {
+    (
+        export PATH="$TMP/bin:$PATH" WEALTHDB_IMAGE_TAG=feature HOME="$TMP/home"
+        export XDG_DATA_HOME="$TMP/data" XDG_CACHE_HOME="$TMP/cache"
+        mkdir -p "$HOME/.secrets"
+        NAME=testcol; ENV_PREFIX=TESTCOL; ENV_VARS=(); HERE="$skipdir"
+        unset TESTCOL_IMAGE WEALTHDB_SECRETS_DIR WEALTHDB_DATA_ROOT
+        # shellcheck disable=SC1091
+        source "$INST/shared/wrappers/wrapper-lib.sh"
+        wrapper_init
+        wrapper_main "$@"
+    )
+}
+out="$(STUB_FAIL=1 inst_verb build 2>&1)"; rc=$?
+[ "$rc" = 2 ] && ok "an installed copy, no base image: build exits 2" || bad "an installed copy, no base image: build exits $rc"
+has "...naming a checkout, since the copy builds none" \
+    "testcol: the base image wealthdb/base-python:feature is not built yet. An installed copy builds no image. Run this collector from a checkout." "$out"
+lacks "...and docker build never runs" "BUILT" "$out"
+lacks "...and no make target, which the copy does not have" "make build-" "$out"
+out="$(STUB_FAIL=1 STUB_MISSING=1 inst_verb load 2>&1)"; rc=$?
+[ "$rc" = 2 ] && ok "an installed copy, no image: a verb exits 2" || bad "an installed copy, no image: a verb exits $rc"
+has "...naming a checkout" \
+    "testcol: the image wealthdb/testcol:feature is not built yet. An installed copy builds no image. Run this collector from a checkout." "$out"
+lacks "...and no build command of the wrapper" "testcol build" "$out"
+# A base of another name is the build's to fetch.
+printf 'FROM python:3.12-slim\n' > "$skipdir/Dockerfile"
+out="$(STUB_FAIL=1 skip_build "" 2>&1)"
+has "an upstream base that is not local is left to docker build" "BUILT" "$out"
+printf 'FROM wealthdb/base-python:${WEALTHDB_IMAGE_TAG}\n' > "$skipdir/Dockerfile"
+
+# wealthdb_require_local_bases and wealthdb_require_image on their own.
+# The stub fails an inspect with STUB_MISSING (no such image) or with
+# STUB_DOWN (no daemon), and prints the image it was asked for.
+require() { # FUNCTION DOCKERFILE-OR-IMAGE
+    (
+        export PATH="$TMP/bin:$PATH" WEALTHDB_IMAGE_TAG=feature
+        # shellcheck disable=SC1091
+        . "$TREE/shared/wrappers/image-tag.sh"
+        "$1" who "$2" "Do this." 2>&1
+        echo "rc=$?"
+    )
+}
+printf 'FROM python:3.12-slim AS tools\nFROM wealthdb/base-x:${WEALTHDB_IMAGE_TAG} AS base\nFROM base\n' > "$TMP/stages.Dockerfile"
+out="$(STUB_MISSING=1 STUB_FAIL=1 require wealthdb_require_local_bases "$TMP/stages.Dockerfile")"
+has "a wealthdb/ base in a later FROM line is checked too" \
+    "who: the base image wealthdb/base-x:feature is not built yet. Do this." "$out"
+has "...and refused" "rc=1" "$out"
+out="$(require wealthdb_require_local_bases "$TMP/stages.Dockerfile")"
+[ "$out" = "rc=0" ] && ok "local bases: nothing is said" || bad "local bases: $out"
+out="$(STUB_DOWN=1 STUB_FAIL=1 require wealthdb_require_local_bases "$TMP/stages.Dockerfile")"
+has "a Docker that does not answer: no build, with Docker's message" \
+    "who: Docker could not say whether the base image wealthdb/base-x:feature is built: Cannot connect to the Docker daemon" "$out"
+has "...refused" "rc=1" "$out"
+out="$(STUB_FAIL=1 require wealthdb_require_local_bases "$TMP/no-such.Dockerfile")"
+[ "$out" = "rc=0" ] && ok "no Dockerfile: left to the build, which has none" || bad "no Dockerfile: $out"
+out="$(STUB_MISSING=1 STUB_FAIL=1 require wealthdb_require_image wealthdb/x:feature)"
+has "a missing image: the message ends in the hint" "who: the image wealthdb/x:feature is not built yet. Do this." "$out"
+has "...refused" "rc=1" "$out"
+out="$(STUB_DOWN=1 STUB_FAIL=1 require wealthdb_require_image wealthdb/x:feature)"
+[ "$out" = "rc=0" ] && ok "a Docker that does not answer is left to the run" || bad "a Docker that does not answer: $out"
+
+# Every Dockerfile of the checkout FROM a wealthdb/ image is one that
+# the check reads and that a guarded build builds: a collector's
+# (wrapper_build) or a shared base's (the Makefile's BUILD_BASES).
+unguarded="" unread=""
+while IFS= read -r f; do
+    case "${f#"$ROOT"/}" in
+        collectors/*/Dockerfile | shared/images/base-*.Dockerfile) ;;
+        *) unguarded="$unguarded ${f#"$ROOT"/}" ;;
+    esac
+    out="$(STUB_MISSING=1 STUB_FAIL=1 require wealthdb_require_local_bases "$f")"
+    grep -qx 'rc=1' <<<"$out" || unread="$unread ${f#"$ROOT"/}"
+done < <(grep -lE '^FROM[[:space:]].*wealthdb/' "$ROOT"/*/Dockerfile "$ROOT"/collectors/*/Dockerfile \
+    "$ROOT"/shared/images/*.Dockerfile 2>/dev/null)
+[ -z "$unguarded" ] && ok "only collectors and shared bases build FROM a wealthdb/ image" ||
+    bad "a build with no check builds FROM a wealthdb/ image:$unguarded"
+[ -z "$unread" ] && ok "the check refuses each of them when its base is not local" ||
+    bad "the check does not read the wealthdb/ base of:$unread"
+for site in "$ROOT/shared/wrappers/wrapper-lib.sh" "$ROOT/Makefile"; do
+    grep -q 'wealthdb_require_local_bases' "$site" && ok "${site#"$ROOT"/} runs the check" ||
+        bad "${site#"$ROOT"/} builds with no check"
+done
+
+# Every `docker run` passes --pull=never: each argv starts `run -d` or
+# `run --rm`, or, in wrapper-lib.sh, on a line of its own with --rm.
+sites="$(grep -nE '(^|[^[:alnum:]_-])run[[:space:]]+(-d|--rm)|^[[:space:]]*--rm[[:space:]]' \
+    "$ROOT/Makefile" "$ROOT/wealthdb/wealthdb" "$ROOT/wealthdb/wealthdb-go" "$ROOT/web/web" "$ROOT/mcp/mcp" \
+    "$ROOT"/shared/wrappers/*.sh "$ROOT"/bin/* "$ROOT"/shared/native/* |
+    grep -vE '^[^:]+:[0-9]+:[[:space:]]*#')"
+n="$(grep -c . <<<"$sites")"
+[ "$n" -ge 10 ] && ok "the docker run sites are found ($n)" || bad "only $n docker run sites found: the pattern has aged"
+pulls="$(grep -v -- '--pull=never' <<<"$sites")"
+[ -z "$pulls" ] && ok "every docker run passes --pull=never" || bad "a docker run that may pull: $pulls"
 
 from="$(. "$TREE/shared/wrappers/image-tag.sh"; WEALTHDB_IMAGE_TAG=feature wealthdb_from_ref "$skipdir/Dockerfile")"
 if [ "$from" = wealthdb/base-python:feature ]; then
@@ -496,6 +611,15 @@ has "a bundle build replaces a base-camoufox without the browser" \
 out="$(camo_bases "$(camo_hash bundle)" update-bases CAMOUFOX_BROWSER=none)"
 has "update-bases builds a none base-camoufox over one with the browser" \
     "build base image wealthdb/base-camoufox:feature (browser: none)" "$out"
+# A base FROM a wealthdb/ image is built only when that image is local:
+# `docker build` would ask a registry for the name.
+out="$(STUB_MISSING=1 STUB_FAIL=1 camo_bases stale base-images)"; rc=$?
+[ "$rc" != 0 ] && ok "base-images fails at a base whose wealthdb/ parent is not local" ||
+    bad "base-images went on with no local parent"
+has "...naming the parent and the command" \
+    "base-camoufox: the base image wealthdb/base-playwright:feature is not built yet. Run: make base-images" "$out"
+lacks "...and never builds it" "build base image wealthdb/base-camoufox" "$out"
+has "...after the bases FROM an upstream image" "build base image wealthdb/base-playwright:feature" "$out"
 rm -r "$TMP/cache/wealthdb/camoufox"
 
 summary "image tag tests"

@@ -265,7 +265,7 @@ _require_engine() {
         echo "mcp: the engine is not built yet. Run: make all" >&2
         return 1
     fi
-    wealthdb_require_image mcp "$IMAGE" "wealthdb build"
+    wealthdb_require_image mcp "$IMAGE" "Build it with: wealthdb build"
 }
 
 # _ready is what `start` and `serve` do before a server runs, once the
@@ -481,8 +481,8 @@ at login and after a crash.
 Two endpoints: /mcp serves full data, /mcp/privacy redacts amounts,
 account numbers and the names taken off statements. Every call reads the
 live database read-only, so answers are as fresh as the last load.
-It listens on 127.0.0.1 only (and [::1] as a container;
-WEALTHDB_MCP_BIND=v6 moves a native server to [::1]). Turn it on with
+It listens on loopback only: 127.0.0.1, and as a container [::1] too.
+WEALTHDB_MCP_BIND=v6 moves a native server to [::1]. Turn it on with
 'wealthdb config mcp-server', which writes the "mcp" block of wealthdb.cfg.
 
 HTTP asks for a bearer token, generated on first start (chmod 600).

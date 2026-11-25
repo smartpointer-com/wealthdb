@@ -38,9 +38,10 @@ case "$VERB" in
         # No portal mints a session. `--check` asks each one for its
         # cheapest answer instead.
         host_login_probe download.py
+        setup_print_first
         cat >&2 <<'EOF'
-curves: no-op. The portals are public; there is no session to mint.
-To ask each portal for its cheapest answer, run `wealthdb-collect curves login --check`.
+curves: no-op: there is no session to mint. To ask each portal for its
+cheapest answer, run: wealthdb-collect curves login --check
 EOF
         ;;
     download) host_run download.py --bronze-dir "$DATA_DIR" ;;

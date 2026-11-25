@@ -2,8 +2,9 @@
 # Behaviour test: wealthdb-go forwards the reload-verification harness's
 # gold paths (WEALTHDB_GOLD_VERIFY, WEALTHDB_GOLD_BEFORE) as absolute
 # paths and mounts each file's directory read-only at the same path, once
-# per directory, and adds nothing when they are unset. A stubbed docker on
-# PATH records the argv; nothing real runs.
+# per directory, and adds nothing when they are unset. It runs only an
+# image that is local, and never pulls one. A stubbed docker on PATH
+# records the argv; nothing real runs.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -20,6 +21,10 @@ cp "$ROOT/wealthdb/wealthdb-go" "$TREE/wealthdb/"
 cp "$ROOT/shared/wrappers/image-tag.sh" "$ROOT/shared/wrappers/engine-mode.sh" "$TREE/shared/wrappers/"
 cat > "$TMP/bin/docker" <<'EOF'
 #!/bin/sh
+if [ "$1 $2" = "image inspect" ] && [ -n "${STUB_NO_IMAGE:-}" ]; then
+    echo "Error response from daemon: No such image: wealthdb:t" >&2
+    exit 1
+fi
 for a in "$@"; do printf '%s\n' "$a"; done
 env | grep '^WEALTHDB_GOLD_' | sed 's/^/ENV /'
 EOF
@@ -36,6 +41,12 @@ out="$(run)"
 lacks "unset: no harness variable" "WEALTHDB_GOLD" "$out"
 lacks "unset: no read-only mount" ":ro" "$out"
 has "unset: the go argv follows the image" "$(printf 'wealthdb:t\ntest')" "$out"
+has_item "a run never pulls" "--pull=never" "$out"
+out="$(run STUB_NO_IMAGE=1 2>&1)"; rc=$?
+[ "$rc" = 2 ] && ok "a missing image exits 2" || bad "a missing image exits $rc"
+has "...naming the build" \
+    "wealthdb-go: the image wealthdb:t is not built yet. Build it with: wealthdb/wealthdb build" "$out"
+lacks_item "...and nothing runs" "run" "$out"
 
 out="$(run WEALTHDB_GOLD_VERIFY=a/after.db WEALTHDB_GOLD_BEFORE="$TMP/gold/b/before.db")"
 has "a relative path is forwarded absolute" "ENV WEALTHDB_GOLD_VERIFY=$TMP/gold/a/after.db" "$out"

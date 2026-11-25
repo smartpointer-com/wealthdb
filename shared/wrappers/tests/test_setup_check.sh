@@ -16,8 +16,9 @@
 # it has with no declaration at all.
 #
 # Fleet: every collector's `login` with an empty secrets folder prints
-# its instructions and starts nothing; plaid, manual and svb explain
-# their first step and exit 0.
+# its instructions and starts nothing; plaid, manual, svb and curves
+# print the first step their declaration states and exit 0, and the
+# last three end with the commands that follow.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -414,6 +415,9 @@ has "colours: a command in cyan" $'\033[36mwealthdb-collect testcol download\033
 has "colours: the title in bold" $'\033[1mWhat to do now\033[0m' "$out"
 lacks "no colours without a terminal" $'\033[' "$(WEALTHDB_SETUP_NEXT=1 docker_run docker "$DECL" login)"
 lacks "NO_COLOR: no colours" $'\033[' "$(NO_COLOR= WEALTHDB_SETUP_NEXT=1 docker_run docker "$DECL" login)"
+out="$(WEALTHDB_SETUP_COLOR=1 docker_run docker "$TMP/decl2" login)"
+has "colours: the key files' step in bold, as every numbered step" \
+    $'\033[1m3. Put these files in the secrets folder:\033[0m' "$out"
 rm -f "$SECRETS/testcol.env"
 # A verb that names a login is named back with it.
 sed -i.bak -e 's/^checks .*/checks link login/' "$TMP/item.txt"
@@ -423,6 +427,12 @@ out="$(docker_run docker "$TMP/item.txt" link)"
 has "...and with the placeholder when it named none" "Then run: wealthdb-collect testcol link --item <name>" "$out"
 out="$(docker_run docker "$TMP/item.txt" login)"
 has "a verb with no then line stays bare" "Then run: wealthdb-collect testcol login" "$out"
+printf "TESTCOL_USERNAME=u\nTESTCOL_PASSWORD='%s\n" "$SECRET_MARK" > "$SECRETS/testcol.env"
+out="$(docker_run docker "$TMP/item.txt" link --item schwab)"
+has "a file that is not valid: exit 78" "rc=78" "$out"
+has "a file that is not valid names the stopped link with its login" \
+    "Then run: wealthdb-collect testcol link --item schwab" "$out"
+rm -f "$SECRETS/testcol.env"
 out="$(WEALTHDB_SETUP_NEXT=1 docker_run docker "$DECL" login)"
 has "a login the check stops: exit 78" "rc=78" "$out"
 lacks "a login the check stops: no block" "What to do now" "$out"
@@ -574,7 +584,8 @@ echo
 echo "login on each collector, from an empty secrets folder:"
 
 # fleet_run NAME ROOT ARGS...: the collector's wrapper and setup.txt in a
-# tree of their own (no .venv), with stub docker and python3.
+# tree of their own (no .venv), with stub docker and python3. FLEET_NEXT=1
+# asks for the block a login ends with, as a terminal does.
 cat > "$TMP/bin/python3" <<'EOF'
 #!/usr/bin/env bash
 echo "python3 ran"
@@ -589,7 +600,7 @@ fleet_run() {
     cp -p "$REPO/shared/wrappers/"*.sh "$root/tree/shared/wrappers/"
     env -i PATH="$TMP/bin:/usr/bin:/bin" HOME="$root/home" LC_ALL=C TMPDIR="$TMP" \
         XDG_DATA_HOME="$root/xd" XDG_CACHE_HOME="$root/xc" XDG_CONFIG_HOME="$root/xcfg" \
-        STUB_LOG="$root/stub.log" \
+        STUB_LOG="$root/stub.log" WEALTHDB_SETUP_NEXT="${FLEET_NEXT:-}" \
         "$root/tree/collectors/$name/$name" "$@" < /dev/null 2>&1
     echo "rc=$?"
 }
@@ -629,6 +640,33 @@ for name in plaid manual svb; do
         svb)    has "svb: login explains the statement folder" "bronze/" "$out" ;;
     esac
     lacks "$name: no value printed" "$SECRET_MARK" "$out"
+done
+
+# A collector with nothing to sign in to prints the `first` lines of its
+# declaration, and its login ends with the declaration's `then` commands.
+for name in manual svb curves; do
+    root="$TMP/next-$name"
+    mkdir -p "$root/home/.secrets"
+    first="$(sed -n 's/^first //p' "$REPO/collectors/$name/setup.txt" | sed -n '1p')"
+    last="$(sed -n 's/^first //p' "$REPO/collectors/$name/setup.txt" | sed -n '$p')"
+    out="$(FLEET_NEXT=1 fleet_run "$name" "$root" login)"
+    has "$name: login exits 0" "rc=0" "$out"
+    has "$name: login prints the declaration's first step" "$name: $first" "$out"
+    has "$name: ...to its last line" "$name: $last" "$out"
+    has "$name: login ends with what to do now" "What to do now" "$out"
+    has "$name: ...its own load" "wealthdb-collect $name load" "$out"
+    has "$name: ...and the load into the one database" "wealthdb load -a" "$out"
+    lacks "$name: no script runs" "python3 ran" "$out"
+    out="$(fleet_run "$name" "$root" login)"
+    lacks "$name: no terminal, no block" "What to do now" "$out"
+    out="$(FLEET_NEXT=1 fleet_run "$name" "$root" login --check)"
+    lacks "$name: a session probe ends with no block" "What to do now" "$out"
+done
+for name in manual svb; do
+    out="$(FLEET_NEXT=1 fleet_run "$name" "$TMP/next-$name" download)"
+    has "$name: download prints the first step too" \
+        "$name: $(sed -n 's/^first //p' "$REPO/collectors/$name/setup.txt" | sed -n '1p')" "$out"
+    lacks "$name: download ends with no block" "What to do now" "$out"
 done
 
 echo

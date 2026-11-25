@@ -8,8 +8,10 @@
 # default, and every path the container sees is absolute. `config`
 # creates no file: the setup writes it, and `config validate` on a path
 # with no file leaves none. Every run names host.docker.internal, where
-# an AI model on this computer is reached. A stubbed
-# docker on PATH prints the argv; nothing real runs.
+# an AI model on this computer is reached. `web`, `mcp` and `collect`
+# reach their host-side scripts, also behind global flags, and a -c path
+# reaches them as WEALTHDB_CONFIG. A stubbed docker on PATH prints the
+# argv; nothing real runs.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -20,6 +22,8 @@ source "$HERE/lib.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 TMP="$(cd "$TMP" && pwd)"
+# No ambient config path reaches the wrapper: a case names its own.
+unset WEALTHDB_CONFIG
 
 TREE="$TMP/tree"
 mkdir -p "$TREE/wealthdb" "$TREE/shared/wrappers" "$TMP/bin" "$TMP/home/cfg" "$TMP/dots" "$TMP/work"
@@ -27,6 +31,18 @@ mkdir -p "$TREE/wealthdb" "$TREE/shared/wrappers" "$TMP/bin" "$TMP/home/cfg" "$T
 cd "$TMP/work" || exit 1
 cp "$ROOT/wealthdb/wealthdb" "$TREE/wealthdb/"
 cp "$ROOT/shared/wrappers/image-tag.sh" "$ROOT/shared/wrappers/engine-mode.sh" "$TREE/shared/wrappers/"
+# The host-side scripts are stand-ins that print their name, the config
+# path they are told and their arguments.
+mkdir -p "$TREE/web" "$TREE/mcp" "$TREE/bin"
+for s in web/web mcp/mcp bin/wealthdb-collect; do
+    cat > "$TREE/$s" <<EOF
+#!/bin/sh
+echo "host:$s"
+echo "config:\${WEALTHDB_CONFIG-unset}"
+for a in "\$@"; do printf '%s\n' "\$a"; done
+EOF
+    chmod +x "$TREE/$s"
+done
 cat > "$TMP/bin/docker" <<'EOF'
 #!/bin/sh
 if [ "$1 $2" = "image inspect" ] && [ -n "${STUB_NO_IMAGE:-}" ]; then
@@ -147,6 +163,39 @@ has_item "...and mounted there" "$TMP/work/rel/my.cfg:$TMP/work/rel/my.cfg" "$ou
 out="$(runw "$TMP/other/my.cfg" -c "$TMP/flag.cfg" status)"
 has_item "a -c flag wins over WEALTHDB_CONFIG" "$TMP/flag.cfg:$TMP/flag.cfg" "$out"
 rm -rf "$TMP/other" "$TMP/work/rel" "$TMP/flag.cfg"
+
+echo "the host-side commands:"
+# is_out DESC WANT GOT: the script's whole output.
+is_out() {
+    if [ "$3" = "$2" ]; then ok "$1"; else bad "$1 (want: $(printf '%s ' $2), got: $(printf '%s ' $3))"; fi
+}
+is_out "web reaches its script" "host:web/web
+config:unset
+start" "$(run web start)"
+is_out "-c FILE web: the script, the flag dropped, the path as WEALTHDB_CONFIG" "host:web/web
+config:$TMP/work/h.cfg
+start" "$(run -c h.cfg web start)"
+is_out "--config=FILE mcp" "host:mcp/mcp
+config:$TMP/work/h.cfg
+url" "$(run --config=h.cfg mcp url)"
+is_out "-r -c FILE collect, a later -c left to the collector" "host:bin/wealthdb-collect
+config:$TMP/work/h.cfg
+testcol
+load
+-c
+y" "$(run -r -c h.cfg collect testcol load -c y)"
+is_out "-r mcp: an ambient WEALTHDB_CONFIG stays as it is" "host:mcp/mcp
+config:rel/my.cfg
+status" "$(runw rel/my.cfg -r mcp status)"
+is_out "a -c flag wins over WEALTHDB_CONFIG" "host:web/web
+config:$TMP/work/h.cfg
+status" "$(runw "$TMP/other/my.cfg" -c h.cfg web status)"
+is_out "a -c path that is a command's name is the path" "host:mcp/mcp
+config:$TMP/work/web
+status" "$(run -c web mcp status)"
+[ ! -e "$TMP/work/h.cfg" ] && [ ! -e "$TMP/work/web" ] && [ ! -e "$CFG" ] &&
+    ok "a host-side command makes no config file" || bad "a host-side command made a config file"
+[ ! -e "$TMP/other" ] && ok "...and no config folder" || bad "a host-side command made a config folder"
 
 echo "relative and spaced folders:"
 rel() {
