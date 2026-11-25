@@ -235,7 +235,7 @@ jobs:
 
   native-macos:
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
         with:
@@ -257,11 +257,13 @@ jobs:
         run: |
           ./configure --engine=native --prefix="$RUNNER_TEMP/prefix" PYTHON="$(command -v python3)"
           make build-wealthdb build-web
-      # A day that follows the computer's time zone fails here.
+      # A day that follows the computer's time zone fails here. Every
+      # package runs at once on this runner's few cores, so a package
+      # gets more than go test's ten minutes.
       - name: Go tests
         env:
           TZ: Pacific/Auckland
-        run: make test-wealthdb GO_TEST_FLAGS=-count=1
+        run: make test-wealthdb GO_TEST_FLAGS="-count=1 -timeout 40m"
       # The suites of the launcher and the server scripts, which the
       # other jobs run on Linux alone: a Mac has its own sed and tar,
       # and launchd.

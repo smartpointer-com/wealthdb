@@ -309,9 +309,26 @@ _native_pid() {
     [ -f "$file" ] || return 1
     pid="$(tr -d '[:space:]' < "$file")" || return 1
     case "$pid" in '' | *[!0-9]*) return 1 ;; esac
-    kill -0 "$pid" 2>/dev/null || return 1
+    _pid_runs "$pid" || return 1
     _pid_command "$pid" | grep -qF -- "${SERVICE_PROC:-wealthdb}" || return 1
     printf '%s\n' "$pid"
+}
+
+# _pid_runs PID succeeds while a process of that id runs. A process that
+# has ended keeps its id until its parent reads its exit status, and a
+# signal still reaches it: its state, Z in ps and in /proc, tells it
+# from one that runs.
+_pid_runs() {
+    local state
+    kill -0 "$1" 2>/dev/null || return 1
+    state="$(ps -p "$1" -o stat= 2>/dev/null)" || state=
+    if [ -z "$state" ] && [ -r "/proc/$1/stat" ]; then
+        # The state is the field after the name, which stands in
+        # parentheses and may hold spaces and parentheses of its own.
+        state="$(sed -n 's/^.*) \([A-Za-z]\).*/\1/p' "/proc/$1/stat" 2>/dev/null)" || state=
+    fi
+    case "$state" in *Z*) return 1 ;; esac
+    return 0
 }
 
 # _pid_command PID prints the command line of a process. -ww gives the
@@ -498,7 +515,7 @@ _native_stop() {
 _end_process() {
     local tries=50
     kill "$1" 2>/dev/null || true
-    while kill -0 "$1" 2>/dev/null && [ "$tries" -gt 0 ]; do
+    while _pid_runs "$1" && [ "$tries" -gt 0 ]; do
         sleep 0.2
         tries=$((tries - 1))
     done

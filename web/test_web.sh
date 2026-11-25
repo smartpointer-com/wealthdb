@@ -1239,7 +1239,7 @@ native_cases() {
     check_eq  "and the pid file still names the running server" "$pid" "$(cat "$tmp/nweb/web.pid")"
     out="$(web_stop 2>&1)"
     check     "stop says so" "web: stopped the server (Metabase metadata kept in $tmp/nweb/metabase)" "$out"
-    if kill -0 "$pid" 2>/dev/null; then fail "the server still runs after stop"; else pass "the server is gone after stop"; fi
+    if _pid_runs "$pid"; then fail "the server still runs after stop"; else pass "the server is gone after stop"; fi
     out="$(BIND=ipv6 web_start 2>&1)"; rc=$?
     check     "a start with a BIND that is no address family fails" "1 web: invalid WEALTHDB_WEB_BIND 'ipv6'" "$rc $(printf '%s\n' "$out" | grep invalid)"
     SERVICE_PROC=metabase.jar
@@ -1384,6 +1384,12 @@ echo "== stop ends a server the native engine left =="
 # that ran when ./configure chose the container engine, which the pid
 # file names. No container is there.
 standin="$(sleep 30 >/dev/null 2>&1 & echo $!)"
+# A process just started still has its parent's command line for a
+# moment, and a stop ends only the program its pid file should name.
+for _ in $(seq 1 50); do
+    case "$(_pid_command "$standin")" in sleep*) break ;; esac
+    sleep 0.1
+done
 out="$(
     _resolve_knobs
     mkdir -p "$DATA_DIR" && echo "$standin" > "$DATA_DIR/web.pid"
@@ -1394,7 +1400,7 @@ out="$(
 )"
 check     "stop says which server it stopped" "web: stopped the native engine's server (Metabase metadata kept in $tmp/web-data/metabase)" "$out"
 check_not "its pid file is gone" "PID-FILE-LEFT" "$out"
-if kill -0 "$standin" 2>/dev/null; then fail "the native server still runs"; kill "$standin"; else pass "the native server is gone"; fi
+if _pid_runs "$standin"; then fail "the native server still runs"; kill "$standin"; else pass "the native server is gone"; fi
 check_eq  "a stop with neither kind there says so" "web: no container 'wealthdb-metabase' to stop" "$(printf '%s\n' "$out" | tail -n 1)"
 out="$(METABASE_HEAP=-Xmx2g; _resolve_knobs; PORT=3000 BIND=v4 H2_DIR=/h SNAP=/s/wealthdb.db SPILL_DIR=/sp; _docker_run_args; printf '%s\n' "${DOCKER_ARGS[@]}")"
 check     "the container gets the same settings as the native server" "MB_UNAGGREGATED_QUERY_ROW_LIMIT=100000" "$out"

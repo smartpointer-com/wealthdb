@@ -246,11 +246,17 @@ check     "no container: says so"  "mcp: no container 'wealthdb-mcp' to stop"   
 # A stand-in for a native server that ran when ./configure chose the
 # container engine: a process the pid file names.
 standin="$(sleep 30 >/dev/null 2>&1 & echo $!)"
+# A process just started still has its parent's command line for a
+# moment, and a stop ends only the program its pid file should name.
+for _ in $(seq 1 50); do
+    case "$(_pid_command "$standin")" in sleep*) break ;; esac
+    sleep 0.1
+done
 echo "$standin" > "$DATA_DIR/mcp.pid"
 out="$(SERVICE_PROC=sleep mcp_stop 2>&1)"
 check     "stop ends a native server too" "mcp: stopped the native engine's server" "$out"
 check_not "and has no line on a container that is not there" "no container"      "$out"
-if kill -0 "$standin" 2>/dev/null; then fail "the native server still runs"; kill "$standin"; else pass "the native server is gone"; fi
+if _pid_runs "$standin"; then fail "the native server still runs"; kill "$standin"; else pass "the native server is gone"; fi
 if [ -e "$DATA_DIR/mcp.pid" ]; then fail "its pid file is left"; else pass "and so is its pid file"; fi
 
 echo "== mcp_url =="
@@ -656,7 +662,7 @@ EOS
     pid="$(_native_pid)"
     out="$(mcp_stop 2>&1)"
     check     "stop says so"            "mcp: stopped the server" "$out"
-    if kill -0 "$pid" 2>/dev/null; then fail "the server still runs after stop"; else pass "the server is gone after stop"; fi
+    if _pid_runs "$pid"; then fail "the server still runs after stop"; else pass "the server is gone after stop"; fi
     [ ! -e "$(_service_pidfile)" ] && pass "stop removed the pid file" || fail "the pid file is left"
     [ -s "$TOKEN_FILE" ] && pass "stop kept the token" || fail "stop removed the token"
     BIND=ipv6
@@ -677,6 +683,33 @@ EOS
     echo not-a-number > "$(_service_pidfile)"
     if _is_running; then fail "a pid file with no number reads as the server"; else pass "a pid file with no number names no server"; fi
     rm -f "$(_service_pidfile)"
+    # A process that has ended, whose parent never reads its exit
+    # status: it ends a second after its parent has turned into a sleep,
+    # which reads none. A signal still reaches it, and it is no server
+    # all the same.
+    sh -c 'sleep 1 & echo $! > "$1"; exec sleep 30' sh "$tmp/ended-pid" >/dev/null 2>&1 &
+    keeper=$!
+    ended=
+    for _ in $(seq 1 50); do
+        ended="$(cat "$tmp/ended-pid" 2>/dev/null)"
+        case "$(ps -p "${ended:-0}" -o stat= 2>/dev/null)" in *Z*) break ;; esac
+        sleep 0.1
+    done
+    if kill -0 "${ended:-0}" 2>/dev/null; then
+        if _pid_runs "$ended"; then fail "a process that has ended reads as one that runs"; else pass "a process that has ended does not run"; fi
+        echo "$ended" > "$(_service_pidfile)"
+        SERVICE_PROC=sleep
+        if _is_running; then fail "a pid file that names it reads as the server"; else pass "a pid file that names it names no server"; fi
+        rm -f "$(_service_pidfile)"
+        t0=$SECONDS
+        _end_process "$ended"
+        if [ $((SECONDS - t0)) -lt 5 ]; then pass "and ending it does not wait for it to go"
+        else fail "ending it waited $((SECONDS - t0))s"; fi
+    else
+        fail "the stand-in for an ended process was not made"
+    fi
+    kill "$keeper" 2>/dev/null
+    wait "$keeper" 2>/dev/null
     SERVICE_PROC=sleep
     # ps cuts a command line at COLUMNS where it is not told otherwise:
     # a marker far along the line is still read.
@@ -726,7 +759,7 @@ EOS
     printf '#!/bin/sh\necho $$ > "%s"\nexec sleep 30\n' "$tmp/entry-pid" > "$tmp/entry"
     out="$(SERVICE_START_WAIT=1 mcp_start 2>&1)"; rc=$?
     check     "a server that never comes up fails the start" "1 mcp: the server did not start" "$rc $out"
-    if kill -0 "$(cat "$tmp/entry-pid")" 2>/dev/null; then fail "the process it started still runs"; kill "$(cat "$tmp/entry-pid")"
+    if _pid_runs "$(cat "$tmp/entry-pid")"; then fail "the process it started still runs"; kill "$(cat "$tmp/entry-pid")"
     else pass "and the process it started is ended"; fi
 
     echo "== native: under launchd (a stub) =="
@@ -774,7 +807,7 @@ EOS
         check     "stop says so"            "mcp: stopped the server" "$out"
         check     "stop boots the agent out" "bootout $domain/$label" "$(cat "$tmp/launchctl-calls")"
         [ ! -e "$plist" ] && pass "and removes its file, so the server stays stopped" || fail "the agent file is left"
-        if kill -0 "$pid" 2>/dev/null; then fail "the server still runs after stop"; kill "$pid"; else pass "the server is gone after stop"; fi
+        if _pid_runs "$pid"; then fail "the server still runs after stop"; kill "$pid"; else pass "the server is gone after stop"; fi
 
         out="$(STUB_REFUSE=1 mcp_start 2>&1)"; rc=$?
         check     "a start launchd refuses fails" "1 mcp: launchd did not take the server" "$rc $out"
