@@ -8,8 +8,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/jsonedit"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
 // A field is one member of the config whose value is a choice, a
@@ -30,7 +32,9 @@ type field struct {
 	// dflt is the value the engine takes when the member is not set;
 	// nil when there is none.
 	dflt any
-	doc  string
+	// example is the name of the file the hint for a file shows.
+	example string
+	doc     string
 }
 
 type fieldKind int
@@ -47,7 +51,7 @@ type choice struct{ value, does string }
 
 // reportOptions are the reports' settings that take one value each.
 var reportOptions = []field{
-	{path: []any{"lots", "method"}, label: "Lot method", kind: kindChoice, dflt: "fifo", doc: "docs/LOTS.md §3.2",
+	{path: []any{"lots", "method"}, label: "Lot method", kind: kindChoice, dflt: string(canonical.BasisMethodFIFO), doc: "docs/LOTS.md §3.2",
 		does: "Which purchase a sale is taken from, for the gains and the cost basis.",
 		choices: []choice{
 			{"fifo", "the earliest purchase first"},
@@ -56,48 +60,52 @@ var reportOptions = []field{
 			{"lofo", "the purchase with the lowest cost first"},
 			{"average", "every purchase alike, at the average cost"},
 		}},
-	{path: []any{"lots", "missing_basis"}, label: "Missing cost basis", kind: kindChoice, dflt: "ignore", doc: "docs/GAINS.md §8",
+	{path: []any{"lots", "missing_basis"}, label: "Missing cost basis", kind: kindChoice, dflt: string(lots.MissingIgnore),
+		doc:  "docs/GAINS.md §8",
 		does: "How the gains read a purchase whose cost no source states.",
 		choices: []choice{
 			{"ignore", "a figure that needs it stays blank"},
 			{"zero", "it counts as 0: the conservative reading for tax"},
 		}},
 	{path: []any{"spending", "internal_transfer_matching", "window_days"}, label: "Transfer window", kind: kindWhole,
-		min: 0, max: 30, unit: "days", dflt: 5.0, doc: "docs/SPENDING.md §3",
+		min: 0, max: 30, unit: "days", dflt: float64(config.DefaultSpendMatchWindowDays), doc: "docs/SPENDING.md §3",
 		does: "How many days apart the two sides of a move between your own accounts\nmay be, so that neither counts as spending or income."},
 	{path: []any{"spending", "internal_transfer_matching", "tolerance_pct"}, label: "Transfer tolerance", kind: kindNumber,
-		min: 0, max: 5, unit: "%", dflt: 0.5, doc: "docs/SPENDING.md §3",
+		min: 0, max: 5, unit: "%", dflt: float64(config.DefaultSpendMatchTolerancePct), doc: "docs/SPENDING.md §3",
 		does: "How much the two amounts of such a move may differ, in percent."},
 	{path: []any{"returns_transfer_matching", "enabled"}, label: "Transfers in returns", kind: kindSwitch, dflt: false,
 		doc:  "docs/DESIGN.md §5.8",
 		does: "On: a move between two of your accounts nets out of every return that\ncovers both. Off: each side counts as money in or out."},
 	{path: []any{"cashflow", "projection", "lookback_months"}, label: "Cash flow look-back", kind: kindWhole,
-		min: 1, max: 36, unit: "months", dflt: 12.0, doc: "docs/CASHFLOW.md §12",
+		min: 1, max: config.MaxCashflowLookbackMonths, unit: "months", dflt: float64(config.DefaultCashflowLookbackMonths),
+		doc:  "docs/CASHFLOW.md §12",
 		does: "How many past months the cash flow projection reads."},
 	{path: []any{"yield", "horizon_months"}, label: "Income projection", kind: kindWhole,
-		min: 1, max: 36, unit: "months", dflt: 12.0, doc: "docs/YIELD.md §8",
+		min: 1, max: canonical.MaxHorizonMonths, unit: "months", dflt: float64(canonical.DefaultHorizonMonths),
+		doc:  "docs/YIELD.md §8",
 		does: "How many months ahead the income projection shows by default."},
 	{path: []any{"exposure", "max_gap_days"}, label: "Fund composition age", kind: kindWhole,
-		min: 1, max: 3650, unit: "days", dflt: 400.0, doc: "docs/EXPOSURE.md §4",
+		min: 1, max: 3650, unit: "days", dflt: float64(canonical.DefaultMaxGapDays), doc: "docs/EXPOSURE.md §4",
 		does: "How many days a fund's published composition may be from the day of an\nexposure report and still be used."},
 }
 
 // ledgerFiles are the settings that name a ledger: a file kept by hand
 // that a load reads.
 var ledgerFiles = []field{
-	{path: []any{"spending", "pins"}, label: "Spending pins", kind: kindFile, doc: "docs/DESIGN.md §13.10",
+	{path: []any{"spending", "pins"}, label: "Spending pins", kind: kindFile, example: "spending-pins.csv", doc: "docs/DESIGN.md §13.10",
 		does: "A CSV file that sets the category of single payments no rule places."},
-	{path: []any{"income", "pins"}, label: "Income pins", kind: kindFile, doc: "docs/DESIGN.md §13.10",
+	{path: []any{"income", "pins"}, label: "Income pins", kind: kindFile, example: "income-pins.csv", doc: "docs/DESIGN.md §13.10",
 		does: "The same for money coming in."},
-	{path: []any{"equity_transfers"}, label: "Equity transfers", kind: kindFile, doc: "docs/DESIGN.md §13.9",
+	{path: []any{"equity_transfers"}, label: "Equity transfers", kind: kindFile, example: "equity-transfers.csv", doc: "docs/DESIGN.md §13.9",
 		does: "A CSV file of shares moved into or out of an account that no bank states\nas a flow."},
-	{path: []any{"exposure", "declarations"}, label: "Exposure declarations", kind: kindFile, doc: "docs/EXPOSURE.md §9",
+	{path: []any{"exposure", "declarations"}, label: "Exposure declarations", kind: kindFile, example: "exposure-declarations.ndjson",
+		doc:  "docs/EXPOSURE.md §9",
 		does: "An NDJSON file of what a holding is made of, where no source says."},
 }
 
 // modelSent are the settings of what the AI model is sent.
 var modelSent = []field{
-	{path: []any{"spending", "categorization", "context"}, label: "What it is sent", kind: kindChoice, dflt: "merchant",
+	{path: []any{"spending", "categorization", "context"}, label: "What it is sent", kind: kindChoice, dflt: config.DefaultSpendContext,
 		doc: "docs/SPENDING.md §5", does: "How much of a payment the model sees when it sorts spending.",
 		choices: []choice{
 			{"merchant", "the merchant's name alone: the most private"},
@@ -105,10 +113,10 @@ var modelSent = []field{
 			{"transaction", "also its date, amount, account kind and nearby payments"},
 		}},
 	{path: []any{"spending", "categorization", "descriptor_samples"}, label: "Bank texts per merchant", kind: kindWhole,
-		min: 0, max: 20, dflt: 3.0, doc: "docs/SPENDING.md §5",
+		min: 0, max: 20, dflt: float64(config.DefaultSpendDescriptorSamples), doc: "docs/SPENDING.md §5",
 		does: "With descriptor or transaction: how many of the bank's texts it sees for\none merchant."},
 	{path: []any{"spending", "categorization", "fence_person_names"}, label: "Hold back people's names", kind: kindSwitch,
-		dflt: true, doc: "docs/SPENDING.md §5",
+		dflt: config.DefaultFencePersonNames, doc: "docs/SPENDING.md §5",
 		does: "On: a payee that is a person's bare name is never sent. Turn it off only\nfor a model on this computer."},
 }
 
@@ -239,8 +247,9 @@ func (w *setup) editFields(intro string, fields []field) error {
 	}
 }
 
-// editField asks for one field's value. Enter keeps it, and - puts back
-// the default (the member is removed).
+// editField asks for one field's value. Enter keeps it. For a choice, a
+// number or a file, - puts back the default (the member is removed); a
+// switch takes on or off.
 func (w *setup) editField(f field) error {
 	// The title, what it does and its doc, then the choices between
 	// blank lines, then the question.
@@ -344,13 +353,14 @@ func (w *setup) askNumber(f field, cur any, set bool, reset string) (any, error)
 	}
 }
 
-// askFile asks for the path of a ledger. The engine reads only the
-// folders it mounts, so the file must be in the data folder; it is
-// written through ${WEALTHDB_DATA_ROOT} when the variable names that
-// folder. nil: no change.
+// askFile asks for the path of a ledger, which must be a file in the
+// data folder: the container engine mounts only the config and that
+// folder, and the setup holds a config to what both kinds of engine can
+// read. The path is written through ${WEALTHDB_DATA_ROOT} when the
+// variable names that folder. nil: no change.
 func (w *setup) askFile(f field, cur any, set bool) (any, error) {
-	w.out.help("The file must be in the data folder, %s: wealthdb reads no other.", tilde(w.opts.DataRoot))
-	w.out.help("Type its path, such as %s.", tilde(filepath.Join(w.opts.DataRoot, "ledgers", strings.ReplaceAll(strings.ToLower(f.label), " ", "-")+".csv")))
+	w.out.help("The file must be in the data folder, %s.", tilde(w.opts.DataRoot))
+	w.out.help("Type its path, such as %s.", tilde(filepath.Join(w.opts.DataRoot, "ledgers", f.example)))
 	for {
 		q := "Path (- removes it, Enter keeps it): "
 		if !set {

@@ -30,6 +30,12 @@ func init() {
 // the live DB instead. Named sources stay in-place, and the class,
 // enrichment, lot, exposure and yield passes run once after all of
 // them have loaded.
+//
+// A source with no data yet is left out as a load leaves it out
+// (keepCollected): gold never loaded it and none of its files exists.
+// A source gold has loaded whose file is missing is an error. A rebuild
+// then swaps nothing, and an in-place reload leaves that source's rows
+// as they are.
 func cmdReload(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("wealthdb reload", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -80,7 +86,7 @@ or below the high watermark. Reload forces a full re-projection.`)
 	// nothing keeps the live file open between the verdict-store
 	// carry-across and the swap, so a verdict written in that window
 	// would land in the inode the rename unlinks.
-	lock, err := gateGoldForWrite(g, cfg, "reload", defaultMissingGoldMsg)
+	lock, err := gateGoldForWrite(g, cfg, "reload", missingGoldMsg(g.ConfigPath))
 	if err != nil {
 		return err
 	}
@@ -91,7 +97,7 @@ or below the high watermark. Reload forces a full re-projection.`)
 		return reloadFreshAndSwap(ctx, run, specs)
 	}
 
-	return reloadInPlace(ctx, run, specs)
+	return reloadInPlace(ctx, run, specs, len(ids) == 1)
 }
 
 // reloadIDs is the sources a reload names: nil for -a, otherwise the
@@ -122,8 +128,9 @@ func reloadIDs(fs *flag.FlagSet, all bool) ([]string, error) {
 // source into a fresh temp file and atomically swaps it over the live
 // path. The temp starts empty, so no per-source reset is needed; the
 // load repopulates load_audit / silver_sources exactly as a live
-// reset+load would. If any source fails to build, the error is
-// surfaced and nothing is swapped: the live DB keeps its rows.
+// reset+load would. If any source fails to build, or a source the live
+// file holds has lost its data file, the error is surfaced and nothing
+// is swapped: the live DB keeps its rows.
 func reloadFreshAndSwap(ctx context.Context, run loadRun, specs []loader.SourceSpec) error {
 	// Migrate the outgoing file first, as any load does, by opening it
 	// read-write once. Both files then have one schema, and the carry
@@ -137,8 +144,19 @@ func reloadFreshAndSwap(ctx context.Context, run loadRun, specs []loader.SourceS
 		_ = live.Close()
 		return err
 	}
+	registered, err := loader.New(live).ListSourceIDs(ctx)
+	if err != nil {
+		_ = live.Close()
+		return err
+	}
 	if err := live.Close(); err != nil {
 		return errs.Wrap(errs.ExitOpenFailed, fmt.Errorf("close migrated gold: %w", err))
+	}
+	// A rebuild without a source the live file holds would drop its
+	// rows with the swap.
+	specs, err = run.keepCollected(specs, registered, false)
+	if err != nil {
+		return err
 	}
 
 	var buildErr error
@@ -301,8 +319,9 @@ func carryVerdictStore(ctx context.Context, db *sql.DB, livePath string, store p
 // replaced, so nothing is carried across. Reset keeps the two global
 // verdict stores and drops the source's symbol_resolutions, as
 // `reload <id>` always has (DESIGN.md §9). The gold passes run once,
-// after every named source has loaded.
-func reloadInPlace(ctx context.Context, run loadRun, specs []loader.SourceSpec) error {
+// after every named source has loaded. single says one source was named
+// alone (keepCollected).
+func reloadInPlace(ctx context.Context, run loadRun, specs []loader.SourceSpec, single bool) error {
 	db, err := retryGoldLock(ctx, func() (*sql.DB, error) { return gold.Open(run.cfg.GoldDB, gold.ModeReadWrite) })
 	if err != nil {
 		return errs.Wrap(errs.ExitOpenFailed, err)
@@ -312,6 +331,15 @@ func reloadInPlace(ctx context.Context, run loadRun, specs []loader.SourceSpec) 
 	if run.priorTransactions, err = goldHasTransactions(ctx, db); err != nil {
 		return err
 	}
-	firstErr := run.sources(ctx, loader.New(db), specs, true)
-	return errors.Join(firstErr, run.finish(ctx, db, nil))
+	ld := loader.New(db)
+	registered, err := ld.ListSourceIDs(ctx)
+	if err != nil {
+		return err
+	}
+	specs, missingErr := run.keepCollected(specs, registered, single)
+	if missingErr != nil && single {
+		return missingErr
+	}
+	firstErr := run.sources(ctx, ld, specs, true)
+	return errors.Join(missingErr, firstErr, run.finish(ctx, db, nil))
 }

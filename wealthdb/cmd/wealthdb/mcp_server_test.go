@@ -485,11 +485,36 @@ func TestMCPMissingGold(t *testing.T) {
 	}
 	s := newTestMCP(cfg, false)
 	_, err := callTool(t, s, "holdings", map[string]any{})
-	if err == nil || !strings.Contains(err.Error(), "wealthdb init") {
-		t.Errorf("err = %v, want the init hint", err)
+	if err == nil || !strings.Contains(err.Error(), "wealthdb -c "+cfg+" init") {
+		t.Fatalf("err = %v, want the init hint for the server's config", err)
+	}
+	// The model reads the hint with the config's path taken out.
+	const hint = "there is no database yet: run 'wealthdb -c <config> init' and 'wealthdb -c <config> load -a' first"
+	if got := s.scrubPaths(err.Error()); got != hint {
+		t.Errorf("the hint as the model reads it: %q, want %q", got, hint)
 	}
 	if msg := s.scrubPaths("open " + filepath.Join(dir, "none.db") + " in " + cfg); strings.Contains(msg, dir) {
 		t.Errorf("a path survived the scrub: %s", msg)
+	}
+	if got := s.goldStale().Error(); got != "the MCP server is older than the database it reads; run 'wealthdb -c "+cfg+" mcp restart'" {
+		t.Errorf("the stale hint: %q", got)
+	}
+
+	// A path the hint quotes, a single quote of its own included, is
+	// taken out as well.
+	odd := filepath.Join(dir, "it's mine", "wealthdb.cfg")
+	if err := os.MkdirAll(filepath.Dir(odd), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(odd, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s = newTestMCP(odd, false)
+	if _, err = callTool(t, s, "holdings", map[string]any{}); err == nil {
+		t.Fatal("no error")
+	}
+	if got := s.scrubPaths(err.Error()); got != hint {
+		t.Errorf("the hint for a quoted path: %q, want %q", got, hint)
 	}
 }
 

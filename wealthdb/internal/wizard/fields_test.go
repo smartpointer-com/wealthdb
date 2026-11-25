@@ -122,11 +122,39 @@ func TestLedgerFiles(t *testing.T) {
 			t.Errorf("output lacks %q:\n%s", w, out)
 		}
 	}
+	// The hint says where the file must be and shows an example. A
+	// sentence wraps where the window ends, so it is read with every
+	// run of white space as one space.
+	flat := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	for _, w := range []string{
+		"The file must be in the data folder, " + tilde(h.root) + ". Type its path, such as " +
+			tilde(filepath.Join(h.root, "ledgers", "spending-pins.csv")) + ". Path (Enter to go back):",
+		"Type its path, such as " + tilde(filepath.Join(h.root, "ledgers", "equity-transfers.csv")) + ".",
+	} {
+		if !strings.Contains(flat(out), w) {
+			t.Errorf("output lacks %q:\n%s", w, out)
+		}
+	}
 	if strings.Count(out, "There is no file there yet") != 1 {
 		t.Errorf("the note is said for a file that is there:\n%s", out)
 	}
 	if h.cfgOf().Spending.Pins != filepath.Join(h.root, "ledgers", "pins.csv") {
 		t.Errorf("pins = %q", h.cfgOf().Spending.Pins)
+	}
+	// The example of each ledger names a file of the format it takes.
+	for _, f := range ledgerFiles {
+		want := ".csv"
+		if strings.Contains(f.does, "NDJSON") {
+			want = ".ndjson"
+		}
+		if filepath.Ext(f.example) != want {
+			t.Errorf("%s: the example is %q, want a %s file", f.label, f.example, want)
+		}
+	}
+	decl := fieldLetter(t, ledgerFiles, "Exposure declarations")
+	if out, _ := h.run(decl, "", ""); !strings.Contains(flat(out),
+		"Type its path, such as "+tilde(filepath.Join(h.root, "ledgers", "exposure-declarations.ndjson"))+".") {
+		t.Errorf("the declarations' example:\n%s", out)
 	}
 	// - on one not set goes back; on one set, it removes it.
 	if out, _ := h.run(fieldLetter(t, ledgerFiles, "Income pins"), "-", ""); strings.Contains(out, "is not in the data folder") {

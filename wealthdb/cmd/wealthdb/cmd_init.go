@@ -40,7 +40,7 @@ the next step. A database that exists already is left as it is.`)
 	if err := createGold(ctx, g, cfg, stdout); err != nil {
 		return err
 	}
-	fmt.Fprint(stdout, initNextStep(colors(stdout), cfg))
+	fmt.Fprint(stdout, initNextStep(colors(stdout), g.ConfigPath, cfg))
 	return nil
 }
 
@@ -80,14 +80,15 @@ func createGold(ctx context.Context, g globalFlags, cfg *config.Config, stdout i
 
 // initNextStep is what follows a database: the setup when no source is
 // configured, else the collect commands of the sources without data,
-// then the load.
-func initNextStep(p wizard.Palette, cfg *config.Config) string {
+// then the load. The engine commands it names read the config at
+// configPath (commandFor).
+func initNextStep(p wizard.Palette, configPath string, cfg *config.Config) string {
 	if len(cfg.SilverSources) == 0 {
-		return wizard.ToDo(p, []wizard.Step{{Command: "wealthdb config", Does: "Adds a bank or a broker to read."}})
+		return wizard.ToDo(p, []wizard.Step{{Command: setupCommand(configPath), Does: "Adds a bank or a broker to read."}})
 	}
 	feeds := make([][]config.Feed, len(cfg.SilverSources))
 	for i := range cfg.SilverSources {
 		feeds[i] = cfg.SilverSources[i].Feeds()
 	}
-	return wizard.NextSteps(p, feeds)
+	return wizard.NextSteps(p, commandFor(configPath, "load -a"), feeds)
 }

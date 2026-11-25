@@ -3,13 +3,18 @@ package wizard
 import (
 	"bufio"
 	"errors"
+	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/jsonedit"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // basics is a config whose wizard steps all hold an answer.
@@ -186,6 +191,29 @@ func TestAIModelTestFails(t *testing.T) {
 	}
 }
 
+// A long reply is cut at a character, never inside one.
+func TestAIModelReplyIsCutAtACharacter(t *testing.T) {
+	h := newHarness(t)
+	h.write(basics+`, "symbol_resolution": {"model": {"baseUrl": "http://m:1/v1", "name": "m"}}}`, 0o600)
+	// 59 letters, then two-byte letters: byte 60 falls inside the first.
+	h.section, h.reply = "model", strings.Repeat("a", 59)+strings.Repeat("é", 10)
+	out, err := h.run("t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "The model answered: " + strings.Repeat("a", 59) + "é ...\n"; !strings.Contains(out, want) {
+		t.Errorf("output lacks %q:\n%q", want, out)
+	}
+	if !utf8.ValidString(out) {
+		t.Errorf("the output holds half a character:\n%q", out)
+	}
+	// A reply of 60 characters is shown whole.
+	h.reply = strings.Repeat("é", 60)
+	if out, _ = h.run("t"); !strings.Contains(out, "The model answered: "+h.reply+"\n") {
+		t.Errorf("a reply of 60 characters is cut:\n%q", out)
+	}
+}
+
 func TestWrap(t *testing.T) {
 	got := wrap("instrument_overrides, transaction_instruments, holding_aliases, symbol_resolution.overrides · docs/DESIGN.md", 40)
 	want := []string{"instrument_overrides,", "transaction_instruments,", "holding_aliases,", "symbol_resolution.overrides ·", "docs/DESIGN.md"}
@@ -285,6 +313,124 @@ func TestStoreKeepsAnEditByHand(t *testing.T) {
 	}
 }
 
+// testSetup is a setup over the config at h.cfg that reads the typed
+// lines and prints nowhere.
+func testSetup(t *testing.T, h *harness, lines ...string) *setup {
+	t.Helper()
+	out := newScreen(io.Discard, Palette{})
+	in := bufio.NewReader(strings.NewReader(strings.Join(lines, "\n") + "\n"))
+	return &setup{opts: Options{ConfigPath: h.cfg, DataRoot: h.root}, store: openTestStore(t, h.cfg, ""),
+		in: in, p: &prompter{in: in, out: out}, out: out}
+}
+
+// A removal reads the file again first, and finds its entry by id: an
+// edit by hand made after the list was shown is kept, and an entry it
+// put above the one removed does not move the removal to another.
+func TestRemoveKeepsAnEditByHand(t *testing.T) {
+	const two = `{"gold_db": "/x/g.db", "default_currency": "USD", "silver_sources": [
+  {"id": "viac", "kind": "viac", "path": "/x/viac.db"},
+  {"id": "sq", "kind": "swissquote", "path": "/x/sq.db"}]`
+	h := newHarness(t)
+	h.write(two+"}\n", 0o600)
+	w := testSetup(t, h, "y", "y")
+	es, err := w.entries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// By hand: a third source above the two, and a lot method.
+	h.write(strings.Replace(two, `[`, `[
+  {"id": "rel", "kind": "relevate", "path": "/x/rel.db"},`, 1)+`, "lots": {"method": "hifo"}}`+"\n", 0o600)
+	if err := w.remove(es[1], nil); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, s := range h.cfgOf().SilverSources {
+		ids = append(ids, s.ID)
+	}
+	if !slices.Equal(ids, []string{"rel", "viac"}) || h.cfgOf().Lots.Method != "hifo" {
+		t.Errorf("sources %v after the removal of sq; the file:\n%s", ids, h.read())
+	}
+	// An entry the edit by hand took out is not removed twice, and no
+	// other goes in its place.
+	before := h.read()
+	if err := w.remove(es[1], nil); err != nil {
+		t.Fatal(err)
+	}
+	if h.read() != before {
+		t.Errorf("a removal of a source that is gone changed the file:\n%s", h.read())
+	}
+}
+
+// A subsource is added to its entry by the entry's id, wherever an edit
+// by hand has moved it.
+func TestAddFindsItsEntryAfterAnEditByHand(t *testing.T) {
+	h := newHarness(t)
+	const tail = `
+  {"id": "ubs", "kind": "ubs", "subsources": [{"kind": "ubs-web", "path": "/x/ubs-web.db"}]}]}` + "\n"
+	const head = `{"gold_db": "/x/g.db", "default_currency": "CHF", "silver_sources": [`
+	h.write(head+tail, 0o600)
+	w := testSetup(t, h)
+	h.write(head+`
+  {"id": "viac", "kind": "viac", "path": "/x/viac.db"},`+tail, 0o600)
+	psn, _ := silver.CollectorNamed("ubs-psn")
+	if res, err := w.add(psn, psn.Files[0], ""); err != nil || res != addedNew {
+		t.Fatalf("add = %v, %v", res, err)
+	}
+	cfg := h.cfgOf()
+	if len(cfg.SilverSources) != 2 || cfg.SilverSources[1].ID != "ubs" || len(cfg.SilverSources[1].Subsources) != 2 ||
+		len(cfg.SilverSources[0].Subsources) != 0 {
+		t.Errorf("the subsource went to another entry:\n%s", h.read())
+	}
+	// An entry that is gone takes none: a refusal, and nothing written.
+	d, err := jsonedit.Parse([]byte(h.read()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r *refusal
+	if err := removeEntry(d, "none"); !errors.As(err, &r) || !strings.Contains(err.Error(), "none is no longer in the file") {
+		t.Errorf("err = %v", err)
+	}
+	if got := entryIndex(d, "ubs"); got != 1 {
+		t.Errorf("entryIndex = %d", got)
+	}
+}
+
+// A gold_db that is empty is written as one that is missing is: with the
+// next answer, changed or kept, so the setup can finish.
+func TestStoreWritesGoldOverAnEmptyOne(t *testing.T) {
+	for _, body := range []string{
+		`{"gold_db": "", "default_currency": "USD"}`,
+		`{"gold_db": null, "default_currency": "USD"}`,
+		`{"default_currency": "USD"}`,
+	} {
+		for _, cur := range []string{"EUR", "USD"} {
+			h := newHarness(t)
+			h.write(body, 0o600)
+			s := openTestStore(t, h.cfg, "/x/g.db")
+			if err := s.apply(func(d *jsonedit.Doc) error { return d.Set(cur, "default_currency") }); err != nil {
+				t.Fatal(err)
+			}
+			if cfg := h.cfgOf(); cfg.GoldDB != "/x/g.db" || cfg.DefaultCurrency != cur {
+				t.Errorf("%s, then %s: the file is\n%s", body, cur, h.read())
+			}
+			if n := strings.Count(h.read(), "gold_db"); n != 1 {
+				t.Errorf("%s: gold_db is written %d times:\n%s", body, n, h.read())
+			}
+		}
+	}
+	// A gold_db the file names stays, and an answer kept writes nothing.
+	h := newHarness(t)
+	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD"}`, filepath.Join(h.root, "mine.db"))
+	h.write(body, 0o600)
+	s := openTestStore(t, h.cfg, "/x/g.db")
+	if err := s.apply(func(d *jsonedit.Doc) error { return d.Set("USD", "default_currency") }); err != nil {
+		t.Fatal(err)
+	}
+	if h.read() != body {
+		t.Errorf("the file changed:\n%s", h.read())
+	}
+}
+
 func TestCheck(t *testing.T) {
 	h := newHarness(t)
 	for _, c := range []struct {
@@ -295,6 +441,10 @@ func TestCheck(t *testing.T) {
 		{"", config.StateAbsent, "holds no setup yet"},
 		{`{"gold_db": "/x/g.db"}`, config.StateUnfinished, "is not finished: it has no default_currency"},
 		{`{"web": {}}`, config.StateUnfinished, "it has no default_currency and no gold_db"},
+		// An empty value is missing as a member not written is.
+		{`{"gold_db": "", "default_currency": "USD"}`, config.StateUnfinished, "is not finished: it has no gold_db"},
+		{`{"gold_db": "/x/g.db", "default_currency": ""}`, config.StateUnfinished, "is not finished: it has no default_currency"},
+		{`{"gold_db": "", "default_currency": ""}`, config.StateUnfinished, "it has no default_currency and no gold_db"},
 		{"{\n  \"gold_db\": \"/x/g.db\",\n  \"default_currency\": \"USD\",,\n}", config.StateRefused, "(line 3, column 30)"},
 		{`{"gold_db": "/x/g.db", "default_currency": "USD", "colour": 1}`, config.StateRefused, `unknown field "colour"`},
 		{basics + `, "symbol_resolution": {"model": {"baseUrl": "http://m/v1"}}}`, config.StateRefused,
@@ -368,7 +518,7 @@ func TestBanksOffersCollectedData(t *testing.T) {
 		t.Errorf("sources = %v, want %v", got, want)
 	}
 	for _, w := range []string{
-		"Collected, but not in the list yet:\n  Plaid (linked banks): chase\n  Plaid (linked banks): schwab\n\nAdd them now [Y/n]: ",
+		"Collected, but not in the list yet:\n  Plaid (linked banks): chase\n  Plaid (linked banks): schwab\n\nAdd them now? [Y/n]: ",
 		"Added Plaid (linked banks): chase.\nAdded Plaid (linked banks): schwab.\n",
 	} {
 		if !strings.Contains(out, w) {

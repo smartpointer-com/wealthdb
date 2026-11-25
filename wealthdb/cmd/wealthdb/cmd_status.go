@@ -95,7 +95,7 @@ and -p reach the two money columns; marked_pct does not move.`)
 	defer db.Close()
 
 	if fs.NArg() == 1 {
-		return runStatusDetailed(ctx, db, cfg, fs.Arg(0), *verbose, stdout)
+		return runStatusDetailed(ctx, db, cfg, g.ConfigPath, fs.Arg(0), *verbose, stdout)
 	}
 	runStatusOverview(ctx, db, cfg, *verbose, stdout)
 	return nil
@@ -160,7 +160,9 @@ func sourceIDs(cfg *config.Config) []string {
 	return ids
 }
 
-func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, id string, verbose bool, stdout io.Writer) error {
+// runStatusDetailed prints one source's status. The load it names where
+// gold is behind reads the config at configPath (commandFor).
+func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, configPath, id string, verbose bool, stdout io.Writer) error {
 	src, ok := cfg.Lookup(id)
 	if !ok {
 		return fmt.Errorf("status: silver source %q not found in config", id)
@@ -175,15 +177,15 @@ func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, id s
 			fmt.Fprintf(stdout, "%s (%s)\n  %s\n", id, src.Kind, line)
 			return nil
 		}
-		fmt.Fprintf(stdout, "%s (%s, %s)\n  not registered in gold; run `wealthdb load %s` first\n",
-			id, src.Kind, src.Path, id)
+		fmt.Fprintf(stdout, "%s (%s, %s)\n  not registered in gold; run `%s` first\n",
+			id, src.Kind, src.Path, commandFor(configPath, "load "+id))
 		return nil
 	}
 
 	silverStatus, silverErr := probeSilverStatus(ctx, src)
 	advancedHint := ""
 	if silverErr == nil && silverAhead(st, silverStatus) {
-		advancedHint = "  (silver has new data — run `wealthdb load " + id + "`)"
+		advancedHint = "  (silver has new data — run `" + commandFor(configPath, "load "+id) + "`)"
 	}
 
 	fmt.Fprintf(stdout, "%s [%s] %s\n", id, st.Kind, st.Path)

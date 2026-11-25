@@ -160,7 +160,7 @@ verdict.`)
 
 	rep := categorizationsReport(families, *categoryFilter)
 	open := func() (*sql.DB, error) {
-		return openGoldForRead(g, cfg, "gold database %q does not exist. Run 'wealthdb init' first.")
+		return openGoldForRead(g, cfg, "gold database %q does not exist. "+runInitFirst(g.ConfigPath)+".")
 	}
 	return writeReport(ctx, rep, reportOutput{cols: "default", prefix: "categorizations", privacy: *privacy, format: fmtChoice}, open, stdout)
 }
@@ -275,7 +275,7 @@ type rowQuerier interface {
 // last re-key moved on from.
 func forgetCategorizations(ctx context.Context, g globalFlags, cfg *config.Config, families []categorizeFamily, signatures []string, dryRun bool, stdout io.Writer) error {
 	db, lock, err := openGoldForOverlay(ctx, g, cfg.GoldDB, "categorizations --forget",
-		"gold database %q does not exist. Run 'wealthdb init' first.", "see what would be removed", dryRun)
+		"gold database %q does not exist. "+runInitFirst(g.ConfigPath)+".", "see what would be removed", dryRun)
 	if err != nil {
 		return err
 	}

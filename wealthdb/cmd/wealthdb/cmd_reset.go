@@ -105,7 +105,7 @@ scratch for that source.`)
 	// never registered had no rows to pair against in the first place.
 	if !*all && firstErr == nil && slices.Contains(registered, ids[0]) {
 		fmt.Fprintf(stdout, "reset: spend and income verdicts on other sources that paired against %s "+
-			"are now stale — run 'wealthdb load -a' to re-assert them\n", ids[0])
+			"are now stale — run '%s' to re-assert them\n", ids[0], commandFor(g.ConfigPath, "load -a"))
 	}
 	return firstErr
 }

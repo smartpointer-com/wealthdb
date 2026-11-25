@@ -73,7 +73,7 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 	// A read-only look first. The read-write open migrates and stamps
 	// the file, which would make a gold that did not need rewriting
 	// look newer than its snapshot.
-	lock, err := gateGoldForWrite(g, cfg, "web-materialize", defaultMissingGoldMsg)
+	lock, err := gateGoldForWrite(g, cfg, "web-materialize", missingGoldMsg(g.ConfigPath))
 	if err != nil {
 		return err
 	}

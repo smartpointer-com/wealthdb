@@ -18,7 +18,6 @@ import (
 // entry is one source of the config's silver_sources, as the Banks and
 // brokers section shows it.
 type entry struct {
-	index int
 	src   config.SilverSource // as written
 	feeds []config.Feed       // the paths expanded
 	// hand: the entry is not in a shape the section writes, so the
@@ -42,7 +41,7 @@ func (w *setup) entries() ([]entry, error) {
 		for j := range exp.Subsources {
 			exp.Subsources[j].Path = w.expand(exp.Subsources[j].Path)
 		}
-		e := entry{index: i, src: s, feeds: exp.Feeds()}
+		e := entry{src: s, feeds: exp.Feeds()}
 		if src, err := silver.Get(s.Kind); err == nil && s.Path != "" && len(src.Subsources) > 0 {
 			e.hand = true
 		}
@@ -226,6 +225,50 @@ const (
 	collectFirst                   // the entry is loaded, and the new feed has no data yet
 )
 
+// silverParts is where a silver file of collector c lies under the data
+// folder, as the parts of its path: file in the collector's folder, or
+// <item>/<item>.db there for a per-item collector.
+func silverParts(c silver.Collector, file, item string) []string {
+	if c.PerItem {
+		return []string{c.Name, item, item + ".db"}
+	}
+	return []string{c.Name, file}
+}
+
+// silverFile is the absolute path of silverParts.
+func (w *setup) silverFile(c silver.Collector, file, item string) string {
+	return filepath.Join(append([]string{w.opts.DataRoot}, silverParts(c, file, item)...)...)
+}
+
+// entryIndex is the place in d's silver_sources of the source with id,
+// or -1 when d lists none.
+func entryIndex(d *jsonedit.Doc, id string) int {
+	type named struct {
+		ID string `json:"id"`
+	}
+	var raw []named
+	if _, err := d.Decode(&raw, "silver_sources"); err != nil {
+		return -1
+	}
+	return slices.IndexFunc(raw, func(s named) bool { return s.ID == id })
+}
+
+// gone is the refusal of a change to a source the file lists no longer:
+// an edit by hand took it out since the list was shown.
+func gone(id string) error {
+	return &refusal{err: fmt.Errorf("%s is no longer in the file", id)}
+}
+
+// removeEntry removes the source with id from d. The entry is found by
+// its id in d itself, so an edit by hand that moved it removes no other.
+func removeEntry(d *jsonedit.Doc, id string) error {
+	i := entryIndex(d, id)
+	if i < 0 {
+		return gone(id)
+	}
+	return d.Remove("silver_sources", i)
+}
+
 // add registers one silver file of collector c: file is its name under
 // the collector's data folder (a login's folder for a per-item
 // collector, whose item names the entry). The entry id is the file's
@@ -235,14 +278,8 @@ func (w *setup) add(c silver.Collector, file, item string) (addResult, error) {
 	if err != nil {
 		return 0, err
 	}
-	var rel []string
-	switch {
-	case c.PerItem:
-		rel = []string{c.Name, item, item + ".db"}
-	default:
-		rel = []string{c.Name, file}
-	}
-	abs := filepath.Join(append([]string{w.opts.DataRoot}, rel...)...)
+	rel := silverParts(c, file, item)
+	abs := w.silverFile(c, file, item)
 	for _, e := range es {
 		for _, f := range e.feeds {
 			if filepath.Clean(f.Path) == abs {
@@ -270,7 +307,11 @@ func (w *setup) add(c silver.Collector, file, item string) (addResult, error) {
 				return collectFirst, nil
 			}
 			return addedNew, w.store.apply(func(d *jsonedit.Doc) error {
-				return d.Append(subsource(c.Subsource, w.dataPath(rel...)), "silver_sources", e.index, "subsources")
+				i := entryIndex(d, e.src.ID)
+				if i < 0 {
+					return gone(e.src.ID)
+				}
+				return d.Append(subsource(c.Subsource, w.dataPath(rel...)), "silver_sources", i, "subsources")
 			})
 		}
 		id := freeID(es, c.Kind)
@@ -339,7 +380,7 @@ func (w *setup) pick(c silver.Collector) error {
 	case collectFirst:
 		w.out.say("The %s source is loaded already, and %s has no data yet. Collect it first:", c.Kind, c.Display)
 		w.out.command(config.CollectCommand(config.Feed{Collector: c.Name, Item: item}))
-		fmt.Fprintln(w.out, "Then run wealthdb config again: the data shows under \"Collected, but not in the list\".")
+		w.out.say("Then run %s again: the data shows under \"Collected, but not in the list\".", w.cmd("config"))
 		return nil
 	default:
 		if item != "" {
@@ -349,7 +390,7 @@ func (w *setup) pick(c silver.Collector) error {
 		}
 		if st, err := silver.Get(c.Kind); err == nil && st.Settings != nil && st.Settings.Key == "relationships" &&
 			w.pairComplete(c.Kind) {
-			w.out.help("To pair the two %s feeds, add \"relationships\" to the entry (wealthdb/docs/DESIGN.md §5.1).",
+			w.out.help("To pair the two %s feeds, add \"relationships\" to the entry (docs/DESIGN.md §5.1).",
 				strings.ToUpper(c.Kind))
 		}
 	}
@@ -360,7 +401,7 @@ func (w *setup) pick(c silver.Collector) error {
 			}
 		}
 	}
-	return w.afterAdd(c, item)
+	return w.afterAdd(w.silverFile(c, files[0], item))
 }
 
 // addCollected offers the logins of per-item collector c whose data is
@@ -386,7 +427,7 @@ func (w *setup) addCollected(c silver.Collector) (bool, error) {
 	}
 	w.out.gap()
 	w.out.say("Data is collected already for: %s.", strings.Join(names, ", "))
-	yes, err := w.p.yesNo("Add them", true)
+	yes, err := w.p.yesNo("Add them?", true)
 	if err != nil || !yes {
 		return false, err
 	}
@@ -397,8 +438,7 @@ func (w *setup) addCollected(c silver.Collector) (bool, error) {
 	}
 	w.out.ok("Added %s: %s.", c.Display, strings.Join(names, ", "))
 	// An entry of the collector that never got data is most often a
-	// name that no login took: offer to drop it. Entries are removed
-	// last first, so the others keep their place in the list.
+	// name that no login took: offer to drop it, the last entry first.
 	es, err = w.entries()
 	if err != nil {
 		return false, err
@@ -411,18 +451,18 @@ func (w *setup) addCollected(c silver.Collector) (bool, error) {
 		}
 		w.out.gap()
 		w.out.say("The entry %s has no data: no bank was linked under the name %s.", e.src.ID, e.feeds[0].Item)
-		drop, err := w.p.yesNo("Remove it", true)
+		drop, err := w.p.yesNo("Remove it?", true)
 		if err != nil {
 			return false, err
 		}
 		if drop {
-			if err := w.store.apply(func(d *jsonedit.Doc) error { return d.Remove("silver_sources", e.index) }); err != nil {
+			if err := w.store.apply(func(d *jsonedit.Doc) error { return removeEntry(d, e.src.ID) }); err != nil {
 				return false, w.explain(err)
 			}
 			w.out.ok("Removed %s.", e.src.ID)
 		}
 	}
-	more, err := w.p.yesNo("Link one more bank", false)
+	more, err := w.p.yesNo("Link one more bank?", false)
 	return !more, err
 }
 
@@ -442,16 +482,17 @@ func (w *setup) pairComplete(kind string) bool {
 	return false
 }
 
-// afterAdd names the next step for collector c: its first sign-in, or,
-// when its data is there already, a load.
-func (w *setup) afterAdd(c silver.Collector, item string) error {
+// afterAdd names the next step for the silver file at abs, which an
+// entry lists: its collector's first sign-in, or, when the file is there
+// already, a load of that entry.
+func (w *setup) afterAdd(abs string) error {
 	es, err := w.entries()
 	if err != nil {
 		return err
 	}
 	for _, e := range es {
 		for _, f := range e.feeds {
-			if f.Collector != c.Name || c.PerItem && filepath.Base(filepath.Dir(f.Path)) != item {
+			if filepath.Clean(f.Path) != abs {
 				continue
 			}
 			if !exists(f.Path) {
@@ -473,10 +514,14 @@ func (w *setup) printNext(f config.Feed) {
 	w.runLater("To collect the data of "+cmp.Or(c.Display, f.Collector), config.CollectCommand(f))
 }
 
-// offerLoad offers to load e's collected data, when the database exists.
+// offerLoad offers to load e's collected data, when the database exists
+// and the setup has a Load action.
 func (w *setup) offerLoad(e entry) error {
 	if !w.goldExists() {
-		w.out.help("It loads once the database exists (wealthdb init, then wealthdb load -a).")
+		w.out.help("It loads once the database exists (%s, then %s).", w.cmd("init"), w.cmd("load -a"))
+		return nil
+	}
+	if w.opts.Actions.Load == nil {
 		return nil
 	}
 	ok, err := w.p.yesNo(fmt.Sprintf("Load %s now?", e.src.ID), true)
@@ -486,11 +531,9 @@ func (w *setup) offerLoad(e entry) error {
 	return w.load(e.src.ID)
 }
 
-// load runs the load of one source, as `wealthdb load <id>` does.
+// load runs the load of one source, as `wealthdb load <id>` does. Its
+// callers offer it only with a Load action.
 func (w *setup) load(id string) error {
-	if w.opts.Actions.Load == nil {
-		return nil
-	}
 	// The load prints as the command does, past the screen.
 	w.out.gap()
 	err := w.opts.Actions.Load(id)
@@ -502,15 +545,24 @@ func (w *setup) load(id string) error {
 }
 
 // remove asks, then removes e's data from the database, as `wealthdb
-// reset <id>` does, then e itself. A config that names e elsewhere is
-// refused before anything is removed.
+// reset <id>` does, then e itself. The file is read again first, so an
+// edit by hand is kept. A config that names e elsewhere is refused
+// before anything is removed.
 func (w *setup) remove(e entry, loaded map[string]bool) error {
 	ok, err := w.p.yesNo(fmt.Sprintf("Remove %s from the list and its data from the database? "+
 		"The downloaded files stay.", e.src.ID), false)
 	if err != nil || !ok {
 		return err
 	}
-	text, err := w.store.prepare(func(d *jsonedit.Doc) error { return d.Remove("silver_sources", e.index) })
+	// The file may have been edited by hand since the list was shown:
+	// the removal applies to the file as it is now.
+	if err := w.store.refresh(); err != nil {
+		return w.explain(err)
+	}
+	if entryIndex(w.store.doc, e.src.ID) < 0 {
+		return w.explain(gone(e.src.ID))
+	}
+	text, err := w.store.prepare(func(d *jsonedit.Doc) error { return removeEntry(d, e.src.ID) })
 	if err != nil {
 		var r *refusal
 		if errors.As(err, &r) {

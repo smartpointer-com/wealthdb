@@ -2,7 +2,7 @@ wealthdb <version>, MCP server. This endpoint serves full data.
 Default currency: USD. A result takes at most 16000 characters unless max_chars says otherwise.
 
 Sources (id · kind · latest snapshot):
-(the database cannot be read: there is no database yet: run 'wealthdb init' and 'wealthdb load -a' first)
+(the database cannot be read: there is no database yet: run 'wealthdb -c <config> init' and 'wealthdb -c <config> load -a' first)
 
 wealthdb holds a household's complete financial picture in one local, read-only database: every bank, card, brokerage, pension and crypto account, plus the property, loans and private holdings recorded by hand. A house, a mortgage or a venture fund is an account like any other; a loan or a card balance is a negative value.
 

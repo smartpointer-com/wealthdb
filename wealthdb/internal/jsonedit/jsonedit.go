@@ -8,7 +8,12 @@
 // document already uses: the indentation of its last sibling, or one
 // unit deeper than its parent's line when it has none. The unit is the
 // one the document's own nesting shows, four spaces in a document that
-// shows none.
+// shows none. A line an edit adds ends in a line feed, also in a
+// document whose lines end in CR LF.
+//
+// Of a key written twice in one object, the last member is the value at
+// its path, as encoding/json reads it: Set replaces that one, and Remove
+// removes that one, which leaves the earlier member as the value.
 package jsonedit
 
 import (
@@ -89,9 +94,6 @@ func (d *Doc) reset(src []byte) error {
 // Bytes is the document's text. The caller must not change it.
 func (d *Doc) Bytes() []byte { return d.src }
 
-// Empty says the document holds no value at all.
-func (d *Doc) Empty() bool { return d.root == nil }
-
 // Raw is the text of the value at path, and whether there is one.
 func (d *Doc) Raw(path ...any) ([]byte, bool) {
 	n := d.lookup(path)
@@ -143,7 +145,8 @@ func (d *Doc) Len(path ...any) int {
 
 // Set writes v at path. An existing value is replaced; a missing member
 // is added at the end of its object, with any missing objects on the way
-// to it. An array element must exist already: Append adds one.
+// to it. A null on the way counts as missing: the objects that lead to
+// path replace it. An array element must exist already: Append adds one.
 func (d *Doc) Set(v any, path ...any) error {
 	if len(path) == 0 {
 		return fmt.Errorf("jsonedit: set: empty path")
@@ -153,21 +156,22 @@ func (d *Doc) Set(v any, path ...any) error {
 			return err
 		}
 	}
+	if d.null(d.root) {
+		if err := d.splice(d.root.start, d.root.end, "{}"); err != nil {
+			return err
+		}
+	}
 	parent, i := d.root, 0
 	for ; i < len(path)-1; i++ {
-		child := d.step(parent, path[i])
-		if child == nil {
+		child, _ := d.item(parent, path[i])
+		if child == nil || d.null(child) {
 			break
 		}
 		parent = child
 	}
 	if i < len(path)-1 {
-		// A member on the way is missing: write it, holding the rest of
-		// the path as nested objects.
-		key, ok := path[i].(string)
-		if !ok {
-			return fmt.Errorf("jsonedit: set: element %v of %s does not exist", path[i], pathString(path[:i]))
-		}
+		// A value on the way is missing, or null: write it, holding the
+		// rest of the path as nested objects.
 		nested := v
 		for j := len(path) - 1; j > i; j-- {
 			k, ok := path[j].(string)
@@ -175,6 +179,13 @@ func (d *Doc) Set(v any, path ...any) error {
 				return fmt.Errorf("jsonedit: set: element %v of %s does not exist", path[j], pathString(path[:j]))
 			}
 			nested = Object{{Key: k, Value: nested}}
+		}
+		if null, at := d.item(parent, path[i]); null != nil {
+			return d.replace(null, at, nested)
+		}
+		key, ok := path[i].(string)
+		if !ok {
+			return fmt.Errorf("jsonedit: set: element %v of %s does not exist", path[i], pathString(path[:i]))
 		}
 		return d.insertMember(parent, key, nested, path[:i])
 	}
@@ -199,10 +210,11 @@ func (d *Doc) Set(v any, path ...any) error {
 }
 
 // Append adds v as the last element of the array at path. A missing
-// array is written as a member holding v alone (Set).
+// array, or a null in its place, is written as a member holding v alone
+// (Set).
 func (d *Doc) Append(v any, path ...any) error {
 	n := d.lookup(path)
-	if n == nil {
+	if n == nil || d.null(n) {
 		return d.Set([]any{v}, path...)
 	}
 	if n.kind != kindArray {
@@ -235,7 +247,8 @@ func (d *Doc) Append(v any, path ...any) error {
 
 // Remove deletes the member or element at path, with the separator
 // before it (after it, for the first of several). Removing a value that
-// is not there is no change.
+// is not there is no change. Of a key written twice, the last member
+// goes, and the earlier one is the value at path from then on.
 func (d *Doc) Remove(path ...any) error {
 	if len(path) == 0 {
 		return fmt.Errorf("jsonedit: remove: empty path")
@@ -390,19 +403,32 @@ func (d *Doc) lookup(path []any) *node {
 
 // step is the member or element of n that s names, or nil.
 func (d *Doc) step(n *node, s any) *node {
+	v, _ := d.item(n, s)
+	return v
+}
+
+// item is the member or element of n that s names, and the offset its
+// text starts at: a member's key, an element's value. nil when n holds
+// none.
+func (d *Doc) item(n *node, s any) (*node, int) {
 	switch k := s.(type) {
 	case string:
 		if n.kind == kindObject {
 			if m := findMember(n, k); m != nil {
-				return m.val
+				return m.val, m.keyStart
 			}
 		}
 	case int:
 		if n.kind == kindArray && k >= 0 && k < len(n.elems) {
-			return n.elems[k]
+			return n.elems[k], n.elems[k].start
 		}
 	}
-	return nil
+	return nil, 0
+}
+
+// null says n is the value null.
+func (d *Doc) null(n *node) bool {
+	return n.kind == kindScalar && string(d.src[n.start:n.end]) == "null"
 }
 
 // findMember is obj's member key. With a key written twice it is the

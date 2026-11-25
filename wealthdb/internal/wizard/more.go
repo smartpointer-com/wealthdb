@@ -229,8 +229,8 @@ LM Studio on this computer, or a hosted service.`)
 			w.testModel(m)
 		}
 	}
-	w.thenRun(Step{"wealthdb resolve-symbols", "Asks the model for the tickers the banks leave out."})
-	w.thenRun(Step{"wealthdb categorize", "Asks the model for the category of each shop and payer that\nno rule places."})
+	w.thenRun(Step{w.cmd("resolve-symbols"), "Asks the model for the tickers the banks leave out."})
+	w.thenRun(Step{w.cmd("categorize"), "Asks the model for the category of each shop and payer that\nno rule places."})
 	return nil
 }
 
@@ -260,19 +260,14 @@ func setModel(d *jsonedit.Doc, path []any, m config.ModelConfig) error {
 // removeModel removes every model the file names, and each block the
 // removal leaves empty.
 func (w *setup) removeModel() error {
-	ok, err := w.p.yesNo("Remove the model? Tickers and categories found so far stay", false)
+	ok, err := w.p.yesNo("Remove the model? Tickers and categories found so far stay.", false)
 	if err != nil || !ok {
 		return err
 	}
 	err = w.store.apply(func(d *jsonedit.Doc) error {
 		for _, u := range modelUses {
-			if err := d.Remove(u.path...); err != nil {
+			if err := removeEmptied(d, u.path); err != nil {
 				return err
-			}
-			for p := u.path[:len(u.path)-1]; len(p) > 0 && d.Has(p...) && d.Len(p...) == 0; p = p[:len(p)-1] {
-				if err := d.Remove(p...); err != nil {
-					return err
-				}
 			}
 		}
 		return nil
@@ -431,8 +426,8 @@ func (w *setup) testModel(m config.ModelConfig) {
 		return
 	}
 	reply = strings.Join(strings.Fields(reply), " ")
-	if len(reply) > 60 {
-		reply = reply[:60] + " ..."
+	if r := []rune(reply); len(r) > 60 {
+		reply = string(r[:60]) + " ..."
 	}
 	// Not a change the menu shows: it stays to be read.
 	fmt.Fprintln(w.out, w.out.OK("The model answered: "+reply))
@@ -594,7 +589,7 @@ func wrap(text string, width int) []string {
 
 // validateCommand is the command that checks this config.
 func (w *setup) validateCommand() string {
-	return cmp.Or(w.opts.Command, "wealthdb config") + " validate"
+	return w.cmd("config validate")
 }
 
 // ---- Validate the config file ----
@@ -614,13 +609,19 @@ func Check(path string) (state config.State, ok string, err error) {
 	case config.StateAbsent:
 		return st, "", fmt.Errorf("%s holds no setup yet", abs)
 	case config.StateUnfinished:
-		var missing []string
-		var top map[string]json.RawMessage
+		// A member with an empty value is missing as one not written is
+		// (config.InspectBytes).
+		var top struct {
+			Currency string `json:"default_currency"`
+			Gold     string `json:"gold_db"`
+		}
 		_ = json.Unmarshal(data, &top)
-		for _, k := range []string{"default_currency", "gold_db"} {
-			if _, ok := top[k]; !ok {
-				missing = append(missing, k)
-			}
+		var missing []string
+		if top.Currency == "" {
+			missing = append(missing, "default_currency")
+		}
+		if top.Gold == "" {
+			missing = append(missing, "gold_db")
 		}
 		return st, "", fmt.Errorf("the setup in %s is not finished: it has no %s", abs, strings.Join(missing, " and no "))
 	case config.StateRefused:

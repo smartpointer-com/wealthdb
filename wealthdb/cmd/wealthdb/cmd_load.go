@@ -63,7 +63,7 @@ See docs/DESIGN.md §8 for the load semantics.`)
 	}
 
 	// load mutates the live gold file: gate for write, then open RW.
-	db, lock, err := openGoldForWrite(g, cfg, "load", defaultMissingGoldMsg)
+	db, lock, err := openGoldForWrite(g, cfg, "load", missingGoldMsg(g.ConfigPath))
 	if err != nil {
 		return err
 	}
@@ -75,7 +75,7 @@ See docs/DESIGN.md §8 for the load semantics.`)
 	if err != nil {
 		return err
 	}
-	specs, missingErr := keepCollected(cfg, specs, registered, id != "", stdout, stderr)
+	specs, missingErr := run.keepCollected(specs, registered, id != "")
 	if id == "" {
 		printUnlisted(cfg, setupCommand(g.ConfigPath), stdout)
 	}
@@ -89,23 +89,24 @@ See docs/DESIGN.md §8 for the load semantics.`)
 	return errors.Join(missingErr, firstErr, run.finish(ctx, db, nil))
 }
 
-// keepCollected leaves out of a load what has no data yet: a source
-// gold has never loaded, none of whose silver files exists, and a
-// subsource of such a source whose file does not exist. Each gets a line
-// that names the command collecting it. A source named alone (single)
-// with no data at all is an error.
+// keepCollected leaves out of a load or a reload what has no data yet:
+// a source gold has never loaded (registered are the ones it has), none
+// of whose silver files exists, and a subsource of such a source whose
+// file does not exist. Each gets a line that names the command
+// collecting it. A source named alone (single) with no data at all is an
+// error.
 //
 // A source gold HAS loaded keeps every feed: a file of it that is
 // missing is an error, never data that is not there yet, because gold
 // does not record which subsources a load read, and loading the rest
-// would rebuild the source from part of its feeds. The other sources
-// still load; the error comes back once they have.
-func keepCollected(cfg *config.Config, specs []loader.SourceSpec, registered []string, single bool,
-	stdout, stderr io.Writer) ([]loader.SourceSpec, error) {
+// would rebuild the source from part of its feeds. Such a source is left
+// out, so a reload does not reset it. The other sources are kept, and
+// the error comes back with them.
+func (r loadRun) keepCollected(specs []loader.SourceSpec, registered []string, single bool) ([]loader.SourceSpec, error) {
 	out := specs[:0:0]
 	var lost []string
 	for _, spec := range specs {
-		src, _ := cfg.Lookup(spec.ID)
+		src, _ := r.cfg.Lookup(spec.ID)
 		missing := missingFeeds(src)
 		switch {
 		case len(missing) == 0:
@@ -114,7 +115,7 @@ func keepCollected(cfg *config.Config, specs []loader.SourceSpec, registered []s
 			if single {
 				return nil, errors.New(msg)
 			}
-			fmt.Fprintf(stderr, "load: %s\n", msg)
+			fmt.Fprintf(r.stderr, "%s: %s\n", r.verb, msg)
 			lost = append(lost, spec.ID)
 			continue
 		case len(missing) == len(src.Feeds()):
@@ -122,7 +123,7 @@ func keepCollected(cfg *config.Config, specs []loader.SourceSpec, registered []s
 			if single {
 				return nil, errors.New(msg)
 			}
-			fmt.Fprintf(stdout, "load: %s\n", msg)
+			fmt.Fprintf(r.stdout, "%s: %s\n", r.verb, msg)
 			continue
 		default:
 			kept := spec.Subsources[:0:0]
@@ -133,13 +134,13 @@ func keepCollected(cfg *config.Config, specs []loader.SourceSpec, registered []s
 			}
 			spec.Subsources = kept
 			for _, f := range missing {
-				fmt.Fprintf(stdout, "load: %s: %s: %s\n", spec.ID, f.Subsource, noDataLine([]config.Feed{f}))
+				fmt.Fprintf(r.stdout, "%s: %s: %s: %s\n", r.verb, spec.ID, f.Subsource, noDataLine([]config.Feed{f}))
 			}
 		}
 		out = append(out, spec)
 	}
 	if len(lost) > 0 {
-		return out, fmt.Errorf("load: the data file of %s is missing", strings.Join(lost, ", "))
+		return out, fmt.Errorf("%s: the data file of %s is missing", r.verb, strings.Join(lost, ", "))
 	}
 	return out, nil
 }
@@ -198,7 +199,7 @@ func goldHasTransactions(ctx context.Context, db *sql.DB) (bool, error) {
 
 // noDataLine says there is no data yet and how to collect it: the
 // collect command of each collector, or the missing file where no
-// collector is known.
+// collector is known. missing holds a feed at least.
 func noDataLine(missing []config.Feed) string {
 	var run, files []string
 	for _, f := range missing {
@@ -209,11 +210,10 @@ func noDataLine(missing []config.Feed) string {
 			run = append(run, c)
 		}
 	}
-	var how []string
-	if len(run) > 0 {
-		how = append(how, "Run: "+strings.Join(run, " and "))
+	if len(run) == 0 {
+		return "no data yet; " + strings.Join(files, "; ")
 	}
-	return "no data yet. " + strings.Join(append(how, files...), "; ")
+	return "no data yet. Run: " + strings.Join(append([]string{strings.Join(run, " and ")}, files...), "; ")
 }
 
 // loadRun is one load, reload or rebuild: the config, what it applies

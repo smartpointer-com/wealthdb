@@ -12,12 +12,27 @@ import (
 	"testing"
 )
 
+// escapes is what the scanner of strings must pass: an escaped quote in
+// a value and in a key, a backslash before a closing quote, a \u
+// escape, brackets and commas inside a string, text outside ASCII, and
+// lines that end in CR LF.
+var escapes = strings.ReplaceAll(`{
+  "note": "a\"b",
+  "k\"ey": "é",
+  "more": {
+    "u": "\u00e9\n",
+    "list": ["x\\", "ü, ] }"]
+  }
+}
+`, "\n", "\r\n")
+
 // documents are the texts every operation runs over: the demo
 // household's config, a config that sets every member, and a few
 // layouts the files in the wild use.
 func documents(t *testing.T) map[string][]byte {
 	t.Helper()
 	out := map[string][]byte{
+		"escapes": []byte(escapes),
 		"inline":  []byte(`{"gold_db": "/x/g.db", "silver_sources": [{"id": "a", "kind": "viac", "path": "/x/a.db"}], "web": {"enabled": false}}`),
 		"tabs":    []byte("{\n\t\"default_currency\": \"EUR\",\n\t\"silver_sources\": [\n\t\t{\n\t\t\t\"id\": \"a\",\n\t\t\t\"kind\": \"viac\",\n\t\t\t\"path\": \"/x/a.db\"\n\t\t}\n\t],\n\t\"mcp\": {\n\t\t\"enabled\": true,\n\t\t\"auth\": \"token\"\n\t}\n}\n"),
 		"aligned": []byte("{\n    \"gold_db\":          \"/x/g.db\",\n    \"default_currency\": \"USD\",\n    \"silver_sources\": [\n        {\"id\": \"a\", \"kind\": \"ubs\", \"subsources\": [\n            {\"kind\": \"ubs-web\", \"path\": \"/x/w.db\"}\n        ]}\n    ]\n}\n"),
@@ -316,10 +331,96 @@ func TestSetCreatesTheWayDown(t *testing.T) {
 	}
 }
 
+// A null where an object or an array belongs counts as missing: Set and
+// Append replace it, in its place, and every other byte stays.
+func TestNullOnTheWayIsReplaced(t *testing.T) {
+	const src = "{\n  \"web\": null,\n  \"silver_sources\": null,\n  \"mcp\": {\"auth\": null}, \"list\": [null]\n}\n"
+	for _, tc := range []struct {
+		name string
+		edit func(d *Doc) error
+		want string
+	}{
+		{"set through a null member", func(d *Doc) error { return d.Set(true, "web", "enabled") },
+			strings.Replace(src, `"web": null`, "\"web\": {\n    \"enabled\": true\n  }", 1)},
+		{"set two steps through a null member", func(d *Doc) error { return d.Set(1, "web", "a", "b") },
+			strings.Replace(src, `"web": null`, "\"web\": {\n    \"a\": {\n      \"b\": 1\n    }\n  }", 1)},
+		{"set through a null on a shared line", func(d *Doc) error { return d.Set("token", "mcp", "auth", "kind") },
+			strings.Replace(src, `"auth": null`, `"auth": {"kind":"token"}`, 1)},
+		{"set through a null element", func(d *Doc) error { return d.Set(1, "list", 0, "k") },
+			strings.Replace(src, `[null]`, `[{"k":1}]`, 1)},
+		{"append to a null member", func(d *Doc) error { return d.Append(Object{{Key: "id", Value: "a"}}, "silver_sources") },
+			strings.Replace(src, `"silver_sources": null`, "\"silver_sources\": [\n    {\n      \"id\": \"a\"\n    }\n  ]", 1)},
+		{"append below a null member", func(d *Doc) error { return d.Append(1, "web", "ports") },
+			strings.Replace(src, `"web": null`, "\"web\": {\n    \"ports\": [\n      1\n    ]\n  }", 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := parse(t, []byte(src))
+			if err := tc.edit(d); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(d.Bytes()); got != tc.want {
+				t.Errorf("got\n%s\nwant\n%s", got, tc.want)
+			}
+		})
+	}
+	// A document that is null alone becomes an object.
+	d := parse(t, []byte("null\n"))
+	if err := d.Set("CHF", "default_currency"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(d.Bytes()), "{\n    \"default_currency\": \"CHF\"\n}\n"; got != want {
+		t.Errorf("got\n%s\nwant\n%s", got, want)
+	}
+	// A value that is neither missing nor null is still refused.
+	d = parse(t, []byte(`{"web": false, "silver_sources": 0}`))
+	if d.Set(true, "web", "enabled") == nil || d.Append(1, "silver_sources") == nil {
+		t.Error("a scalar that is not null was replaced")
+	}
+}
+
+// A line an edit adds to a document of CR LF lines ends in a line feed
+// alone, and every line that was there keeps its ending.
+func TestCRLFDocumentGetsLFInNewLines(t *testing.T) {
+	d := parse(t, []byte("{\r\n  \"a\": 1\r\n}\r\n"))
+	if err := d.Set(Object{{Key: "c", Value: 2}}, "b"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(d.Bytes()), "{\r\n  \"a\": 1,\n  \"b\": {\n    \"c\": 2\n  }\r\n}\r\n"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// Of a key written twice, the last member is the value: Set replaces it
+// and Remove removes it, after which the earlier member is the value.
+func TestKeyWrittenTwice(t *testing.T) {
+	d := parse(t, []byte(`{"a": 1, "b": 2, "a": 3}`))
+	if raw, _ := d.Raw("a"); string(raw) != "3" {
+		t.Errorf("the value is %s, want the last member's", raw)
+	}
+	if got := d.Keys(); !slices.Equal(got, []string{"a", "b", "a"}) {
+		t.Errorf("Keys = %v", got)
+	}
+	if err := d.Set(4, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(d.Bytes()), `{"a": 1, "b": 2, "a": 4}`; got != want {
+		t.Errorf("after Set: %s, want %s", got, want)
+	}
+	if err := d.Remove("a"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(d.Bytes()), `{"a": 1, "b": 2}`; got != want {
+		t.Errorf("after Remove: %s, want %s", got, want)
+	}
+	if raw, ok := d.Raw("a"); !ok || string(raw) != "1" {
+		t.Errorf("after Remove the value is %s (%v), want the earlier member's", raw, ok)
+	}
+}
+
 func TestEmptyDocumentBecomesIndented(t *testing.T) {
 	for _, src := range []string{"", "  \n"} {
 		d := parse(t, []byte(src))
-		if !d.Empty() {
+		if d.Has() {
 			t.Fatalf("%q is not empty", src)
 		}
 		if err := d.Set("CHF", "default_currency"); err != nil {

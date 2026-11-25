@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
@@ -34,8 +35,11 @@ func checkSharedMounts(mountinfoPath string) error {
 	}
 	var want []string
 	for _, p := range strings.Split(os.Getenv("WEALTHDB_MOUNTS"), ":") {
+		// The kernel lists a mount point in clean form, and Docker cleans
+		// a mount's target the same way: a trailing slash or a ./ in the
+		// path as the wrapper wrote it names the same folder.
 		if p != "" {
-			want = append(want, p)
+			want = append(want, filepath.Clean(p))
 		}
 	}
 	if len(want) == 0 {

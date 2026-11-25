@@ -112,7 +112,7 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		// (readLoadInputs).
 		return err
 	}
-	db, lock, err := openGoldForOverlay(ctx, g, cfg.GoldDB, "categorize", defaultMissingGoldMsg, "see the plan", mf.dryRun)
+	db, lock, err := openGoldForOverlay(ctx, g, cfg.GoldDB, "categorize", missingGoldMsg(g.ConfigPath), "see the plan", mf.dryRun)
 	if err != nil {
 		return err
 	}

@@ -135,8 +135,12 @@ func (s *screen) answered() {
 }
 
 // outside marks output that did not pass through the screen, as a
-// command the setup ran prints: it ended at the start of a line.
-func (s *screen) outside() { s.nl = 1 }
+// command the setup ran prints: it ended at the start of a line, and it
+// stays to be read (unread).
+func (s *screen) outside() {
+	s.nl = 1
+	s.tail.WriteString("-")
+}
 
 // unread says something was written since the last answer beyond blank
 // lines and the confirmations of a change.

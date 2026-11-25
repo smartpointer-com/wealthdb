@@ -94,7 +94,7 @@ var commandHelps = []commandHelp{
 	{name: "snapshots", args: "<id> | -a", group: "report",
 		short: "the dates a source has data for"},
 
-	{name: "config", args: "[<section>]", group: "load", short: "set up the currency, the banks and brokers, and the servers"},
+	{name: "config", args: "[<section> | validate]", group: "load", short: "set up the currency, the banks and brokers, and the servers"},
 	{name: "init", group: "load", short: "create the empty database at the configured path"},
 	{name: "load", args: "<id> | -a", group: "load", short: "load a source's new data (or every source's) into the database"},
 	{name: "reset", args: "<id> | -a", group: "load", short: "remove a source's data from the database"},
@@ -278,6 +278,6 @@ Step 1 names the command that collects each bank's data.
 Run those commands between steps 2 and 3.
 
 Run 'wealthdb help' for everything else.
-`, head, setupCommand(path), "wealthdb init", "wealthdb load -a")
+`, head, setupCommand(path), commandFor(path, "init"), commandFor(path, "load -a"))
 	return true
 }

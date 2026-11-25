@@ -58,8 +58,8 @@ func sections() []section {
 	return append(out, moreSections...)
 }
 
-// sectionNamed is the section a command line names: its slug, or the
-// first word of its title.
+// sectionNamed is the section a command line names: its slug, the first
+// word of its title, or its alias.
 func sectionNamed(name string) (section, bool) {
 	name = strings.ToLower(name)
 	for _, s := range sections() {
@@ -282,7 +282,7 @@ func (w *setup) offerFound() error {
 	for _, f := range disc {
 		fmt.Fprintf(w.out, "  %s\n", foundName(f))
 	}
-	add, err := w.p.yesNo("Add them now", true)
+	add, err := w.p.yesNo("Add them now?", true)
 	if err != nil || !add {
 		return err
 	}
@@ -300,12 +300,16 @@ func (w *setup) offerFound() error {
 	return nil
 }
 
-// letter is the label of the i-th line of the list: a to z, then aa,
-// ab, and so on.
+// labels are the letters a line of a list is labelled with. q is not
+// one: it is the answer that stops, at every prompt.
+const labels = "abcdefghijklmnoprstuvwxyz"
+
+// letter is the label of the i-th line of the list: a to z without q,
+// then aa, ab, and so on.
 func letter(i int) string {
 	s := ""
-	for i++; i > 0; i = (i - 1) / 26 {
-		s = string(rune('a'+(i-1)%26)) + s
+	for i++; i > 0; i = (i - 1) / len(labels) {
+		s = string(labels[(i-1)%len(labels)]) + s
 	}
 	return s
 }
@@ -316,11 +320,12 @@ func letterIndex(s string) (int, bool) {
 		return 0, false
 	}
 	n := 0
-	for _, r := range s {
-		if r < 'a' || r > 'z' {
+	for i := range len(s) {
+		k := strings.IndexByte(labels, s[i])
+		if k < 0 {
 			return 0, false
 		}
-		n = n*26 + int(r-'a') + 1
+		n = n*len(labels) + k + 1
 	}
 	return n - 1, true
 }
@@ -347,7 +352,7 @@ func (w *setup) register(f found) error {
 		return nil
 	}
 	w.out.ok("Added %s.", foundName(f))
-	return w.afterAdd(f.c, f.item)
+	return w.afterAdd(filepath.Clean(f.file))
 }
 
 // editEntry shows one configured source and what can be done with it.
@@ -363,8 +368,9 @@ func (w *setup) editEntry(e entry, loaded map[string]bool) error {
 			w.printNext(f)
 		}
 	}
+	canLoad := collected && w.goldExists() && w.opts.Actions.Load != nil
 	var opts [][2]string
-	if collected && w.goldExists() {
+	if canLoad {
 		opts = append(opts, [2]string{"l", "load its data now"})
 	}
 	if !e.hand {
@@ -380,7 +386,7 @@ func (w *setup) editEntry(e entry, loaded map[string]bool) error {
 	}
 	switch strings.ToLower(ans) {
 	case "l", "load":
-		if collected && w.goldExists() {
+		if canLoad {
 			return w.load(e.src.ID)
 		}
 	case "r", "remove":
@@ -423,12 +429,12 @@ func (w *setup) mcpSummary() string {
 
 func (w *setup) editWeb(withPort bool) error {
 	w.out.help("Dashboards show the reports in a web browser, on this computer only.")
-	return w.editService("web", "Dashboards", "wealthdb web start", config.DefaultWebPort, withPort)
+	return w.editService("web", "Dashboards", w.cmd("web start"), config.DefaultWebPort, withPort)
 }
 
 func (w *setup) editMCP(withPort bool) error {
 	w.out.help("The MCP server lets an AI agent on this computer read the reports.")
-	return w.editService("mcp", "MCP server", "wealthdb mcp start", config.DefaultMCPPort, withPort)
+	return w.editService("mcp", "MCP server", w.cmd("mcp start"), config.DefaultMCPPort, withPort)
 }
 
 // editService asks on or off, and the port when withPort, and keeps
@@ -443,7 +449,7 @@ func (w *setup) editService(key, title, start string, defaultPort int, withPort 
 	}
 	port := saved.Port
 	if on && withPort {
-		v, err := w.p.askValid("Port", strconv.Itoa(cmpPort(saved.Port, defaultPort)), func(s string) (string, error) {
+		v, err := w.p.askValid("Port", strconv.Itoa(cmp.Or(saved.Port, defaultPort)), func(s string) (string, error) {
 			n, err := strconv.Atoi(s)
 			if err != nil || n < 1 || n > 65535 {
 				return "", fmt.Errorf("A port is a number from 1 to 65535.")
@@ -486,16 +492,9 @@ func (w *setup) editService(key, title, start string, defaultPort int, withPort 
 // the end of the setup lists it again.
 func (w *setup) runLater(purpose, command string) {
 	w.out.gap()
-	w.out.say("%s, run this command when wealthdb config is done:", purpose)
+	w.out.say("%s, run this command when %s is done:", purpose, w.cmd("config"))
 	w.out.command(command)
-	w.out.help("wealthdb config lists it again at the end.")
-}
-
-func cmpPort(p, dflt int) int {
-	if p == 0 {
-		return dflt
-	}
-	return p
+	w.out.help("%s lists it again at the end.", w.cmd("config"))
 }
 
 // ---- Data folder ----
@@ -507,8 +506,8 @@ func (w *setup) dataSummary() string {
 	return tilde(w.opts.DataRoot)
 }
 
-// showData says where the data lives. The folder is the one the
-// wrapper mounts, so it is shown, not asked.
+// showData says where the data lives. The environment names the folder,
+// so it is shown, not asked.
 func (w *setup) showData() error {
 	fmt.Fprintf(w.out, "Data folder: %s\n", w.opts.DataRoot)
 	w.out.help("The database and the data of every bank live here.")
@@ -517,7 +516,7 @@ func (w *setup) showData() error {
 		fmt.Fprintf(w.out, "The file names another place for the database: %s\n", g)
 	}
 	if !w.goldExists() {
-		w.out.say("The database is not created yet. wealthdb init creates it at %s.", g)
+		w.out.say("The database is not created yet. %s creates it at %s.", w.cmd("init"), g)
 		return nil
 	}
 	fmt.Fprintf(w.out, "The database: %s\n", g)

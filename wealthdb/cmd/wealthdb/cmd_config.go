@@ -46,13 +46,13 @@ again. A section's name opens that section alone:
 
 The AI model, the reports' options and the ledger files are set in the
 menu too. The other settings are edited in the file; the menu lists
-them with their docs. validate checks the file
-as every command reads it, and exits 0 when it is valid: run it after
-an edit by hand. It needs no terminal.
+them with their docs. validate checks the file as every command reads
+it, and exits 0 when it is valid: run it after an edit by hand. It
+needs no terminal.
 
 -c names another config file, to try a setup or keep several. The data
-folder is the one the wealthdb wrapper mounts (WEALTHDB_DATA_ROOT, else
-~/.local/share/wealthdb). The setup needs an interactive terminal.
+folder is WEALTHDB_DATA_ROOT, else $XDG_DATA_HOME/wealthdb, else
+~/.local/share/wealthdb. The setup needs an interactive terminal.
 `, sectionList())
 	}
 	if err := parseFlags(fs, subargs, "config"); err != nil {
@@ -67,6 +67,12 @@ folder is the one the wealthdb wrapper mounts (WEALTHDB_DATA_ROOT, else
 			return errs.Newf(errs.ExitUsage, "config: validate takes no --wizard")
 		}
 		return validateConfig(g.ConfigPath, stdout)
+	}
+	// A name that is no section is a bad argument, whatever the input is.
+	if name := fs.Arg(0); name != "" && !wizard.HasSection(name) {
+		fs.Usage()
+		return errs.Newf(errs.ExitUsage, "config: no section %q (want one of %s, or validate)",
+			name, strings.Join(wizard.Sections(), ", "))
 	}
 
 	// A test drives the setup with a reader that is no *os.File; a real
@@ -90,6 +96,7 @@ folder is the one the wealthdb wrapper mounts (WEALTHDB_DATA_ROOT, else
 		return errs.Wrap(errs.ExitOpenFailed, fmt.Errorf("create config dir: %w", err))
 	}
 	root, fromEnv := dataRoot()
+	kind, _ := engineKind()
 	return wizard.Run(wizard.Options{
 		ConfigPath:      g.ConfigPath,
 		DataRoot:        root,
@@ -100,8 +107,8 @@ folder is the one the wealthdb wrapper mounts (WEALTHDB_DATA_ROOT, else
 		Terminal:        tty,
 		Wizard:          *walk,
 		Section:         fs.Arg(0),
-		Command:         setupCommand(g.ConfigPath),
-		InContainer:     os.Getenv("WEALTHDB_HOST_OS") != "",
+		Program:         commandFor(g.ConfigPath, ""),
+		InContainer:     kind == engineContainer,
 		Colors:          colors(stdout),
 		Actions: wizard.Actions{
 			Init: func() error {
@@ -166,8 +173,8 @@ func sectionList() string {
 }
 
 // colors is the palette for what a command prints to w: colours when w
-// is a terminal that takes them. NO_COLOR set to anything, or a TERM of
-// dumb, turns them off (https://no-color.org).
+// is a terminal that takes them. NO_COLOR set to anything but the empty
+// string, or a TERM of dumb, turns them off (https://no-color.org).
 func colors(w io.Writer) wizard.Palette {
 	f, ok := w.(*os.File)
 	return wizard.Colors(ok && term.IsTerminal(int(f.Fd())) &&
@@ -225,7 +232,7 @@ func stopOnSignal(fd int, out io.Writer, p wizard.Palette, command string) func(
 	}
 }
 
-// dataRoot is the data folder the wrapper mounts, made absolute, and
+// dataRoot is the data folder the wrapper names, made absolute, and
 // whether WEALTHDB_DATA_ROOT names it: the variable, else
 // $XDG_DATA_HOME/wealthdb, else ~/.local/share/wealthdb.
 func dataRoot() (string, bool) {
@@ -236,11 +243,11 @@ func dataRoot() (string, bool) {
 		return absPath(filepath.Join(xdg, "wealthdb")), false
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "wealthdb"), false
+	return absPath(filepath.Join(home, ".local", "share", "wealthdb")), false
 }
 
 // hostLocale is the locale the wrapper forwards from the host, else the
-// container's own.
+// engine's own environment.
 func hostLocale() string {
 	for _, k := range []string{"WEALTHDB_LOCALE", "LC_ALL", "LC_MONETARY", "LANG"} {
 		if v := os.Getenv(k); v != "" {

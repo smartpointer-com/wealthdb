@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -39,6 +40,45 @@ func TestConfigNeedsATerminal(t *testing.T) {
 	}
 	if _, err := os.Stat(cfg); !os.IsNotExist(err) {
 		t.Errorf("the config was written: %v", err)
+	}
+}
+
+// TestConfigUnknownSection: a name that is no section is a bad argument:
+// exit 2 with the usage, whether the input is a terminal, a pipe or a
+// reader, and before anything is written.
+func TestConfigUnknownSection(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "sub", "wealthdb.cfg")
+	pipe, err := os.Create(filepath.Join(dir, "answers"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pipe.Close()
+	for name, in := range map[string]io.Reader{"a pipe": pipe, "a reader": strings.NewReader("q\n")} {
+		var so, se bytes.Buffer
+		code := Run([]string{"-c", cfg, "config", "bankz"}, in, &so, &se)
+		if code != errs.ExitUsage {
+			t.Errorf("%s: exit %d, want %d", name, code, errs.ExitUsage)
+		}
+		for _, want := range []string{`wealthdb: config: no section "bankz" (want one of primary-currency, banks-and-brokers, `,
+			", or validate)", "usage: wealthdb [-c <file>] config"} {
+			if !strings.Contains(se.String(), want) {
+				t.Errorf("%s: stderr lacks %q:\n%s", name, want, se.String())
+			}
+		}
+		if strings.Contains(se.String(), "wealthdb config needs an interactive terminal") || so.Len() != 0 {
+			t.Errorf("%s: the section is not checked first:\n%s%s", name, so.String(), se.String())
+		}
+	}
+	if _, err := os.Stat(filepath.Dir(cfg)); !os.IsNotExist(err) {
+		t.Errorf("the config folder was made: %v", err)
+	}
+	// Every name the usage lists is a section, and so is a short name.
+	for _, name := range append(wizard.Sections(), "banks", "currency", "model") {
+		if !wizard.HasSection(name) {
+			t.Errorf("%q is no section", name)
+		}
 	}
 }
 
@@ -118,7 +158,7 @@ func TestConfigThenInitThenStatus(t *testing.T) {
 		}
 	}
 	for _, want := range []string{"created the database at " + filepath.Join(root, "wealthdb.db"),
-		"What to do now", "\n  1.  wealthdb-collect viac login\n\n", "\n  2.  wealthdb load -a\n\n"} {
+		"What to do now", "\n  1.  wealthdb-collect viac login\n\n", "\n  2.  wealthdb -c " + cfg + " load -a\n\n"} {
 		if !strings.Contains(so.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, so.String())
 		}
@@ -174,7 +214,9 @@ func TestPointersBeforeSetup(t *testing.T) {
 		// wealthdb alone shows the first steps before a setup, the
 		// listing after.
 		_, se, _ := run(t, "-c", cfg)
-		steps := strings.Contains(se, "The first steps:") && strings.Contains(se, "2. wealthdb init") &&
+		// Each step names the config the run read.
+		steps := strings.Contains(se, "The first steps:") && strings.Contains(se, "  1. wealthdb -c "+cfg+" config ") &&
+			strings.Contains(se, "  2. wealthdb -c "+cfg+" init ") && strings.Contains(se, "  3. wealthdb -c "+cfg+" load -a ") &&
 			strings.Contains(se, "Run 'wealthdb help' for everything else.")
 		if steps != (tc.name != "refused") {
 			t.Errorf("%s: wealthdb alone:\n%s", tc.name, se)
@@ -207,12 +249,15 @@ func TestLoadSkipsWhatHasNoData(t *testing.T) {
 	cfg := setupCLITest(t)
 	dir := filepath.Dir(cfg)
 	web := filepath.Join(dir, "schwab-web.db")
+	// A kind several collectors write, at a file name none of them uses.
+	own := filepath.Join(dir, "statements.db")
 	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD", "silver_sources": [
   {"id": "schwab-test", "kind": "schwab", "subsources": [
      {"kind": "schwab-api", "path": %q},
      {"kind": "schwab-web", "path": %q}]},
-  {"id": "viac", "kind": "viac", "path": %q}]}`,
-		goldPathFromCfg(cfg), filepath.Join(dir, "schwab.db"), web, filepath.Join(dir, "viac", "viac.db"))
+  {"id": "viac", "kind": "viac", "path": %q},
+  {"id": "own", "kind": "fidelity", "path": %q}]}`,
+		goldPathFromCfg(cfg), filepath.Join(dir, "schwab.db"), web, filepath.Join(dir, "viac", "viac.db"), own)
 	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -227,6 +272,8 @@ func TestLoadSkipsWhatHasNoData(t *testing.T) {
 		"load: viac: no data yet. Run: wealthdb-collect viac login",
 		"load: schwab-test: schwab-web: no data yet. Run: wealthdb-collect schwab-web login",
 		"load: schwab-test: 1 snapshot row(s)",
+		// No collector is known for the file: the line names the file.
+		"load: own: no data yet; the file " + own + " does not exist\n",
 	} {
 		if !strings.Contains(so, want) {
 			t.Errorf("load -a lacks %q:\n%s", want, so)
@@ -356,5 +403,169 @@ func TestTestModel(t *testing.T) {
 	gone.Close()
 	if _, err := testModel(ctx, config.ModelConfig{BaseURL: gone.URL + "/v1", Name: "m"}); err == nil || errors.As(err, &refused) {
 		t.Errorf("no server: %v", err)
+	}
+}
+
+// TestReloadSkipsWhatHasNoData: reload applies the rule of load. A
+// source gold has never loaded, with no file, is left out with the same
+// line, on both ways of a reload -a, and the reload succeeds. Named
+// alone it is an error. A source gold has loaded whose file is gone
+// fails the reload, and its rows stay in gold: a rebuild swaps nothing,
+// and an in-place reload does not reset it.
+func TestReloadSkipsWhatHasNoData(t *testing.T) {
+	t.Parallel()
+	cfg := setupCLITest(t)
+	dir := filepath.Dir(cfg)
+	api := filepath.Join(dir, "schwab.db")
+	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD", "silver_sources": [
+  {"id": "schwab-test", "kind": "schwab", "path": %q},
+  {"id": "viac", "kind": "viac", "path": %q}]}`, goldPathFromCfg(cfg), api, filepath.Join(dir, "viac", "viac.db"))
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, se, code := run(t, "-c", cfg, "init"); code != 0 {
+		t.Fatalf("init: %s", se)
+	}
+	if so, se, code := run(t, "-c", cfg, "load", "-a"); code != 0 {
+		t.Fatalf("load -a: %s%s", so, se)
+	}
+	held := func() string {
+		t.Helper()
+		so, se, code := run(t, "-c", cfg, "snapshots", "schwab-test")
+		if code != 0 || so == "" {
+			t.Fatalf("snapshots: exit %d\n%s%s", code, so, se)
+		}
+		return so
+	}
+	before := held()
+	const noData = "reload: viac: no data yet. Run: wealthdb-collect viac login\n"
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"reload", "-a"}, "reload: rebuilt gold from 1 source(s)"},
+		{[]string{"reload", "-a", "--in-place"}, "reload: schwab-test: reset + 1 snapshot row(s)"},
+		{[]string{"reload", "schwab-test", "viac"}, "reload: schwab-test: reset + 1 snapshot row(s)"},
+	} {
+		so, se, code := run(t, append([]string{"-c", cfg}, tc.args...)...)
+		if code != 0 || !strings.Contains(so, noData) || !strings.Contains(so, tc.want) {
+			t.Errorf("%v: exit %d, want 0 with %q and %q\n%s%s", tc.args, code, noData, tc.want, so, se)
+		}
+		if strings.Contains(se, "unable to open") {
+			t.Errorf("%v: the missing file reached the adapter:\n%s", tc.args, se)
+		}
+		if got := held(); got != before {
+			t.Errorf("%v changed what gold holds of the source with data:\n%s\nwas\n%s", tc.args, got, before)
+		}
+	}
+	_, se, code := run(t, "-c", cfg, "reload", "viac")
+	if code == 0 || !strings.Contains(se, "viac: no data yet. Run: wealthdb-collect viac login") {
+		t.Errorf("reload viac: exit %d, %s", code, se)
+	}
+
+	// The loaded source loses its file: every reload of it fails naming
+	// the file, and gold keeps its rows.
+	if err := os.Remove(api); err != nil {
+		t.Fatal(err)
+	}
+	missing := "schwab-test: its data file is missing: " + api
+	for _, args := range [][]string{{"reload", "-a"}, {"reload", "-a", "--in-place"}, {"reload", "schwab-test"},
+		{"reload", "schwab-test", "viac"}} {
+		so, se, code := run(t, append([]string{"-c", cfg}, args...)...)
+		if code == 0 || !strings.Contains(se, missing) {
+			t.Errorf("%v with the file gone: exit %d, want an error with %q\n%s%s", args, code, missing, so, se)
+		}
+		if strings.Contains(so, "rebuilt gold") || strings.Contains(so, "schwab-test: reset") {
+			t.Errorf("%v went on without the file:\n%s", args, so)
+		}
+		if got := held(); got != before {
+			t.Errorf("%v with the file gone changed gold:\n%s\nwas\n%s", args, got, before)
+		}
+	}
+}
+
+// TestLoadNamesWhatTheConfigLeavesOut: load -a says which collected data
+// the config does not name, for a collector it does name, and the
+// command that adds it, for the config the load read.
+func TestLoadNamesWhatTheConfigLeavesOut(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "data")
+	t.Setenv("WEALTHDB_DATA_ROOT", root)
+	// One linked login in the config, with no data yet; another collected
+	// beside it that the config does not name.
+	other := filepath.Join(root, "plaid", "second", "second.db")
+	if err := os.MkdirAll(filepath.Dir(other), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(dir, "wealthdb.cfg")
+	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD", "silver_sources": [
+  {"id": "first", "kind": "plaid", "path": %q}]}`, filepath.Join(dir, "wealthdb.db"), filepath.Join(root, "plaid", "first", "first.db"))
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, se, code := run(t, "-c", cfg, "init"); code != 0 {
+		t.Fatalf("init: %s", se)
+	}
+	so, se, code := run(t, "-c", cfg, "load", "-a")
+	if code != 0 {
+		t.Fatalf("load -a: exit %d\n%s%s", code, so, se)
+	}
+	for _, want := range []string{
+		"load: first: no data yet. Run: wealthdb-collect plaid link --item first\n",
+		"load: collected, but not in the config, so not loaded: Plaid (linked banks): second\n",
+		"load: to add it, run: wealthdb -c " + cfg + " config banks\n",
+	} {
+		if !strings.Contains(so, want) {
+			t.Errorf("load -a lacks %q:\n%s", want, so)
+		}
+	}
+	// A load of one source says nothing of the others.
+	if so, _, _ := run(t, "-c", cfg, "load", "first"); strings.Contains(so, "not in the config") {
+		t.Errorf("load first:\n%s", so)
+	}
+}
+
+// TestPointersQuoteTheConfigPath: a config path that holds a blank or a
+// single quote is quoted in every command a message names, so the
+// command works when pasted into a shell.
+func TestPointersQuoteTheConfigPath(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for name, quoted := range map[string]string{
+		"my setup": "'" + filepath.Join(dir, "my setup", "wealthdb.cfg") + "'",
+		"it's":     "'" + filepath.Join(dir, `it'\''s`, "wealthdb.cfg") + "'",
+	} {
+		cfg := filepath.Join(dir, name, "wealthdb.cfg")
+		// Before a setup: the pointer of a report, and the first steps.
+		_, se, code := run(t, "-c", cfg, "status")
+		if want := "Not set up yet. Run: wealthdb -c " + quoted + " config"; code != errs.ExitUsage || !strings.Contains(se, want) {
+			t.Errorf("%s: status: exit %d, want %q: %s", name, code, want, se)
+		}
+		_, se, _ = run(t, "-c", cfg)
+		for _, rest := range []string{"config", "init", "load -a"} {
+			if want := ". wealthdb -c " + quoted + " " + rest + " "; !strings.Contains(se, want) {
+				t.Errorf("%s: the first steps lack %q:\n%s", name, want, se)
+			}
+		}
+		// The setup itself: a stop names the command that goes on.
+		var so, errb bytes.Buffer
+		if code := Run([]string{"-c", cfg, "config"}, strings.NewReader("q\n"), &so, &errb); code != 0 {
+			t.Fatalf("%s: config: exit %d: %s", name, code, errb.String())
+		}
+		if want := "To go on with the setup, run this command:\n\n    wealthdb -c " + quoted + " config\n"; !strings.Contains(so.String(), want) {
+			t.Errorf("%s: the setup's stop lacks %q:\n%s", name, want, so.String())
+		}
+		// After a setup with no database: the init a report names.
+		body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD"}`, filepath.Join(dir, name, "wealthdb.db"))
+		if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, se, code = run(t, "-c", cfg, "holdings", "global")
+		if want := "Run 'wealthdb -c " + quoted + " init' first"; code != errs.ExitMissingDB || !strings.Contains(se, want) {
+			t.Errorf("%s: holdings: exit %d, want %q: %s", name, code, want, se)
+		}
 	}
 }

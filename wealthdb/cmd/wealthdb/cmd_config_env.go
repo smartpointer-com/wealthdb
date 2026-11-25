@@ -20,7 +20,8 @@ func init() {
 
 // configEnvBlocks are the blocks config-env prints, by name. Each writes
 // the resolved settings of one part of wealthdb.cfg as shell-evalable
-// KEY=VALUE lines.
+// KEY=VALUE lines. `collectors` is the exception: one name per line, no
+// config read.
 var configEnvBlocks = map[string]func(cfg *config.Config, stdout io.Writer){
 	"web":     webEnv,
 	"mcp":     mcpEnv,
@@ -34,7 +35,8 @@ var configEnvBlocks = map[string]func(cfg *config.Config, stdout io.Writer){
 // from inside the engine container, so the web and mcp servers are
 // orchestrated on the host, and the host reads the settings back through
 // the engine, the one component that parses and validates wealthdb.cfg.
-// Read-only: it loads the config and opens nothing. Hidden from
+// Read-only: it loads the config and opens nothing. `collectors` is the
+// exception: one name per line, no config read. Hidden from
 // `wealthdb help`; it is plumbing, not a user-facing command.
 func cmdConfigEnv(_ context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
 	names := strings.Join(slices.Sorted(maps.Keys(configEnvBlocks)), " | ")

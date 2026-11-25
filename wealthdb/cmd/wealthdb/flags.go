@@ -56,13 +56,39 @@ func loadConfigAt(path string) (*config.Config, error) {
 	return nil, err
 }
 
-// setupCommand is the command that sets up the config at path.
-func setupCommand(path string) string {
-	if path == defaultConfigPath() {
-		return "wealthdb config"
+// commandFor is the wealthdb command rest as it is typed for the config
+// at path: `wealthdb <rest>`, or `wealthdb -c <path> <rest>` when path
+// is not the default config, so that a command a message names reads the
+// config the run read. The path is quoted where a shell needs it
+// (shellWord), so the command works when pasted. An empty rest gives
+// how every such command starts.
+func commandFor(path, rest string) string {
+	cmd := "wealthdb"
+	if path != defaultConfigPath() {
+		cmd += " -c " + shellWord(path)
 	}
-	return "wealthdb -c " + path + " config"
+	if rest != "" {
+		cmd += " " + rest
+	}
+	return cmd
 }
+
+// shellWord is s as one word of a shell command: as it is when it holds
+// only letters, digits and _ . / : @ % + = , -, which no shell acts on,
+// else in single quotes. A single quote of its own ends the quoted
+// piece, stands escaped, and starts the next piece.
+func shellWord(s string) string {
+	plain := func(r rune) bool {
+		return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("_./:@%+=,-", r)
+	}
+	if s != "" && strings.IndexFunc(s, func(r rune) bool { return !plain(r) }) < 0 {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// setupCommand is the command that sets up the config at path.
+func setupCommand(path string) string { return commandFor(path, "config") }
 
 // noticesOnce writes a config's notices to w, the first time a command
 // loads it: a command that loads the config twice shows them once.
@@ -89,8 +115,8 @@ func (g globalFlags) clock() time.Time {
 
 // defaultConfigPath returns the config file a run reads without -c:
 // $WEALTHDB_CONFIG, else wealthdb.cfg under the XDG config dir
-// ($XDG_CONFIG_HOME, falling back to ~/.config), made absolute and
-// resolved at parse time so help text shows the concrete value.
+// ($XDG_CONFIG_HOME, falling back to ~/.config), made absolute, so
+// every message names one path.
 func defaultConfigPath() string {
 	if p := os.Getenv("WEALTHDB_CONFIG"); p != "" {
 		return absPath(p)
@@ -100,15 +126,15 @@ func defaultConfigPath() string {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		// No $HOME → fall back to the unexpanded literal. The
-		// user will get a clear error on Load.
+		// No home directory: the literal path, which no file has, so
+		// the run answers that nothing is set up.
 		return "$HOME/.config/wealthdb.cfg"
 	}
 	return filepath.Join(home, ".config", "wealthdb.cfg")
 }
 
-// absPath is p made absolute against the working directory, or p as it
-// is when the working directory cannot be read.
+// absPath is p made absolute against the working directory and clean,
+// or p as it is when the working directory cannot be read.
 func absPath(p string) string {
 	if a, err := filepath.Abs(p); err == nil {
 		return a
@@ -119,7 +145,8 @@ func absPath(p string) string {
 // parseGlobal extracts top-level flags from the leading slice of
 // args. Returns the consumed flags, the remaining args (starting
 // with the subcommand name), and a usage-writer error if parsing
-// failed.
+// failed. The config path is absolute and clean, as the default one is,
+// whichever way it was named.
 func parseGlobal(args []string, errOut io.Writer) (globalFlags, []string, error) {
 	fs := flag.NewFlagSet("wealthdb", flag.ContinueOnError)
 	fs.SetOutput(errOut)
@@ -136,6 +163,7 @@ func parseGlobal(args []string, errOut io.Writer) (globalFlags, []string, error)
 	if err := fs.Parse(args); err != nil {
 		return g, nil, err
 	}
+	g.ConfigPath = absPath(g.ConfigPath)
 	return g, fs.Args(), nil
 }
 

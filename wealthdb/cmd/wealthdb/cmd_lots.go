@@ -53,7 +53,7 @@ func cmdLots(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, 
 	if err != nil {
 		return err
 	}
-	db, lock, err := openGoldForWrite(g, cfg, "lots", defaultMissingGoldMsg)
+	db, lock, err := openGoldForWrite(g, cfg, "lots", missingGoldMsg(g.ConfigPath))
 	if err != nil {
 		return err
 	}

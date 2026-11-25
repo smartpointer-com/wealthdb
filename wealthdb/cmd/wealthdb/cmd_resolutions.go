@@ -61,7 +61,7 @@ The model_name column tells you each row's provenance:
 
 	rep := resolutionsReport(*sourceFilter)
 	open := func() (*sql.DB, error) {
-		return openGoldForRead(g, cfg, "gold database %q does not exist. Run 'wealthdb init' first.")
+		return openGoldForRead(g, cfg, "gold database %q does not exist. "+runInitFirst(g.ConfigPath)+".")
 	}
 	return writeReport(ctx, rep, reportOutput{cols: "default", prefix: "resolutions", format: fmtChoice}, open, stdout)
 }

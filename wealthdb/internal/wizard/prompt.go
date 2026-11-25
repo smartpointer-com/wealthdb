@@ -26,9 +26,8 @@ func (p *prompter) line(question string) (string, error) {
 	p.out.gap()
 	// A question that would wrap breaks at a space, so it reads in one
 	// piece; the answer follows its last line.
-	q := strings.TrimLeft(question, "\n")
-	trail := q[len(strings.TrimRight(q, " ")):]
-	fmt.Fprint(p.out, p.out.Ask(fit(strings.TrimRight(q, " "))+trail))
+	trail := question[len(strings.TrimRight(question, " ")):]
+	fmt.Fprint(p.out, p.out.Ask(fit(strings.TrimRight(question, " "))+trail))
 	s, err := p.in.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", fmt.Errorf("read input: %w", err)

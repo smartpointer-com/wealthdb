@@ -24,10 +24,10 @@ const (
 	// DB doesn't exist; run `wealthdb init` to create it.
 	ExitMissingDB = 3
 
-	// ExitInitExisting — retired: `wealthdb init` on an existing
-	// gold DB succeeds, and `wealthdb config` edits an existing
-	// config. Nothing returns the code; it stays reserved so a code
-	// a script reads never takes a new meaning (docs/DESIGN.md
+	// ExitInitExisting — reserved. Nothing returns it: `wealthdb
+	// init` on an existing gold DB succeeds, and `wealthdb config`
+	// edits an existing config. The number is kept so that a code a
+	// script reads never takes another meaning (docs/DESIGN.md
 	// §4.10).
 	ExitInitExisting = 4
 

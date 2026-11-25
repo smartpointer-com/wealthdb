@@ -277,14 +277,16 @@ func TestInitTwice(t *testing.T) {
 		t.Fatalf("first init: code=%d stdout=%s stderr=%s", code, so, se)
 	}
 	// The silver of the one source is there: the next step is the load.
-	if !strings.Contains(so, "What to do now\n\nRun this command in the terminal:\n\n  1.  wealthdb load -a\n") {
+	// It names the config the run read, as every pointer does.
+	load := "wealthdb -c " + cfg + " load -a"
+	if !strings.Contains(so, "What to do now\n\nRun this command in the terminal:\n\n  1.  "+load+"\n") {
 		t.Errorf("first init names no next step: %s", so)
 	}
 	so, se, code = run(t, "-c", cfg, "init")
 	if code != 0 {
 		t.Errorf("second init exit = %d, want 0; stderr %s", code, se)
 	}
-	if !strings.Contains(so, "the database exists already at") || !strings.Contains(so, "wealthdb load -a") {
+	if !strings.Contains(so, "the database exists already at") || !strings.Contains(so, "  1.  "+load+"\n") {
 		t.Errorf("second init: %s", so)
 	}
 }
@@ -298,6 +300,35 @@ func TestPositionsFailsBeforeInit(t *testing.T) {
 	}
 	if !strings.Contains(se, "does not exist") {
 		t.Errorf("stderr missing 'does not exist': %s", se)
+	}
+	// The init it names reads the same config.
+	if want := "Run 'wealthdb -c " + cfg + " init' first"; !strings.Contains(se, want) {
+		t.Errorf("stderr lacks %q: %s", want, se)
+	}
+	for _, args := range [][]string{{"load", "-a"}, {"resolutions"}, {"categorizations"}} {
+		if _, se, code := run(t, append([]string{"-c", cfg}, args...)...); code != 3 || !strings.Contains(se, "Run 'wealthdb -c "+cfg+" init' first") {
+			t.Errorf("%v before init: exit %d, stderr %s", args, code, se)
+		}
+	}
+}
+
+// TestInitWithNoSource: a database for a config that names no source is
+// followed by the setup command of that config.
+func TestInitWithNoSource(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "wealthdb.cfg")
+	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD"}`, filepath.Join(dir, "wealthdb.db"))
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	so, se, code := run(t, "-c", cfg, "init")
+	if code != 0 {
+		t.Fatalf("init: exit %d, %s", code, se)
+	}
+	if want := "What to do now\n\nRun this command in the terminal:\n\n  1.  wealthdb -c " + cfg +
+		" config\n\n      Adds a bank or a broker to read.\n"; !strings.Contains(so, want) {
+		t.Errorf("init with no source lacks %q:\n%s", want, so)
 	}
 }
 
@@ -537,6 +568,10 @@ func TestResetClearsSource(t *testing.T) {
 	if !strings.Contains(so, "cleared") {
 		t.Errorf("reset stdout: %q", so)
 	}
+	// The load it names reads the config the reset read.
+	if want := "are now stale — run 'wealthdb -c " + cfg + " load -a' to re-assert them\n"; !strings.Contains(so, want) {
+		t.Errorf("reset stdout lacks %q: %q", want, so)
+	}
 
 	// After reset, positions should produce zero rows.
 	so, _, code = run(t, "-c", cfg, "holdings", "positions")
@@ -728,6 +763,11 @@ func TestStatusOverviewAndDetailed(t *testing.T) {
 	}
 	if !strings.Contains(so, "not loaded yet") {
 		t.Errorf("expected 'not loaded yet' for fresh source: %s", so)
+	}
+	// The detailed view names the load, for the config the status read.
+	so, _, code = run(t, "-c", cfg, "status", "schwab-test")
+	if want := "not registered in gold; run `wealthdb -c " + cfg + " load schwab-test` first\n"; code != 0 || !strings.Contains(so, want) {
+		t.Errorf("status of a source not loaded: exit %d, want %q: %s", code, want, so)
 	}
 
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {

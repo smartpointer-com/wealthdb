@@ -35,7 +35,7 @@ func TestScreenSpacing(t *testing.T) {
 	s = newScreen(&b, Palette{})
 	p := &prompter{in: bufio.NewReader(strings.NewReader("a\nb\n")), out: s}
 	fmt.Fprint(s, "Help.\n")
-	if _, err := p.line("\n\nFirst: "); err != nil {
+	if _, err := p.line("First: "); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := p.line("Second: "); err != nil {

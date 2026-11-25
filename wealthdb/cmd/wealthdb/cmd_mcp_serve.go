@@ -331,12 +331,21 @@ func (s *mcpServer) logCall(tool string, a *toolArgs, out toolOutput, err error,
 	}
 }
 
-// errGoldMissing and its siblings are the gold-side failures a call
-// can meet, each with the action that clears it.
+// goldMissing, goldStale and errGoldBusy are the gold-side failures a
+// call can meet, each with the action that clears it. A command they
+// name reads the server's config (commandFor); scrubPaths takes its
+// path out before the message reaches the model.
+func (s *mcpServer) goldMissing() error {
+	return fmt.Errorf("there is no database yet: run '%s' and '%s' first",
+		commandFor(s.configPath, "init"), commandFor(s.configPath, "load -a"))
+}
+
+func (s *mcpServer) goldStale() error {
+	return fmt.Errorf("the MCP server is older than the database it reads; run '%s'", commandFor(s.configPath, "mcp restart"))
+}
+
 var (
-	errGoldMissing = errors.New("there is no database yet: run 'wealthdb init' and 'wealthdb load -a' first")
-	errGoldBusy    = errors.New("the database is locked by another wealthdb command (a load, say); try again in a minute")
-	errGoldStale   = errors.New("the MCP server is older than the database it reads; run 'wealthdb mcp restart'")
+	errGoldBusy = errors.New("the database is locked by another wealthdb command (a load, say); try again in a minute")
 	// errConfigHidden stands in for a config error on the privacy
 	// endpoint: validation messages quote the config, and the config
 	// names accounts and portfolios.
@@ -360,13 +369,13 @@ func (s *mcpServer) loadConfig() (*config.Config, error) {
 // reporting gold busy.
 func (s *mcpServer) withGold(ctx context.Context, cfg *config.Config, fn func(*sql.DB) error) error {
 	if _, err := os.Stat(cfg.GoldDB); errors.Is(err, os.ErrNotExist) {
-		return errGoldMissing
+		return s.goldMissing()
 	}
 	db, err := retryGoldLock(ctx, func() (*sql.DB, error) { return gold.OpenReadOnlyWith(cfg.GoldDB, s.duckdb) })
 	switch {
 	case err == nil:
 	case errors.Is(err, gold.ErrStaleBinary):
-		return errGoldStale
+		return s.goldStale()
 	case isGoldLockConflict(err):
 		return errGoldBusy
 	default:
@@ -382,7 +391,9 @@ func (s *mcpServer) withGold(ctx context.Context, cfg *config.Config, fn func(*s
 // first, so a path that extends another (a gold file beside the config,
 // named after it) keeps its own label.
 func (s *mcpServer) scrubPaths(msg string) string {
-	paths := map[string]string{s.configPath: "<config>"}
+	// The config's path also stands quoted in a command (commandFor),
+	// where a single quote of its own breaks it in two.
+	paths := map[string]string{s.configPath: "<config>", shellWord(s.configPath): "<config>"}
 	if cfg, err := config.Load(s.configPath); err == nil {
 		paths[cfg.GoldDB] = "<gold>"
 		for _, src := range cfg.SilverSources {

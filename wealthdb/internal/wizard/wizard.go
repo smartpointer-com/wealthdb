@@ -28,9 +28,9 @@ import (
 type Options struct {
 	// ConfigPath is the config file the setup edits.
 	ConfigPath string
-	// DataRoot is the data folder the wrapper mounts: the database and
-	// every collector's data. DataRootFromEnv says WEALTHDB_DATA_ROOT
-	// names it, so the paths the setup writes go through the variable.
+	// DataRoot is the data folder: the database and every collector's
+	// data. DataRootFromEnv says WEALTHDB_DATA_ROOT names it, so the
+	// paths the setup writes go through the variable.
 	DataRoot        string
 	DataRootFromEnv bool
 	// Locale is the host's locale, whose region guesses the currency.
@@ -44,9 +44,10 @@ type Options struct {
 	Wizard bool
 	// Section, when set, opens that section alone.
 	Section string
-	// Command is the command that runs the setup again, named to a
-	// person who stopped part-way. Empty: `wealthdb config`.
-	Command string
+	// Program is how every engine command the setup names starts: the
+	// program, with the flag that names a config other than the default
+	// one (`wealthdb -c <file>`). Empty: `wealthdb`.
+	Program string
 	// InContainer says the engine runs in a container, where localhost
 	// is the container itself and not this computer.
 	InContainer bool
@@ -63,7 +64,7 @@ type Terminal interface {
 }
 
 // Actions are what the setup runs in the engine: each prints as its
-// command does. A nil action is not offered.
+// command does. A nil Init, Load, Reset or TestModel is not offered.
 type Actions struct {
 	// Init creates the database, as `wealthdb init` does.
 	Init func() error
@@ -76,6 +77,12 @@ type Actions struct {
 	// TestModel sends the model a short question and returns its reply.
 	// A failure the server answered is a *ModelRefused.
 	TestModel func(m config.ModelConfig) (string, error)
+}
+
+// command is the engine command args as this setup's program runs it:
+// `wealthdb <args>`, with the config flag of Program.
+func (o Options) command(args string) string {
+	return cmp.Or(o.Program, "wealthdb") + " " + args
 }
 
 // setup is one run.
@@ -103,6 +110,13 @@ func Sections() []string {
 	return out
 }
 
+// HasSection says name is a section a command line can name (Sections,
+// a title's first word, or a short name).
+func HasSection(name string) bool {
+	_, ok := sectionNamed(name)
+	return ok
+}
+
 // Run is one run of `wealthdb config`: the section named, the wizard,
 // or the menu. A config the engine refuses is reported and left alone.
 // A q or the end of the input stops the run, and every answer confirmed
@@ -114,7 +128,7 @@ func Run(o Options) error {
 	}
 	st, _, err := config.InspectBytes(data, abs)
 	if st == config.StateRefused {
-		return fmt.Errorf("%w%s\nFix the file, then run %s again", err, position(data, err), cmp.Or(o.Command, "wealthdb config"))
+		return fmt.Errorf("%w%s\nFix the file, then run %s again", err, position(data, err), o.command("config"))
 	}
 	w := &setup{opts: o}
 	s, err := openStore(abs, target, data, w.dataPath("wealthdb.db"))
@@ -148,8 +162,11 @@ func Run(o Options) error {
 	// The run ends with what to do next, set apart so that it reads as
 	// an instruction.
 	if quit {
-		if !w.answered() {
-			fmt.Fprint(w.out, Stopped(o.Colors, o.Command))
+		// A stop with a step unanswered names the setup command alone,
+		// unless a change of this run calls for a command too: the to-do
+		// block then lists both.
+		if !w.answered() && len(w.then) == 0 {
+			fmt.Fprint(w.out, Stopped(o.Colors, o.command("config")))
 			return nil
 		}
 		w.out.gap()
@@ -160,10 +177,10 @@ func Run(o Options) error {
 }
 
 // Stopped is what a setup that stops part-way prints: that the answers
-// are saved, and the command that goes on, on a line of its own.
+// are saved, and command, which goes on with it, on a line of its own.
 func Stopped(p Palette, command string) string {
 	return fmt.Sprintf("\nStopped. Every answer so far is saved.\n\n"+
-		"To go on with the setup, run this command:\n\n    %s\n\n", p.Cmd(cmp.Or(command, "wealthdb config")))
+		"To go on with the setup, run this command:\n\n    %s\n\n", p.Cmd(command))
 }
 
 // Step is one command of a to-do block, with what it does. Does may
@@ -207,12 +224,11 @@ func ToDo(p Palette, steps []Step) string {
 func (w *setup) todo() []Step {
 	var steps []Step
 	if !w.answered() {
-		steps = append(steps, Step{cmp.Or(w.opts.Command, "wealthdb config"),
-			"Goes on with the setup: a step has no answer yet."})
+		steps = append(steps, Step{w.cmd("config"), "Goes on with the setup: a step has no answer yet."})
 		return append(steps, w.then...)
 	}
 	if !w.goldExists() {
-		steps = append(steps, Step{"wealthdb init", "Creates the database."})
+		steps = append(steps, Step{w.cmd("init"), "Creates the database."})
 	}
 	if es, err := w.entries(); err == nil {
 		loaded := w.loaded()
@@ -220,10 +236,13 @@ func (w *setup) todo() []Step {
 		for _, e := range es {
 			unloaded = unloaded || !loaded[e.src.ID]
 		}
-		steps = append(steps, collectSteps(feedsOf(es), unloaded)...)
+		steps = append(steps, collectSteps(feedsOf(es), unloaded, w.cmd("load -a"))...)
 	}
 	return append(steps, w.then...)
 }
+
+// cmd is the engine command args as this run names it (Options.command).
+func (w *setup) cmd(args string) string { return w.opts.command(args) }
 
 // thenRun adds a command to setup.then, once.
 func (w *setup) thenRun(s Step) {
@@ -246,22 +265,14 @@ func (w *setup) header() {
 	fmt.Fprintf(w.out, "Data folder:  %s\n", w.opts.DataRoot)
 }
 
-// pal is the palette of the run's screen; none before there is one.
-func (w *setup) pal() Palette {
-	if w.out == nil {
-		return Palette{}
-	}
-	return w.out.Palette
-}
-
-// wizard walks the four basic steps, then names what to run next.
+// wizard walks the four basic steps, then shows the setup (finish).
 func (w *setup) wizard() error {
 	w.walking = true
 	defer func() { w.walking = false }()
 	w.header()
 	w.out.gap()
-	w.out.help("Every answer is saved at once. Press Enter to keep the value in brackets.\n" +
-		"Type q to stop; wealthdb config goes on from there.")
+	w.out.help("Every answer is saved at once. Press Enter to keep the value in brackets.\n"+
+		"Type q to stop; %s goes on from there.", w.cmd("config"))
 	steps := basicSections[:4]
 	for i, sec := range steps {
 		w.out.title(fmt.Sprintf("Step %d of %d: %s", i+1, len(steps), sec.title))
@@ -281,8 +292,8 @@ func (w *setup) wizard() error {
 	return w.finish()
 }
 
-// finish shows the saved setup, offers to create the database, and
-// names the collect commands and the load.
+// finish shows the saved setup and offers to create the database. Run
+// names what to run next.
 func (w *setup) finish() error {
 	w.out.title("Your setup:")
 	for _, sec := range basicSections {
@@ -291,11 +302,12 @@ func (w *setup) finish() error {
 	if !w.goldExists() && w.opts.Actions.Init != nil {
 		w.out.gap()
 		fmt.Fprintln(w.out, "The database does not exist yet.")
-		if _, err := w.p.line("Press Enter to create it now, or q to stop: "); err != nil {
+		ok, err := w.p.yesNo("Create it now?", true)
+		if err != nil || !ok {
 			return err
 		}
 		w.out.gap()
-		err := w.opts.Actions.Init()
+		err = w.opts.Actions.Init()
 		w.out.outside()
 		if err != nil {
 			return err
@@ -314,15 +326,17 @@ func feedsOf(es []entry) [][]config.Feed {
 
 // NextSteps is the to-do block that follows a new database: the first
 // sign-in of each collector whose data is not there yet, then the load.
-// sources are the feeds of each configured source.
-func NextSteps(p Palette, sources [][]config.Feed) string {
-	return ToDo(p, collectSteps(sources, true))
+// sources are the feeds of each configured source, and loadAll the
+// command that loads them all.
+func NextSteps(p Palette, loadAll string, sources [][]config.Feed) string {
+	return ToDo(p, collectSteps(sources, true, loadAll))
 }
 
 // collectSteps are the first sign-in of each collector whose data is
-// not there yet, in config order, then the load when load says a source
-// is not loaded or a collector waits.
-func collectSteps(sources [][]config.Feed, load bool) []Step {
+// not there yet, in config order, then loadAll, the command that loads
+// every source, when load says a source is not loaded or a collector
+// waits.
+func collectSteps(sources [][]config.Feed, load bool, loadAll string) []Step {
 	var steps []Step
 	var waiting []string
 	for _, feeds := range sources {
@@ -341,10 +355,10 @@ func collectSteps(sources [][]config.Feed, load bool) []Step {
 	}
 	switch {
 	case len(waiting) > 0:
-		steps = append(steps, Step{"wealthdb load -a",
+		steps = append(steps, Step{loadAll,
 			"Brings the database of every source into the one database that\nthe reports read. Run it when the steps above are done."})
 	case load:
-		steps = append(steps, Step{"wealthdb load -a", "Brings the database of every source into the one database that\nthe reports read."})
+		steps = append(steps, Step{loadAll, "Brings the database of every source into the one database that\nthe reports read."})
 	}
 	return steps
 }
@@ -382,7 +396,7 @@ func (w *setup) menuItems() []menuItem {
 // (0: any height) that the menu does not fit, the items around the
 // marked line show, between notes that more stand above or below.
 func (w *setup) renderMenu(items []menuItem, cursor int, raw bool, rows int) string {
-	p := w.pal()
+	p := w.out.Palette
 	var body []string
 	at, group := 0, ""
 	for i, it := range items {

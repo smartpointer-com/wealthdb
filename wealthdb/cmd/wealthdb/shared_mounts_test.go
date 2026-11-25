@@ -43,6 +43,12 @@ func TestCheckSharedMounts(t *testing.T) {
 			"/tmp/try is not shared with Docker's virtual machine"},
 		{"a Mac, two folders", "Darwin", "/tmp/try:/private/tmp/elsewhere/wealthdb.cfg",
 			"/tmp/try and /private/tmp/elsewhere/wealthdb.cfg are not shared"},
+		// A path the wrapper did not write in clean form names the same
+		// folder as the kernel's clean mount point.
+		{"a Mac, a trailing slash", "Darwin", "/Users/u/wealthdb/data/:/tmp/try/",
+			"/tmp/try is not shared with Docker's virtual machine"},
+		{"a Mac, a dot in the path", "Darwin", "/tmp/./try", "/tmp/try is not shared with Docker's virtual machine"},
+		{"a Mac, a shared folder with a trailing slash", "Darwin", "/Users/u/my config/", ""},
 		{"Linux mounts the host's own disk", "Linux", "/tmp/try", ""},
 		{"no wrapper, no host named", "", "/tmp/try", ""},
 		{"no folder named", "Darwin", "", ""},

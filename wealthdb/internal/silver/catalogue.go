@@ -108,7 +108,7 @@ func Catalogue() []Collector {
 	return out
 }
 
-// CollectorNamed is the catalogue's collector name.
+// CollectorNamed is the catalogue's collector of that name.
 func CollectorNamed(name string) (Collector, bool) {
 	for _, c := range Catalogue() {
 		if c.Name == name {

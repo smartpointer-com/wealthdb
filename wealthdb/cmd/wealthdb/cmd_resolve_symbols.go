@@ -103,7 +103,7 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 	// A dry run reads only. Every other run holds the write mutex for
 	// the whole command, so a rebuild-and-swap cannot land between the
 	// override sync and the resolutions the run persists.
-	db, lock, err := openGoldForOverlay(ctx, g, cfg.GoldDB, "resolve-symbols", defaultMissingGoldMsg, "see the plan", opts.dryRun)
+	db, lock, err := openGoldForOverlay(ctx, g, cfg.GoldDB, "resolve-symbols", missingGoldMsg(g.ConfigPath), "see the plan", opts.dryRun)
 	if err != nil {
 		return err
 	}

@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -32,6 +34,8 @@ type harness struct {
 	section             string
 	wizard, rootFromEnv bool
 	inContainer         bool
+	// program is Options.Program: empty for the default config.
+	program string
 	// asked are the models a test question went to; reply is the answer,
 	// or the failure when replyErr is set.
 	asked    []config.ModelConfig
@@ -103,6 +107,7 @@ func (h *harness) run(lines ...string) (string, error) {
 		Wizard:          h.wizard,
 		Section:         h.section,
 		InContainer:     h.inContainer,
+		Program:         h.program,
 		Actions: Actions{
 			Init: func() error {
 				h.inits++
@@ -284,7 +289,7 @@ func TestWizardFromNothing(t *testing.T) {
 		// A blank line stands before every question, and a title begins a
 		// step, with what it asks below it.
 		"\n\nStep 1 of 4: Primary currency\nThe currency the reports show amounts in, such as CHF, EUR or USD.\n\nCurrency [CHF]: ",
-		"The database does not exist yet.\n\nPress Enter to create it now, or q to stop: ",
+		"The database does not exist yet.\n\nCreate it now? [Y/n]: ",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
@@ -536,7 +541,7 @@ func TestPlaidPickAddsCollectedLogins(t *testing.T) {
 			t.Errorf("output lacks %q:\n%s", w, out)
 		}
 	}
-	if strings.Contains(out, "Name of the bank") {
+	if strings.Contains(out, "Name for the bank") {
 		t.Errorf("a name is asked although no further bank is wanted:\n%s", out)
 	}
 	// Unlisted names what a load would pass over: nothing now, both
@@ -893,7 +898,7 @@ func TestRawMenuWaitsOnlyForWhatWouldBeLost(t *testing.T) {
 	term := &fakeTerminal{}
 	h.terminal = term
 	n := func(title string) string {
-		w := &setup{opts: Options{ConfigPath: h.cfg, DataRoot: h.root}}
+		w := &setup{opts: Options{ConfigPath: h.cfg, DataRoot: h.root}, out: newScreen(io.Discard, Palette{})}
 		w.store = openTestStore(t, h.cfg, "")
 		for i, it := range w.menuItems() {
 			if it.title == title {
@@ -913,14 +918,21 @@ func TestRawMenuWaitsOnlyForWhatWouldBeLost(t *testing.T) {
 		{"what a check prints", n("Validate the config file") + "\r", true},
 		{"a screen to read", n("Settings edited in the file") + "\r", true},
 		{"a change with more to say", n("Dashboards") + "\r" + "on\n\n", true},
+		// The walk ends with the creation of the database, whose command
+		// prints past the screen: its line stays to be read.
+		{"what a command the setup ran prints", n("Walk through the basic setup again") + "\r" + "\n\n\n\n\n", true},
 	} {
 		var out bytes.Buffer
+		inits := 0
 		if err := Run(Options{ConfigPath: h.cfg, DataRoot: h.root, In: strings.NewReader(c.keys + "\x03"), Out: &out,
-			Terminal: term}); err != nil {
+			Terminal: term, Actions: Actions{Init: func() error { inits++; return nil }}}); err != nil {
 			t.Fatal(err)
 		}
 		if got := strings.Contains(out.String(), pause); got != c.waits {
 			t.Errorf("%s: waits %v, want %v:\n%s", c.name, got, c.waits, out.String())
+		}
+		if walk := strings.HasPrefix(c.name, "what a command"); walk != (inits == 1) {
+			t.Errorf("%s: the database was created %d times", c.name, inits)
 		}
 	}
 }
@@ -933,7 +945,7 @@ func TestRawMenuFitsTheWindow(t *testing.T) {
 	h.write(`{"gold_db": "/x/g.db", "default_currency": "USD",
  "silver_sources": [{"id": "viac", "kind": "viac", "path": "/x/viac.db"}],
  "web": {"enabled": false}, "mcp": {"enabled": false}}`, 0o600)
-	w := &setup{opts: Options{ConfigPath: h.cfg, DataRoot: h.root}}
+	w := &setup{opts: Options{ConfigPath: h.cfg, DataRoot: h.root}, out: newScreen(io.Discard, Palette{})}
 	w.store = openTestStore(t, h.cfg, "")
 	items := w.menuItems()
 	full := w.renderMenu(items, 0, true, 0)
@@ -976,7 +988,7 @@ func TestRawMenuFitsTheWindow(t *testing.T) {
 func TestTheMenusFirstLineFitsALongConfigPath(t *testing.T) {
 	h := newHarness(t)
 	h.write(`{"gold_db": "/x/g.db", "default_currency": "USD"}`, 0o600)
-	w := &setup{opts: Options{ConfigPath: h.cfg, DataRoot: h.root}}
+	w := &setup{opts: Options{ConfigPath: h.cfg, DataRoot: h.root}, out: newScreen(io.Discard, Palette{})}
 	w.store = openTestStore(t, h.cfg, "")
 	w.store.path = "/" + strings.Repeat("a-long-folder-name/", 8) + "wealthdb.cfg"
 	first, _, _ := strings.Cut(w.renderMenu(w.menuItems(), 0, true, 0), "\n")
@@ -1012,7 +1024,7 @@ func TestNextSteps(t *testing.T) {
 	if err := os.WriteFile(have, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got := NextSteps(Palette{}, [][]config.Feed{
+	got := NextSteps(Palette{}, "wealthdb load -a", [][]config.Feed{
 		{{Path: have, Collector: "viac"}},
 		{{Path: filepath.Join(dir, "a.db"), Collector: "ubs-web"}, {Path: filepath.Join(dir, "b.db"), Collector: "ubs-psn"}},
 		{{Path: filepath.Join(dir, "c.db"), Collector: "ubs-web"}},
@@ -1032,7 +1044,7 @@ func TestNextSteps(t *testing.T) {
 	}
 	one := "\n" + rule + "\nWhat to do now\n\nRun this command in the terminal:\n" +
 		"\n  1.  wealthdb load -a\n\n      Brings the database of every source into the one database that\n      the reports read.\n" + rule + "\n"
-	if got := NextSteps(Palette{}, [][]config.Feed{{{Path: have, Collector: "viac"}}}); got != one {
+	if got := NextSteps(Palette{}, "wealthdb load -a", [][]config.Feed{{{Path: have, Collector: "viac"}}}); got != one {
 		t.Errorf("got\n%s\nwant\n%s", got, one)
 	}
 	if got := ToDo(Palette{}, nil); got != "" {
@@ -1321,5 +1333,231 @@ func TestLoadedSourceTakesNoFeedWithoutData(t *testing.T) {
 	}
 	if s := h.cfgOf().SilverSources[0]; len(s.Subsources) != 2 || !strings.Contains(out, "Added UBS PSN (SFTP files).") {
 		t.Errorf("the collected feed was not added: %+v\n%s", s, out)
+	}
+}
+
+// q is the answer that stops, so no line of a list is labelled q: the
+// 17th is r, and every label names its own line.
+func TestNoLineIsLabelledQ(t *testing.T) {
+	for i := range 2000 {
+		l := letter(i)
+		if strings.Contains(l, "q") {
+			t.Fatalf("line %d is labelled %q", i+1, l)
+		}
+		if k, ok := letterIndex(l); !ok || k != i {
+			t.Fatalf("letterIndex(%q) = %d, %v; want %d", l, k, ok, i)
+		}
+	}
+	if letter(15) != "p" || letter(16) != "r" || letter(len(labels)) != "aa" {
+		t.Errorf("labels 16, 17 and %d are %q, %q and %q", len(labels)+1, letter(15), letter(16), letter(len(labels)))
+	}
+	for _, s := range []string{"q", "aq", "", "A", "1", "abcd"} {
+		if _, ok := letterIndex(s); ok {
+			t.Errorf("%q is taken as a label", s)
+		}
+	}
+
+	// In the list of sources, the 17th line opens with r.
+	h := newHarness(t)
+	var entries []string
+	for i := 1; i <= 17; i++ {
+		entries = append(entries, fmt.Sprintf(`{"id": "s%d", "kind": "viac", "path": "/x/s%d.db"}`, i, i))
+	}
+	h.write(`{"gold_db": "/x/g.db", "default_currency": "CHF", "silver_sources": [`+strings.Join(entries, ",\n")+`]}`, 0o600)
+	h.section = "banks"
+	out, err := h.run("r", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "\n    r  VIAC (s17) ") || strings.Contains(out, "\n    q  ") {
+		t.Errorf("the 17th source is not labelled r:\n%s", out)
+	}
+	if !strings.Contains(out, "\nVIAC (s17) (s17)\n") || strings.Contains(out, "Stopped") {
+		t.Errorf("r does not open the 17th source:\n%s", out)
+	}
+	if !strings.Contains(out, "a letter (a to r) for one listed") {
+		t.Errorf("the question does not name the last label:\n%s", out)
+	}
+}
+
+// With a config that is not the default one, every engine command the
+// setup names carries the flag that names it; a collector's command
+// takes none.
+func TestCommandsNameTheConfig(t *testing.T) {
+	const prog = "wealthdb -c /x/try.cfg"
+	bare := regexp.MustCompile(`wealthdb (init|load|web|mcp|resolve-symbols|categorize|config (is|goes|lists|validate|again))`)
+	// A sentence wraps where the window ends, so the check reads the
+	// output with every run of white space as one space.
+	check := func(t *testing.T, out string, wants ...string) {
+		t.Helper()
+		out = strings.Join(strings.Fields(out), " ")
+		for _, w := range wants {
+			if !strings.Contains(out, w) {
+				t.Errorf("output lacks %q:\n%s", w, out)
+			}
+		}
+		if m := bare.FindString(out); m != "" {
+			t.Errorf("%q names the default config:\n%s", m, out)
+		}
+	}
+	h := newHarness(t)
+	h.program = prog
+	out, err := h.run("chf", num(t, "viac"), "", "on", "on", "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(t, out,
+		"Type q to stop; "+prog+" config goes on from there.",
+		"To collect the data of VIAC, run this command when "+prog+" config is done: wealthdb-collect viac login "+
+			prog+" config lists it again at the end.",
+		"To start the dashboards, run this command when "+prog+" config is done: "+prog+" web start ",
+		"To start the MCP server, run this command when "+prog+" config is done: "+prog+" mcp start ",
+		" 1. "+prog+" init Creates", " 2. wealthdb-collect viac login Starts", " 3. "+prog+" load -a Brings",
+		" 4. "+prog+" web start Starts", " 5. "+prog+" mcp start Starts")
+
+	// A stop part-way names the setup command, and so does a section.
+	h = newHarness(t)
+	h.program = prog
+	if out, err = h.run("chf", "q"); err != nil {
+		t.Fatal(err)
+	}
+	check(t, out, "To go on with the setup, run this command: "+prog+" config")
+	h.write(basics+"}\n", 0o600)
+	h.section = "model"
+	if out, err = h.run("http://m:1/v1", "m", "", "n"); err != nil {
+		t.Fatal(err)
+	}
+	check(t, out, " 4. "+prog+" resolve-symbols Asks", " 5. "+prog+" categorize Asks")
+	h.section = "settings"
+	if out, err = h.run(); err != nil {
+		t.Fatal(err)
+	}
+	check(t, out, "check the file with this command: "+prog+" config validate")
+	h.section = "data-folder"
+	if out, err = h.run(); err != nil {
+		t.Fatal(err)
+	}
+	check(t, out, "The database is not created yet. "+prog+" init creates it at /x/g.db.")
+
+	// A config the engine refuses names the command that runs the setup
+	// again.
+	h.write(`{"gold_db": "/x/g.db", "default_currency": "USD", "colour": "blue"}`, 0o600)
+	if _, err = h.run(); err == nil || !strings.HasSuffix(err.Error(), "\nFix the file, then run "+prog+" config again") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// A file registered from "Collected, but not in the list" is the one
+// offered to load, not the collector's first entry.
+func TestRegisteredFileIsTheOneLoaded(t *testing.T) {
+	h := newHarness(t)
+	h.write(fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD",
+ "silver_sources": [{"id": "svb", "kind": "fidelity", "path": %q}]}`,
+		filepath.Join(h.root, "wealthdb.db"), filepath.Join(h.root, "svb", "svb.db")), 0o600)
+	h.collect("wealthdb.db")
+	h.collect("svb", "svb.db")
+	h.collect("svb", "svb-mortgage.db")
+	h.section = "banks"
+	out, err := h.run(
+		"n",     // not on the way in
+		"b", "", // register the mortgage file, and load it
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(h.loads, []string{"svb-mortgage"}) {
+		t.Errorf("loads = %v, want the entry just added\n%s", h.loads, out)
+	}
+	if !strings.Contains(out, "Its data is collected already.\n\nLoad svb-mortgage now? [Y/n]: ") {
+		t.Errorf("the load is offered for another entry:\n%s", out)
+	}
+
+	// A second file that is not collected yet names its collect command,
+	// though the first entry's file is there.
+	h = newHarness(t)
+	h.write(basics+"}\n", 0o600)
+	h.collect("plaid", "chase", "chase.db")
+	h.section = "banks"
+	if out, err = h.run("n", num(t, "plaid"), "n", "schwab", ""); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "\n      wealthdb-collect plaid link --item schwab\n") || strings.Contains(out, "Its data is collected already") {
+		t.Errorf("the next step of the login just named:\n%s", out)
+	}
+}
+
+// A stop before the last step of the wizard still lists the command a
+// change of the run called for, after the setup command.
+func TestAStopListsTheCommandsOfTheRun(t *testing.T) {
+	h := newHarness(t)
+	out, err := h.run("chf", num(t, "viac"), "", "on", "q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := strings.Repeat("-", 72)
+	want := "\nStopped. Every answer so far is saved.\n\n" + rule + "\nWhat to do now\n\n" +
+		"Run these commands in the terminal, in this order:\n" +
+		"\n  1.  wealthdb config\n\n      Goes on with the setup: a step has no answer yet.\n" +
+		"\n  2.  wealthdb web start\n\n      Starts the dashboards.\n" + rule + "\n"
+	if !strings.HasSuffix(out, want) {
+		t.Errorf("the stop does not end with the setup command and the start:\n%s", out)
+	}
+}
+
+// At the offer to create the database, n leaves it to the to-do block,
+// and an answer that is neither is asked again.
+func TestWizardDoesNotCreateTheDatabaseOnNo(t *testing.T) {
+	for _, answers := range [][]string{{"n"}, {"no"}, {"later", "n"}} {
+		h := newHarness(t)
+		out, err := h.run(append([]string{"chf", num(t, "viac"), "", "", ""}, answers...)...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.inits != 0 {
+			t.Errorf("%v created the database", answers)
+		}
+		if !strings.Contains(out, "\n  1.  wealthdb init\n\n      Creates the database.\n") || strings.Contains(out, "Stopped") {
+			t.Errorf("%v: the to-do block does not name the creation:\n%s", answers, out)
+		}
+		if asked := strings.Count(out, "Create it now? [Y/n]: "); asked != len(answers) {
+			t.Errorf("%v: asked %d times", answers, asked)
+		}
+	}
+}
+
+// A setup with no Load action offers no load: not for a source of the
+// list, and not after a file is registered.
+func TestNoLoadActionNoOffer(t *testing.T) {
+	h := newHarness(t)
+	h.write(fmt.Sprintf(`{"gold_db": %q, "default_currency": "CHF",
+ "silver_sources": [{"id": "viac", "kind": "viac", "path": %q}]}`,
+		filepath.Join(h.root, "wealthdb.db"), filepath.Join(h.root, "viac", "viac.db")), 0o600)
+	h.collect("wealthdb.db")
+	h.collect("viac", "viac.db")
+	h.collect("chase", "chase.db")
+	run := func(actions Actions, lines ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		if err := Run(Options{ConfigPath: h.cfg, DataRoot: h.root, Section: "banks", Out: &out,
+			In: strings.NewReader(strings.Join(lines, "\n") + "\n"), Actions: actions}); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	// n: not on the way in. a: the source, l is no answer there. b: the
+	// found file, registered with no question after it.
+	out := run(Actions{}, "n", "a", "l", "b", "")
+	if strings.Contains(out, "load its data now") || strings.Contains(out, "Load ") {
+		t.Errorf("a load is offered with no Load action:\n%s", out)
+	}
+	if !strings.Contains(out, "Added Chase.\nIts data is collected already.\n") {
+		t.Errorf("the file is not registered:\n%s", out)
+	}
+	// With the action, both are offered.
+	var loads []string
+	out = run(Actions{Load: func(id string) error { loads = append(loads, id); return nil }}, "a", "l", "")
+	if !strings.Contains(out, "  l  load its data now") || !slices.Equal(loads, []string{"viac"}) {
+		t.Errorf("loads %v:\n%s", loads, out)
 	}
 }

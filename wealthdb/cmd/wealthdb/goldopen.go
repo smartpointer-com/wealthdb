@@ -12,11 +12,21 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/pathmode"
 )
 
-// defaultMissingGoldMsg is the ExitMissingDB message for a gold DB
-// that doesn't exist yet: openGoldForRead's default, and what most
-// write commands pass as their missingDBMsg. A few commands vary it
-// ("Nothing to reset", "Nothing to compact").
-const defaultMissingGoldMsg = "gold database %q does not exist. Run 'wealthdb init' first (requires write access)."
+// missingGoldMsg is the ExitMissingDB message for a gold DB that
+// doesn't exist yet, as a format that takes the DB path:
+// openGoldForRead's default, and what most write commands pass as their
+// missingDBMsg. A few commands vary it ("Nothing to reset", "Nothing to
+// compact").
+func missingGoldMsg(configPath string) string {
+	return "gold database %q does not exist. " + runInitFirst(configPath) + " (requires write access)."
+}
+
+// runInitFirst is the part of a missing gold DB's message that names
+// the command creating it, for the config at configPath (commandFor),
+// escaped to stand in a format.
+func runInitFirst(configPath string) string {
+	return "Run '" + strings.ReplaceAll(commandFor(configPath, "init"), "%", "%%") + "' first"
+}
 
 // openGoldForRead opens the gold DB for a read-side subcommand. It
 // opens read-only and stays so while the database is at this binary's
@@ -35,7 +45,7 @@ func openGoldForRead(g globalFlags, cfg *config.Config, missingDBMsg ...string) 
 		return nil, errs.Wrap(errs.ExitOpenFailed, err)
 	}
 	if !dec.DBExists {
-		msg := defaultMissingGoldMsg
+		msg := missingGoldMsg(g.ConfigPath)
 		if len(missingDBMsg) > 0 {
 			msg = missingDBMsg[0]
 		}
@@ -76,7 +86,7 @@ func openGoldForRead(g globalFlags, cfg *config.Config, missingDBMsg ...string) 
 // any of the three fails. cmdName names the command in the read-only
 // and mutex-held rejections; missingDBMsg is the ExitMissingDB
 // message (a format string taking the DB path) — commands vary it
-// ("Run 'wealthdb init' first" vs "Nothing to reset" vs "Nothing to
+// (missingGoldMsg vs "Nothing to reset" vs "Nothing to
 // compact"). It does not open the DB: commands that open the file
 // themselves or rewrite it via swap (compact, reload, web-materialize)
 // gate without holding a handle, which is exactly why the mutex is

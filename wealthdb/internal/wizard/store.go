@@ -39,7 +39,7 @@ type store struct {
 	mode     fs.FileMode
 	backedUp bool
 	// gold is the gold_db value written with the first change to a file
-	// that names none.
+	// that names none, or an empty one.
 	gold string
 }
 
@@ -110,36 +110,28 @@ type refusal struct{ err error }
 func (r *refusal) Error() string { return r.err.Error() }
 
 // prepare applies edit to a copy of the document, with gold_db written
-// first into a file that names none. It returns the new text, or nil
-// when edit changes nothing, and a refusal when the engine would refuse
-// the result. A config that is not finished yet is no refusal.
+// first into a file that names none, or an empty one: the engine reads
+// both as a setup not finished (config.InspectBytes). It returns the
+// new text, or nil when nothing changes, and a refusal when the engine
+// would refuse the result. A config that is not finished yet is no
+// refusal.
 func (s *store) prepare(edit func(d *jsonedit.Doc) error) ([]byte, error) {
-	run := func(withGold bool) ([]byte, error) {
-		d, err := jsonedit.Parse(s.doc.Bytes())
-		if err != nil {
-			return nil, err
-		}
-		if withGold {
-			if err := d.Set(s.gold, "gold_db"); err != nil {
-				return nil, err
-			}
-		}
-		if err := edit(d); err != nil {
-			return nil, err
-		}
-		return d.Bytes(), nil
-	}
-	out, err := run(false)
+	d, err := jsonedit.Parse(s.doc.Bytes())
 	if err != nil {
 		return nil, err
 	}
-	if bytes.Equal(out, s.doc.Bytes()) {
-		return nil, nil
-	}
-	if !s.doc.Has("gold_db") && s.gold != "" {
-		if out, err = run(true); err != nil {
+	var gold string
+	if has, err := s.doc.Decode(&gold, "gold_db"); s.gold != "" && (!has || err == nil && gold == "") {
+		if err := d.Set(s.gold, "gold_db"); err != nil {
 			return nil, err
 		}
+	}
+	if err := edit(d); err != nil {
+		return nil, err
+	}
+	out := d.Bytes()
+	if bytes.Equal(out, s.doc.Bytes()) {
+		return nil, nil
 	}
 	if st, _, err := config.InspectBytes(out, s.path); st == config.StateRefused {
 		return nil, &refusal{err: err}

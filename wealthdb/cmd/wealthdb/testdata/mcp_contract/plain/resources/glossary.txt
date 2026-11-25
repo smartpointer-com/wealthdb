@@ -3,4 +3,4 @@ tax_wrapper: how an account is taxed: taxable_personal, taxable_joint, roth_ira,
 management_style: who decides what an account holds: self_directed, advisory, discretionary, automated.
 asset_class: what a position is exposed to: public_equity, private_equity, fixed_income, real_estate, cash, crypto, metal, multi_asset and more.
 vehicle: how a position is held: stock, etf, fund, bond, demand_deposit, time_deposit, physical, loan, mortgage and more.
-(the values present could not be read: there is no database yet: run 'wealthdb init' and 'wealthdb load -a' first)
+(the values present could not be read: there is no database yet: run 'wealthdb -c <config> init' and 'wealthdb -c <config> load -a' first)
