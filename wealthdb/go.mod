@@ -9,7 +9,7 @@ require (
 	github.com/shopspring/decimal v1.6.0
 	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.48.0
-	modernc.org/sqlite v1.62.0
+	modernc.org/sqlite v1.63.0
 )
 
 require (
@@ -38,12 +38,12 @@ require (
 	go.duckdb.org/libduckdb/linux-amd64 v0.20000.0 // indirect
 	go.duckdb.org/libduckdb/linux-arm64 v0.20000.0 // indirect
 	go.duckdb.org/libduckdb/windows-amd64 v0.20000.0 // indirect
-	golang.org/x/exp v0.0.0-20261121134650-e1094eeca1b5 // indirect
+	golang.org/x/exp v0.0.0-20261124000051-d6646c509b6d // indirect
 	golang.org/x/oauth2 v0.38.0 // indirect
 	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
-	modernc.org/libc v1.82.12 // indirect
+	modernc.org/libc v1.82.13 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.13.0 // indirect
 )
