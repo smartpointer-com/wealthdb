@@ -3,6 +3,7 @@ package wizard
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -35,11 +36,18 @@ type harness struct {
 	section             string
 	wizard, rootFromEnv bool
 	inContainer         bool
+	// afterLoad, when set, runs after the Load action.
+	afterLoad func()
 	// program is Options.Program and collectCmd Options.Collect: empty
 	// for the default config.
 	program, collectCmd string
 	// own is Options.OwnSetup.
 	own bool
+	// unconvertible are the currencies the database holds with no rate
+	// to the reports' (Actions.Unconvertible), and askedRates the
+	// currencies the setup asked it for.
+	unconvertible []string
+	askedRates    []string
 	// asked are the models a test question went to; reply is the answer,
 	// or the failure when replyErr is set.
 	asked    []config.ModelConfig
@@ -139,9 +147,19 @@ func (h *harness) run(lines ...string) (string, error) {
 				h.inits++
 				return os.WriteFile(filepath.Join(h.root, "wealthdb.db"), nil, 0o600)
 			},
-			Load:   func(id string) error { h.loads = append(h.loads, id); return nil },
+			Load: func(id string) error {
+				h.loads = append(h.loads, id)
+				if h.afterLoad != nil {
+					h.afterLoad()
+				}
+				return nil
+			},
 			Reset:  func(id string) error { h.resets = append(h.resets, id); return nil },
 			Loaded: func(string) ([]string, error) { return h.loaded, nil },
+			Unconvertible: func(_, currency string) ([]string, error) {
+				h.askedRates = append(h.askedRates, currency)
+				return h.unconvertible, nil
+			},
 			TestModel: func(m config.ModelConfig) (string, error) {
 				h.asked = append(h.asked, m)
 				return h.reply, h.replyErr
@@ -488,7 +506,7 @@ func TestBanksIDsAndItems(t *testing.T) {
 	out, err := h.run(
 		"n",                 // the collected mortgage file is not added on the way in
 		num(t, "plaid"), "", // Enter backs out, with nothing added
-		num(t, "plaid"), "plaid", // a login named plaid: the id clashes
+		num(t, "plaid"), "plaid", "n", // a login named plaid: the id clashes; no exchange-rate source
 		num(t, "plaid"), "my bank", "broker", // a name with a space is refused
 		num(t, "plaid"), "broker", // the same login twice
 		num(t, "svb"),                  // the brokerage file, and the mortgage file that is there
@@ -671,6 +689,39 @@ func TestRemoveResetsLoadedSource(t *testing.T) {
 	}
 }
 
+// flat is out with every run of white space as one space: a sentence
+// wraps where the window ends.
+func flat(out string) string { return strings.Join(strings.Fields(out), " ") }
+
+const (
+	fxName = "FRED exchange and interest rates"
+	// The three wordings of the line that says exchange rates are
+	// needed, each for a setup that reports in CHF.
+	fxHintGroup    = "The reports are in CHF and Chase reports in USD. Add " + fxName + " so the reports can convert."
+	fxHintAnywhere = "The reports are in CHF. Plaid (linked banks) can hold accounts in other currencies. Add " + fxName + " so the reports can convert them."
+	fxHintData     = "The reports are in CHF, and the database holds amounts in EUR and USD with no exchange rate to CHF. Add " + fxName + " so the reports can convert them."
+	fxOffer        = "Add " + fxName + " now? [Y/n]: "
+)
+
+// fxConfig is a config that reports in CHF with the sources given, each
+// a kind whose collector has the same name, and both servers off.
+func fxConfig(h *harness, kinds ...string) string {
+	var srcs []string
+	for _, k := range kinds {
+		path := filepath.Join(h.root, k, k+".db")
+		if k == "plaid" {
+			path = filepath.Join(h.root, "plaid", "first", "first.db")
+		}
+		srcs = append(srcs, fmt.Sprintf(`{"id": %q, "kind": %q, "path": %q}`, k, k, path))
+	}
+	return fmt.Sprintf(`{"gold_db": %q, "default_currency": "CHF", "silver_sources": [%s],
+ "web": {"enabled": false}, "mcp": {"enabled": false}}`, filepath.Join(h.root, "wealthdb.db"), strings.Join(srcs, ", "))
+}
+
+// The banks section says that the exchange-rate source is needed, under
+// the configured sources, while none of them states exchange rates: for
+// a source of another currency by its country, for a source of no one
+// country, and for what the database holds, which wins.
 func TestFXHint(t *testing.T) {
 	h := newHarness(t)
 	h.write(`{"gold_db": "/x/g.db", "default_currency": "USD",
@@ -683,6 +734,187 @@ func TestFXHint(t *testing.T) {
 	hint := "The reports are in USD and VIAC reports in CHF. Add FRED exchange and interest\nrates so the reports can convert."
 	if strings.Count(out, hint) != 1 {
 		t.Errorf("the hint is not shown once, before fred is added:\n%s", out)
+	}
+	// It stood there before the pick, so the pick is followed by no offer.
+	if strings.Contains(out, fxOffer) {
+		t.Errorf("an offer follows a pick that changed nothing about the hint:\n%s", out)
+	}
+
+	for _, tc := range []struct {
+		name          string
+		kinds         []string
+		unconvertible []string
+		want          string // "" for no line
+	}{
+		{name: "a source of the reports' currency", kinds: []string{"viac"}},
+		{name: "a source of another currency", kinds: []string{"viac", "chase"}, want: fxHintGroup},
+		{name: "a source of no one country", kinds: []string{"viac", "plaid"}, want: fxHintAnywhere},
+		{name: "another currency before no one country", kinds: []string{"plaid", "chase"}, want: fxHintGroup},
+		{name: "market data alone holds no account", kinds: []string{"viac", "curves"}},
+		{name: "the database says so", kinds: []string{"viac"}, unconvertible: []string{"EUR", "USD"}, want: fxHintData},
+		{name: "the database wins", kinds: []string{"plaid", "chase"}, unconvertible: []string{"EUR", "USD"}, want: fxHintData},
+		{name: "an exchange-rate source is configured", kinds: []string{"plaid", "chase", "fred"}},
+		{name: "an exchange-rate source is configured, whatever the database holds", kinds: []string{"chase", "fred"},
+			unconvertible: []string{"EUR", "USD"}},
+		{name: "a bank that states exchange rates", kinds: []string{"chase", "swissquote"}},
+	} {
+		h := newHarness(t)
+		h.write(fxConfig(h, tc.kinds...), 0o600)
+		h.collect("wealthdb.db")
+		h.unconvertible = tc.unconvertible
+		h.section = "banks"
+		out, err := h.run("")
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		out = flat(out)
+		if tc.want == "" {
+			if strings.Contains(out, "so the reports can convert") {
+				t.Errorf("%s: a line says exchange rates are needed:\n%s", tc.name, out)
+			}
+		} else if strings.Count(out, tc.want) != 1 {
+			t.Errorf("%s: the section does not say once %q:\n%s", tc.name, tc.want, out)
+		}
+		// The run ends by naming the banks section as a step, while the
+		// line applies.
+		step := "wealthdb config banks Adds " + fxName + ", so that the reports can convert amounts in another currency."
+		if got := strings.Contains(out, step); got != (tc.want != "") {
+			t.Errorf("%s: the to-do block names the banks section is %v:\n%s", tc.name, got, out)
+		}
+		// The database is asked about the reports' currency, and only
+		// while no source states exchange rates.
+		if fx := slices.Contains(tc.kinds, "fred") || slices.Contains(tc.kinds, "swissquote"); fx != (len(h.askedRates) == 0) ||
+			slices.ContainsFunc(h.askedRates, func(c string) bool { return c != "CHF" }) {
+			t.Errorf("%s: the database was asked for %v", tc.name, h.askedRates)
+		}
+	}
+
+	// With no database, or no way to ask it, the config alone decides.
+	h = newHarness(t)
+	h.write(fxConfig(h, "viac"), 0o600)
+	h.unconvertible = []string{"USD"}
+	h.section = "banks"
+	if out, err = h.run(""); err != nil || strings.Contains(out, "so the reports can convert") || len(h.askedRates) != 0 {
+		t.Errorf("no database: asked %v, %v:\n%s", h.askedRates, err, out)
+	}
+}
+
+// A source whose addition makes the line apply is followed by the line
+// and an offer to add the exchange-rate source at once. Yes adds it, as
+// its pick from the list does; no leaves the line in the section and
+// the step in the to-do block.
+func TestFXOfferAfterAdd(t *testing.T) {
+	// Yes, the default: FRED is added, with its collect command, and the
+	// line is gone.
+	h := newHarness(t)
+	h.write(fxConfig(h, "viac"), 0o600)
+	h.section = "banks"
+	out, err := h.run(num(t, "plaid"), "first", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := flat(out); strings.Count(got, fxHintAnywhere+" "+fxOffer) != 1 || strings.Count(got, fxHintAnywhere) != 1 {
+		t.Errorf("the line and the offer do not follow the pick once:\n%s", out)
+	}
+	for _, w := range []string{"Added Plaid (linked banks): first.\n", "Added " + fxName + ".\n", "\n      wealthdb-collect fred login\n"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("output lacks %q:\n%s", w, out)
+		}
+	}
+	var ids []string
+	for _, s := range h.cfgOf().SilverSources {
+		ids = append(ids, s.ID)
+	}
+	if !slices.Equal(ids, []string{"viac", "first", "fred"}) {
+		t.Errorf("sources = %v, want fred added", ids)
+	}
+	if strings.Contains(flat(out), "wealthdb config banks Adds") {
+		t.Errorf("the to-do block still names the banks section:\n%s", out)
+	}
+
+	// No: nothing is added, the line stands under the sources, and the
+	// to-do block names the banks section. A second bank brings no
+	// second offer.
+	h = newHarness(t)
+	h.write(fxConfig(h, "viac"), 0o600)
+	h.section = "banks"
+	if out, err = h.run(num(t, "plaid"), "first", "n", num(t, "chase"), ""); err != nil {
+		t.Fatal(err)
+	}
+	got := flat(out)
+	if strings.Count(got, fxOffer) != 1 || strings.Count(got, fxHintAnywhere) != 2 || strings.Count(got, fxHintGroup) != 1 {
+		t.Errorf("after a no: one offer, then the line under the sources:\n%s", out)
+	}
+	if n := len(h.cfgOf().SilverSources); n != 3 {
+		t.Errorf("%d sources, want viac, the bank and chase", n)
+	}
+	if !strings.Contains(got, " wealthdb config banks Adds "+fxName+", so that the reports can convert amounts in another currency.") {
+		t.Errorf("the to-do block does not name the banks section:\n%s", out)
+	}
+
+	// The first walk offers it too, and the database's verdict after a
+	// load does.
+	h = newHarness(t)
+	if out, err = h.run("chf", num(t, "chase"), "y", "", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(flat(out), fxHintGroup+" "+fxOffer) || len(h.cfgOf().SilverSources) != 2 {
+		t.Errorf("the walk does not offer the exchange-rate source:\n%s", out)
+	}
+	h = newHarness(t)
+	h.write(fxConfig(h, "viac"), 0o600)
+	h.collect("wealthdb.db")
+	h.collect("viac", "viac.db")
+	h.section = "banks"
+	// The load of the source brings amounts in another currency.
+	loads := 0
+	h.afterLoad = func() { loads++; h.unconvertible = []string{"EUR", "USD"} }
+	if out, err = h.run("a", "l", "n", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := flat(out); loads != 1 || strings.Count(got, fxHintData+" "+fxOffer) != 1 {
+		t.Errorf("a load that brings another currency is not followed by the offer (%d loads):\n%s", loads, out)
+	}
+}
+
+// The currency step says that an account in another currency needs the
+// exchange-rate source, in the first walk and when the currency is
+// edited later, and not once a source that states exchange rates is
+// configured.
+func TestCurrencyStepNamesExchangeRates(t *testing.T) {
+	note := func(ccy string) string {
+		return "Saved: " + ccy + ". A bank or broker that reports in another currency than " + ccy + " needs exchange rates. Add " +
+			fxName + " among the banks and brokers: without it, amounts in another currency are missing from every total."
+	}
+	h := newHarness(t)
+	out, err := h.run("chf", "q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(flat(out), note("CHF")+" Step 2 of 4: Banks and brokers") {
+		t.Errorf("the first walk does not say it after the currency:\n%s", out)
+	}
+	for _, tc := range []struct {
+		kinds []string
+		want  bool
+	}{
+		{[]string{"viac"}, true},
+		{nil, true},
+		{[]string{"viac", "fred"}, false},
+		{[]string{"swissquote"}, false},
+	} {
+		h := newHarness(t)
+		h.write(fxConfig(h, tc.kinds...), 0o600)
+		h.section = "currency"
+		if out, err = h.run("eur"); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(flat(out), note("EUR")); got != tc.want {
+			t.Errorf("sources %v: the currency says exchange rates are needed is %v, want %v:\n%s", tc.kinds, got, tc.want, out)
+		}
+		if !tc.want && strings.Contains(out, "needs exchange rates") {
+			t.Errorf("sources %v: the paragraph stands though a source states exchange rates:\n%s", tc.kinds, out)
+		}
 	}
 }
 
@@ -887,7 +1119,8 @@ func (f *fakeTerminal) Raw() (func(), error) {
 func TestRawMenu(t *testing.T) {
 	h := newHarness(t)
 	h.write(`{"gold_db": "/x/g.db", "default_currency": "USD",
- "silver_sources": [{"id": "viac", "kind": "viac", "path": "/x/viac.db"}],
+ "silver_sources": [{"id": "viac", "kind": "viac", "path": "/x/viac.db"},
+  {"id": "fred", "kind": "fred", "path": "/x/fred.db"}],
  "web": {"enabled": false}, "mcp": {"enabled": false}}`, 0o600)
 	term := &fakeTerminal{}
 	h.terminal = term
@@ -918,9 +1151,14 @@ func TestRawMenu(t *testing.T) {
 // confirmation after the last answer waits for Enter, so it can be read.
 func TestRawMenuWaitsOnlyForWhatWouldBeLost(t *testing.T) {
 	h := newHarness(t)
-	h.write(`{"gold_db": "/x/g.db", "default_currency": "USD",
+	const withFX = `{"gold_db": "/x/g.db", "default_currency": "USD",
+ "silver_sources": [{"id": "viac", "kind": "viac", "path": "/x/viac.db"},
+  {"id": "fred", "kind": "fred", "path": "/x/fred.db"}],
+ "web": {"enabled": false}, "mcp": {"enabled": false}}`
+	const noFX = `{"gold_db": "/x/g.db", "default_currency": "USD",
  "silver_sources": [{"id": "viac", "kind": "viac", "path": "/x/viac.db"}],
- "web": {"enabled": false}, "mcp": {"enabled": false}}`, 0o600)
+ "web": {"enabled": false}, "mcp": {"enabled": false}}`
+	h.write(withFX, 0o600)
 	term := &fakeTerminal{}
 	h.terminal = term
 	n := func(title string) string {
@@ -938,16 +1176,21 @@ func TestRawMenuWaitsOnlyForWhatWouldBeLost(t *testing.T) {
 	for _, c := range []struct {
 		name, keys string
 		waits      bool
+		body       string // the config, withFX when empty
 	}{
-		{"a section that ends at its question", n("Report options") + "\r" + "\n", false},
-		{"a change the menu shows", n("Primary currency") + "\r" + "chf\n", false},
-		{"what a check prints", n("Validate the config file") + "\r", true},
-		{"a screen to read", n("Settings edited in the file") + "\r", true},
-		{"a change with more to say", n("Dashboards") + "\r" + "on\n\n", true},
+		{name: "a section that ends at its question", keys: n("Report options") + "\r" + "\n"},
+		{name: "a change the menu shows", keys: n("Primary currency") + "\r" + "chf\n"},
+		// With no source of exchange rates, the currency says that one
+		// is needed: a paragraph to read.
+		{name: "a currency that needs exchange rates", keys: n("Primary currency") + "\r" + "chf\n", waits: true, body: noFX},
+		{name: "what a check prints", keys: n("Validate the config file") + "\r", waits: true},
+		{name: "a screen to read", keys: n("Settings edited in the file") + "\r", waits: true},
+		{name: "a change with more to say", keys: n("Dashboards") + "\r" + "on\n\n", waits: true},
 		// The walk ends with the creation of the database, whose command
 		// prints past the screen: its line stays to be read.
-		{"what a command the setup ran prints", n("Walk through the basic setup again") + "\r" + "\n\n\n\n\n", true},
+		{name: "what a command the setup ran prints", keys: n("Walk through the basic setup again") + "\r" + "\n\n\n\n\n", waits: true},
 	} {
+		h.write(cmp.Or(c.body, withFX), 0o600)
 		var out bytes.Buffer
 		inits := 0
 		if err := Run(Options{ConfigPath: h.cfg, DataRoot: h.root, In: strings.NewReader(c.keys + "\x03"), Out: &out,
@@ -1193,7 +1436,9 @@ func TestWizardBacksUpOnce(t *testing.T) {
 	h := newHarness(t)
 	prior := `{"default_currency": "USD"}`
 	h.write(prior, 0o600)
-	if _, err := h.run("eur", num(t, "viac"), num(t, "swissquote"), "", "on", "off", "q"); err != nil {
+	// VIAC reports in another currency than EUR: the offer to add the
+	// exchange-rate source is declined.
+	if _, err := h.run("eur", num(t, "viac"), "n", num(t, "swissquote"), "", "on", "off", "q"); err != nil {
 		t.Fatal(err)
 	}
 	if bak, err := os.ReadFile(h.cfg + ".bak"); err != nil || string(bak) != prior {
@@ -1469,7 +1714,10 @@ func TestCommandsNameTheConfig(t *testing.T) {
 	if out, err = h.run("http://m:1/v1", "m", "", "n"); err != nil {
 		t.Fatal(err)
 	}
-	check(t, out, " 4. "+prog+" resolve-symbols Asks", " 5. "+prog+" categorize Asks")
+	// VIAC reports in another currency than the reports', and no source
+	// states exchange rates: the block names the setup's banks section.
+	check(t, out, " 4. "+prog+" config banks Adds FRED exchange and interest rates, so that the reports can convert amounts in another currency.",
+		" 5. "+prog+" resolve-symbols Asks", " 6. "+prog+" categorize Asks")
 	h.section = "settings"
 	if out, err = h.run(); err != nil {
 		t.Fatal(err)

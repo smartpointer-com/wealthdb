@@ -73,22 +73,11 @@ func directionOf(a canonical.TxAction) direction {
 	return dirOutbound
 }
 
-// fiatTickers is the same set the price fetcher uses to skip fiat
-// from coin_prices. Duplicated here rather than imported because
-// the Python collector's set lives in collectors/cointracking/
-// binance.py and isn't accessible from Go; the lists are kept in
-// sync by hand (small enough that drift would surface quickly via
-// the smoke-test sums).
-var fiatTickers = map[string]struct{}{
-	"USD": {}, "EUR": {}, "CHF": {}, "GBP": {}, "JPY": {},
-	"AUD": {}, "CAD": {}, "NZD": {}, "SGD": {}, "HKD": {},
-	"SEK": {}, "NOK": {}, "DKK": {}, "PLN": {}, "CZK": {},
-	"HUF": {}, "RUB": {}, "INR": {}, "CNY": {}, "KRW": {},
-	"TWD": {}, "THB": {}, "BRL": {}, "MXN": {}, "ZAR": {},
-	"TRY": {}, "ILS": {},
-}
-
+// isFiat says ticker is a currency of money and no coin: the set the
+// price fetcher leaves out of coin_prices (canonical.IsMoneyCurrency,
+// which the engine's notice on missing exchange rates reads too). A
+// drift from the collector's set would surface quickly in the
+// smoke-test sums.
 func isFiat(ticker string) bool {
-	_, ok := fiatTickers[ticker]
-	return ok
+	return canonical.IsMoneyCurrency(ticker)
 }

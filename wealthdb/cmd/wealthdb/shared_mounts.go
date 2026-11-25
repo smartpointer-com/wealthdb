@@ -100,7 +100,7 @@ func unescapeMountPath(s string) string {
 	return strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`).Replace(s)
 }
 
-// joinAnd is the paths joined for a sentence: "a", "a and b",
+// joinAnd is the names joined for a sentence: "a", "a and b",
 // "a, b and c".
 func joinAnd(paths []string) string {
 	if len(paths) == 1 {

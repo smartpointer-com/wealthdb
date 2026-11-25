@@ -186,7 +186,12 @@ enrichment dumps, and `describe`. The design rules:
    which is its accounts' common one. The header echoes each named
    filter (`symbol=ABC`), before the conditions.
 6. Every result starts with one header line, then a markdown table
-   (`csv` and `json` on request), then a paging line when cut.
+   (`csv` and `json` on request), then a paging line when cut. A view
+   in an output currency adds a note to the header when gold holds
+   amounts in a currency of money with no exchange rate to it: the
+   figures leave those amounts out, and the note names the `currency`
+   that shows them
+   ([DESIGN.md §10.6](../wealthdb/docs/DESIGN.md#106-currency-conversion-with-historic-fx-rates)).
 
 The descriptions and instructions are tuned against small local models
 over the demo household. Each of the following removes a class of wrong

@@ -288,6 +288,10 @@ never reset: `reload -a` stops before it builds or swaps anything, and
 an in-place reload leaves that source's rows as they are, reloads the
 others and exits 1 (§9).
 
+`load -a` and `reload` end with the line on amounts with no exchange
+rate to the config's currency, when it applies (§10.6). A single
+`load <id>` does not print it.
+
 ### 4.5 `wealthdb reset <id> | -a`
 
 Deletes all rows owned by the given `silver_source_id` from every
@@ -477,7 +481,9 @@ sources where silver has advanced past the watermark — load
 candidates. A source gold does not hold yet, none of whose silver
 files exists, reads "no data yet" with its collect command. A source
 gold holds whose file is missing reads `ERROR: its data file is
-missing: <path>` (§4.4).
+missing: <path>` (§4.4). The overview ends with the line on amounts
+with no exchange rate to the config's currency, when it applies
+(§10.6).
 
 With `<id>`: detailed report — per-table counts in gold for that
 silver source, full `plugin.Status()` (oldest/latest snapshot and
@@ -642,11 +648,12 @@ before it so that it reads as an instruction:
   own with a line or two on what it does, and a closing rule. The
   commands are `wealthdb init` when no gold file exists, the collect
   command of each source with no silver yet, `wealthdb load -a` while a
-  source is not loaded, the start command of each server the run
-  turned on, and the commands that use a model the run saved. While a
-  wizard step has no answer, the block names the setup command first,
-  in place of the database and the data. With nothing to run there is
-  no block.
+  source is not loaded, `wealthdb config banks` while the line on
+  exchange rates applies (see Banks and brokers below), the start
+  command of each server the run turned on, and the commands that use
+  a model the run saved. While a wizard step has no answer, the block
+  names the setup command first, in place of the database and the
+  data. With nothing to run there is no block.
 
 **The screen.** Every line the setup prints passes through one layer
 that keeps the spacing: never two blank lines in a row, and one blank
@@ -671,10 +678,13 @@ numbered list read a line at a time. In a window too short for the
 whole menu, the lines around the marked one show, with a note that
 more stand above or below.
 
-**Primary currency** takes any case and stores upper case. Its default is the
-saved value, else the currency of the host locale's region, else USD.
-The wrapper forwards the host locale (`AppleLocale` on macOS, else
-`LC_ALL`, `LC_MONETARY` or `LANG`).
+**Primary currency** takes any case and stores upper case. Its default
+is the saved value, else the currency of the host locale's region, else
+USD. The wrapper forwards the host locale (`AppleLocale` on macOS, else
+`LC_ALL`, `LC_MONETARY` or `LANG`). Once the currency is saved, the
+step says that a bank or broker in another currency needs exchange
+rates, and names FRED as the source to add. It says nothing when a
+configured source states exchange rates.
 
 **Banks and brokers** first offers, all at once, the collected data
 that no entry names, so a bank linked and downloaded since the last run
@@ -729,9 +739,19 @@ command stays on the screen above the prompt. An entry in another
 shape (the path form of a subsource kind, or a file no collector
 writes) shows as "edited by hand" and is left alone.
 
-When a source's country uses a currency other than
-`default_currency`, and no configured source states exchange rates,
-the section says in one line that FRED is needed to convert (§10.6).
+While no configured source states exchange rates, the section says in
+one line, under the configured sources, that FRED is needed to convert
+(§10.6). The line applies in three cases, and the first that holds
+words it:
+
+1. The database holds amounts in a currency of money with no exchange
+   rate to `default_currency`. The line names those currencies.
+2. A source's country uses a currency other than `default_currency`.
+3. A source of no one country is configured, such as Plaid: it can
+   hold accounts in any currency.
+
+A step that makes the line apply shows it at once and offers to add
+FRED. A no leaves the line under the sources.
 
 **Dashboards** and **MCP server** ask on or off. The menu also asks the
 port. Turning one on names `wealthdb web start` or `wealthdb mcp
@@ -3263,6 +3283,32 @@ There is no linear interpolation between rates.
 **Cross-silver precedence** is data, not runtime state: a stamped
 `silver_sources.fx_priority` column that `fx_norm` reads. §13.2
 describes it.
+
+**Amounts with no exchange rate.** A report in an output currency says
+on stderr which currencies of money gold holds amounts in with no
+exchange rate to that currency at all:
+
+```
+wealthdb: no exchange rate from EUR to CHF: amounts in EUR are missing from every figure in CHF. Add exchange rates with 'wealthdb config banks' (FRED exchange and interest rates), or report in EUR with -x EUR.
+```
+
+The report prints as it does without the line, and leaves those
+amounts out. A currency has a rate when one of the four legs above
+resolves on any day. So two things are not this case:
+
+- A day with no rate. The nearest earlier rate, or the pair's first,
+  converts it.
+- A token with no price. It is not a currency of money, and a source
+  of exchange rates has no rate for it. An output currency that is no
+  currency of money gets no line either.
+
+The same sentence, for the config's currency, ends the `status`
+overview (§4.7), `load -a` and `reload` (§4.4). There it is on stdout,
+after `status:`, `load:` or `reload:`. The setup states the fact
+in its Banks and brokers section (§4.9), `wealthdb web start` and
+`refresh` print it ([web/README.md](../../web/README.md#enable-it)),
+and an MCP report tool carries it as a note in its header
+([mcp/DESIGN.md §6](../../mcp/DESIGN.md#6-the-tool-api)).
 
 ### 10.7 History reports (time series)
 

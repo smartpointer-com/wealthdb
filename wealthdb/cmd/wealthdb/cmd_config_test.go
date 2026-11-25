@@ -139,7 +139,9 @@ func TestConfigThenInitThenStatus(t *testing.T) {
 			pick = fmt.Sprint(i + 1)
 		}
 	}
-	answers := strings.Join([]string{"", pick, "", "", "", ""}, "\n") + "\n"
+	// The reports are in USD and VIAC reports in CHF: the offer to add
+	// the exchange-rate source at once is declined.
+	answers := strings.Join([]string{"", pick, "n", "", "", "", ""}, "\n") + "\n"
 	for _, tc := range []struct {
 		name string
 		// cfg and root are the config and the data folder its setup
@@ -207,7 +209,10 @@ func TestConfigThenInitThenStatus(t *testing.T) {
 			}
 			for _, want := range []string{"Data folder:  " + root + "\n",
 				"created the database at " + filepath.Join(root, "wealthdb.db"),
-				"What to do now", "\n  1.  " + collect + " viac login\n\n", "\n  2.  " + prog + " load -a\n\n"} {
+				"What to do now", "\n  1.  " + collect + " viac login\n\n", "\n  2.  " + prog + " load -a\n\n",
+				// While no source states exchange rates, the block names
+				// the banks section of this config.
+				"\n  3.  " + prog + " config banks\n\n"} {
 				if !strings.Contains(so.String(), want) {
 					t.Errorf("output lacks %q:\n%s", want, so.String())
 				}

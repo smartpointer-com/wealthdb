@@ -122,9 +122,12 @@ WEALTHDB_DATA_ROOT, else $XDG_DATA_HOME/wealthdb, else
 				}
 				return createGold(ctx, g, cfg, stdout)
 			},
-			Load:      func(id string) error { return cmdLoad(ctx, g, []string{id}, nil, stdout, stdout) },
-			Reset:     func(id string) error { return cmdReset(ctx, g, []string{id}, nil, stdout, stdout) },
-			Loaded:    loadedSources,
+			Load:   func(id string) error { return cmdLoad(ctx, g, []string{id}, nil, stdout, stdout) },
+			Reset:  func(id string) error { return cmdReset(ctx, g, []string{id}, nil, stdout, stdout) },
+			Loaded: loadedSources,
+			Unconvertible: func(path, currency string) ([]string, error) {
+				return unconvertibleCurrencies(ctx, path, currency)
+			},
 			TestModel: func(m config.ModelConfig) (string, error) { return testModel(ctx, m) },
 		},
 	})
@@ -245,6 +248,18 @@ func hostLocale() string {
 		}
 	}
 	return ""
+}
+
+// unconvertibleCurrencies are the currencies of money the database at
+// path holds amounts in that no exchange rate connects to currency
+// (unconvertibleMoney).
+func unconvertibleCurrencies(ctx context.Context, path, currency string) ([]string, error) {
+	db, err := gold.Open(path, gold.ModeReadOnly)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	return unconvertibleMoney(ctx, db, currency)
 }
 
 // loadedSources are the sources the database at path holds.

@@ -319,9 +319,11 @@ wealthdb mcp start                # the reports for AI agents (optional; see mcp
 
 `wealthdb config` asks a few questions and names the next command at
 each step. Ctrl+C stops it, and the next run starts from the saved
-answers. Once every step holds an answer, it is a menu that changes
-one part of the setup at a time, the AI model included. After an edit
-of the file by hand, `wealthdb config validate` checks it.
+answers. A bank in another currency than the reports' needs the
+exchange-rate source, and the setup says so. Once every step holds an
+answer, it is a menu that changes one part of the setup at a time, the
+AI model included. After an edit of the file by hand,
+`wealthdb config validate` checks it.
 
 Credentials go in `~/.secrets/<source>.env`; a collector's `login`
 names the variables. Data lands under `$XDG_DATA_HOME/wealthdb`, which

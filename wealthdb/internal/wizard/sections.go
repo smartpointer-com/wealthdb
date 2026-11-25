@@ -98,7 +98,21 @@ func (w *setup) editCurrency() error {
 		return w.explain(err)
 	}
 	w.out.ok("Saved: %s.", cur)
+	w.noteExchangeRates(cur)
 	return nil
+}
+
+// noteExchangeRates says, once the reports' currency cur is chosen, that
+// an account in another currency needs the exchange-rate source. It
+// says nothing when a configured source states exchange rates.
+func (w *setup) noteExchangeRates(cur string) {
+	fx, ok := fxSource()
+	if es, err := w.entries(); !ok || err == nil && statesFX(es) {
+		return
+	}
+	w.out.help("A bank or broker that reports in another currency than %s needs exchange rates. "+
+		"Add %s among the banks and brokers: without it, amounts in another currency are missing from every total.",
+		cur, fx.Display)
 }
 
 // ---- Banks and brokers ----
@@ -128,11 +142,21 @@ func (w *setup) sourcesSummary() string {
 // letters; the catalogue takes numbers, fixed for the run, and leaves
 // out a collector the config names already (all but a per-item one,
 // which takes an entry per login). Enter leaves; in the wizard, not
-// before a source is listed.
+// before a source is listed. The line that says an exchange-rate source
+// is needed (fxHint) stands under the configured sources; a step that
+// makes it apply is followed by it at once, with an offer to add that
+// source (offerFX).
 func (w *setup) editSources() error {
 	cat := silver.Catalogue()
-	if err := w.offerFound(); err != nil {
+	hinted := w.fxNeeded()
+	added, err := w.offerFound()
+	if err != nil {
 		return err
+	}
+	if added && !hinted {
+		if err := w.offerFX(); err != nil {
+			return err
+		}
 	}
 	// The catalogue is listed on the way in and when asked for (?). It
 	// is not listed again after a pick, so the command the pick names
@@ -157,9 +181,10 @@ func (w *setup) editSources() error {
 			for i, e := range es {
 				fmt.Fprintf(w.out, "  %s  %-34s %s\n", w.out.Key(fmt.Sprintf("%3s", letter(i))), e.display, stateOf(e, loaded))
 			}
-			if hint := fxHint(es, w.currency()); hint != "" {
-				w.out.help("%s", hint)
-			}
+		}
+		hint := w.fxHint(es)
+		if hint != "" && len(es) > 0 {
+			w.out.help("%s", hint)
 		}
 		if len(disc) > 0 {
 			w.out.title("Collected, but not in the list:")
@@ -238,7 +263,41 @@ func (w *setup) editSources() error {
 		if err != nil {
 			return err
 		}
+		if hint == "" {
+			if err := w.offerFX(); err != nil {
+				return err
+			}
+		}
 	}
+}
+
+// fxNeeded says the line of fxHint applies to the config as it stands.
+func (w *setup) fxNeeded() bool {
+	es, err := w.entries()
+	return err == nil && w.fxHint(es) != ""
+}
+
+// offerFX follows a step that made the line of fxHint apply: it shows
+// the line and offers to add the exchange-rate source at once, as a
+// pick of it from the list does. It does nothing while the line does
+// not apply. A no leaves the line under the configured sources.
+func (w *setup) offerFX() error {
+	fx, ok := fxSource()
+	es, err := w.entries()
+	if !ok || err != nil {
+		return nil
+	}
+	hint := w.fxHint(es)
+	if hint == "" {
+		return nil
+	}
+	w.out.gap()
+	w.out.help("%s", hint)
+	yes, err := w.p.yesNo("Add "+fx.Display+" now?", true)
+	if err != nil || !yes {
+		return err
+	}
+	return w.pick(fx)
 }
 
 // joinClauses joins the parts of a question with commas, breaking the
@@ -268,15 +327,16 @@ const catalogueIndent = 2 + 3 + 2 + 34 + 1
 
 // offerFound offers, on the way into the section, to add all at once
 // the collected data that no entry names: a bank linked and downloaded
-// since the last run of the setup takes one Enter.
-func (w *setup) offerFound() error {
+// since the last run of the setup takes one Enter. It reports whether
+// it added any.
+func (w *setup) offerFound() (added bool, err error) {
 	es, err := w.entries()
 	if err != nil {
-		return nil
+		return false, nil
 	}
 	disc := w.discovered(es)
 	if len(disc) == 0 {
-		return nil
+		return false, nil
 	}
 	w.out.title("Collected, but not in the list yet:")
 	for _, f := range disc {
@@ -284,20 +344,21 @@ func (w *setup) offerFound() error {
 	}
 	add, err := w.p.yesNo("Add them now?", true)
 	if err != nil || !add {
-		return err
+		return false, err
 	}
 	for _, f := range disc {
 		res, err := w.add(f.c, filepath.Base(f.file), f.item)
 		if err != nil {
-			return w.explain(err)
+			return added, w.explain(err)
 		}
 		if res == handEdited {
 			w.out.fail("The %s entry is edited by hand. Add %s to it in %s.", f.c.Kind, foundName(f), w.store.path)
 			continue
 		}
 		w.out.ok("Added %s.", foundName(f))
+		added = true
 	}
-	return nil
+	return added, nil
 }
 
 // labels are the letters a line of a list is labelled with. q is not

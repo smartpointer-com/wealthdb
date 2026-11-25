@@ -51,7 +51,10 @@ func init() {
 // command (diagnostic knobs stay on `wealthdb returns` and `wealthdb
 // gains`). A concurrent write command holds the gold write mutex, so
 // the gate fails cleanly here and the wrapper aborts before the
-// snapshot is touched.
+// snapshot is touched. Each run, the one that rewrites nothing too,
+// says on stderr which currencies gold holds amounts in that do not
+// convert to the config's currency (warnUnconvertible): the dashboards
+// open in that currency, and show nothing of those amounts.
 func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Reader, _, stderr io.Writer) error {
 	// "key" times the config read and the read-only look that decides
 	// whether to rebuild, "open" the read-write open and its migrations,
@@ -80,7 +83,10 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 	defer lock.unlock()
 	key := gold.MaterializeKey{ConfigHash: gold.HashConfig(raw), EngineVersion: engineVersion(),
 		AsOf: anchorToDay(g.clock().UTC(), true).Unix()}
-	same, err := materializeInputsSame(ctx, cfg, key)
+	warn := func(db *sql.DB) {
+		warnUnconvertible(ctx, db, g.ConfigPath, cfg.DefaultCurrency, "wealthdb", stderr)
+	}
+	same, err := materializeInputsSame(ctx, cfg, key, warn)
 	if err != nil {
 		return err
 	}
@@ -122,6 +128,7 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 	if err := runMaterializePhases(ctx, stderr, db, p, webMaterializePhases); err != nil {
 		return err
 	}
+	warn(db)
 	closing := time.Now()
 	if err := gold.WriteMaterializeKey(ctx, db, gold.WebMaterializeScope, key); err != nil {
 		return err
@@ -215,7 +222,9 @@ func executableHash() (string, error) {
 // holds now. The look is read-only, so a gold that matches is left
 // untouched. A gold with a migration still to apply is not the same:
 // the read-write open applies it, and the tables it adds are read.
-func materializeInputsSame(ctx context.Context, cfg *config.Config, key gold.MaterializeKey) (bool, error) {
+// whenSame, when set, reads a gold that is the same through the look's
+// own handle, before it closes: no read-write open follows that could.
+func materializeInputsSame(ctx context.Context, cfg *config.Config, key gold.MaterializeKey, whenSame func(*sql.DB)) (bool, error) {
 	db, err := retryGoldLock(ctx, func() (*sql.DB, error) {
 		return gold.Open(cfg.GoldDB, gold.ModeReadOnly)
 	})
@@ -234,6 +243,12 @@ func materializeInputsSame(ctx context.Context, cfg *config.Config, key gold.Mat
 	if err != nil {
 		return false, err
 	}
-	return ok && stored.EngineVersion == key.EngineVersion &&
-		stored.LoadKey == load && stored.ConfigHash == key.ConfigHash && stored.AsOf == key.AsOf, nil
+	if !ok || stored.EngineVersion != key.EngineVersion ||
+		stored.LoadKey != load || stored.ConfigHash != key.ConfigHash || stored.AsOf != key.AsOf {
+		return false, nil
+	}
+	if whenSame != nil {
+		whenSame(db)
+	}
+	return true, nil
 }

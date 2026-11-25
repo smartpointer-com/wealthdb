@@ -615,11 +615,21 @@ func (s *mcpServer) runFamily(ctx context.Context, spec toolSpec, a *toolArgs) (
 	}
 
 	var rows reportRows
+	// A view in an output currency says in its header which currencies
+	// of money gold holds amounts in that do not convert to it: the
+	// figures leave those amounts out. A check that fails says nothing.
+	var unconvertible []string
 	if err := s.withGold(ctx, cfg, func(db *sql.DB) (err error) {
+		if fam.currency && fam.view(req.view).ownCurrency == "" {
+			unconvertible, _ = unconvertibleMoney(ctx, db, req.currency)
+		}
 		rows, err = rep.fetch(ctx, db)
 		return err
 	}); err != nil {
 		return toolOutput{}, err
+	}
+	if note := unconvertibleNote(unconvertible, req.currency); note != "" {
+		notes = append(notes, note)
 	}
 	rs := newResultSet(rep, rows, s.privacy)
 	filters := make([]rowFilter, 0, len(named))

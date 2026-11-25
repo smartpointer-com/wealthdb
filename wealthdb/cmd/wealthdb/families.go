@@ -576,7 +576,10 @@ func (fam *family) defaultRequest(view, currency string, now time.Time, horizon 
 
 // runReport is a report view on the CLI: its flags, the options its
 // family settles, the window and the config in the family's order, then
-// the report, written with -C, -F, -f and -p.
+// the report, written with -C, -F, -f and -p. A view in an output
+// currency first says on stderr which currencies gold holds amounts in
+// that do not convert to it (openGoldForReport): the report prints as
+// it does without the line, and leaves those amounts out.
 func runReport(ctx context.Context, g globalFlags, fam *family, view string, args []string, stdout, stderr io.Writer) error {
 	v := fam.view(view)
 	name, prefix := "wealthdb "+fam.name, fam.name
@@ -646,6 +649,9 @@ func runReport(ctx context.Context, g globalFlags, fam *family, view string, arg
 	}
 	out := rf.output(fmtChoice, fam, req, cfg, now)
 	out.prefix = prefix
+	if fam.currency && v.ownCurrency == "" {
+		open = func() (*sql.DB, error) { return openGoldForReport(ctx, g, cfg, req.currency, stderr) }
+	}
 	return writeReport(ctx, fam.build(cfg, req), out, open, stdout)
 }
 

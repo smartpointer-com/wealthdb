@@ -61,6 +61,9 @@ See docs/DESIGN.md §8 for the load semantics.`)
 	if err != nil {
 		return err
 	}
+	// A load of one source is a step among several: the source of
+	// exchange rates may be the next one loaded.
+	run.oneSource = id != ""
 
 	// load mutates the live gold file: gate for write, then open RW.
 	db, lock, err := openGoldForWrite(g, cfg, "load", missingGoldMsg(g.ConfigPath))
@@ -226,7 +229,10 @@ type loadRun struct {
 	cfg  *config.Config
 	// configPath is the config the run read: a command a line names
 	// reads it too (commandFor, collectFor).
-	configPath     string
+	configPath string
+	// oneSource: the run is `load <id>`, which does not end with the
+	// line on currencies that do not convert (finish).
+	oneSource      bool
 	in             loadInputs
 	stdout, stderr io.Writer
 	// priorTransactions: gold held transactions before the run, so a
@@ -368,7 +374,11 @@ func realizedLotsNote(r *loader.LoadResult) string {
 // finish ends a load once its sources are in: the config stamps, then
 // carry when it is set, then the gold passes. A failed stamp or pass is
 // reported and does not stop the rest; the failures come back joined.
-// A failed carry stops the run and comes back alone.
+// A failed carry stops the run and comes back alone. The last line
+// names the currencies of money gold now holds amounts in that do not
+// convert to the config's currency (warnUnconvertible), beside the
+// pointers of the load. A load of one source (oneSource) leaves it
+// out.
 func (r loadRun) finish(ctx context.Context, db *sql.DB, carry func() error) error {
 	stampErr := stampConfig(ctx, db, r.cfg, r.in, r.verb, r.stdout, r.stderr)
 	if carry != nil {
@@ -376,7 +386,11 @@ func (r loadRun) finish(ctx context.Context, db *sql.DB, carry func() error) err
 			return err
 		}
 	}
-	return errors.Join(stampErr, runGoldPasses(ctx, db, r.cfg, r.in.enrichment, r.priorTransactions, r.verb, r.stdout, r.stderr))
+	err := errors.Join(stampErr, runGoldPasses(ctx, db, r.cfg, r.in.enrichment, r.priorTransactions, r.verb, r.stdout, r.stderr))
+	if !r.oneSource {
+		warnUnconvertible(ctx, db, r.configPath, r.cfg.DefaultCurrency, r.verb, r.stdout)
+	}
+	return err
 }
 
 // sourceArg reads the `<silver_source_id> | -a` argument the

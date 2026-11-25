@@ -83,6 +83,11 @@ type Actions struct {
 	Reset func(id string) error
 	// Loaded are the sources the database at gold holds.
 	Loaded func(gold string) ([]string, error)
+	// Unconvertible are the currencies of money the database at gold
+	// holds amounts in that no exchange rate connects to currency: the
+	// reports in currency leave those amounts out. Nil: the setup reads
+	// the need for exchange rates off the config alone.
+	Unconvertible func(gold, currency string) ([]string, error)
 	// TestModel sends the model a short question and returns its reply.
 	// A failure the server answered is a *ModelRefused.
 	TestModel func(m config.ModelConfig) (string, error)
@@ -211,6 +216,10 @@ type Step struct {
 	Command, Does string
 }
 
+// todoWidth is the most characters a line of a step's Does takes: the
+// block's rule less the indent of the line.
+const todoWidth = 72 - 6
+
 // ToDo is the block a setup command ends with: the commands to run
 // next, numbered, each on a line of its own with space around it,
 // between two rules. It stands apart from the text before it, so it
@@ -240,8 +249,9 @@ func ToDo(p Palette, steps []Step) string {
 
 // todo are the commands this setup leaves to run: the database's
 // creation, the first sign-in of each collector without data, the load
-// while a source is not loaded, and what this run's changes call for
-// (setup.then). While a wizard step has no answer, the setup itself comes
+// while a source is not loaded, the setup's own banks section while an
+// exchange-rate source is needed (fxHint), and what this run's changes
+// call for (setup.then). While a wizard step has no answer, the setup itself comes
 // first, in place of the database and the data.
 func (w *setup) todo() []Step {
 	var steps []Step
@@ -259,6 +269,10 @@ func (w *setup) todo() []Step {
 			unloaded = unloaded || !loaded[e.src.ID]
 		}
 		steps = append(steps, collectSteps(feedsOf(es), unloaded, w.opts.Collect, w.cmd("load -a"))...)
+		if fx, ok := fxSource(); ok && w.fxHint(es) != "" {
+			steps = append(steps, Step{w.cmd("config banks"), strings.Join(wrap(
+				"Adds "+fx.Display+", so that the reports can convert amounts in another currency.", todoWidth), "\n")})
+		}
 	}
 	return append(steps, w.then...)
 }

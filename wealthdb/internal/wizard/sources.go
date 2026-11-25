@@ -641,33 +641,92 @@ func (w *setup) loaded() map[string]bool {
 	return out
 }
 
-// fxHint is the line that says an FX source is needed: a source whose
-// accounts are usually in a currency other than the reports', and no
-// source that states exchange rates. Empty when the config shows no
-// such case.
-func fxHint(es []entry, currency string) string {
-	if currency == "" {
+// fxSource is the collector the setup offers for exchange rates, as
+// the catalogue states it; false when no adapter registers it.
+func fxSource() (silver.Collector, bool) {
+	return silver.CollectorNamed("fred")
+}
+
+// statesFX says a source of es states exchange rates.
+func statesFX(es []entry) bool {
+	for _, e := range es {
+		for _, f := range e.feeds {
+			if c, ok := silver.CollectorNamed(f.Collector); ok && c.FX {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// unconvertible are the currencies the database holds amounts in that
+// no exchange rate connects to currency (Actions.Unconvertible); none
+// when there is no database, it cannot be read, or the setup has no such
+// action.
+func (w *setup) unconvertible(currency string) []string {
+	if w.opts.Actions.Unconvertible == nil || !w.goldExists() {
+		return nil
+	}
+	out, err := w.opts.Actions.Unconvertible(w.goldPath(), currency)
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
+// fxHint is the line that says the exchange-rate source is needed,
+// while no source of es states exchange rates. It applies in three
+// cases, the first that holds:
+//
+//   - the database holds amounts in a currency no rate connects to the
+//     reports' (unconvertible): the line names the currencies;
+//   - a source's accounts are usually in a currency other than the
+//     reports', by its group;
+//   - a source of no one country, which can hold accounts in any
+//     currency. Market and reference data holds no account.
+//
+// Empty when none holds.
+func (w *setup) fxHint(es []entry) string {
+	currency := w.currency()
+	fx, ok := fxSource()
+	if currency == "" || !ok || statesFX(es) {
 		return ""
 	}
-	var other *silver.Collector
+	if missing := w.unconvertible(currency); len(missing) > 0 {
+		return fmt.Sprintf("The reports are in %s, and the database holds amounts in %s with no exchange rate to %s. "+
+			"Add %s so the reports can convert them.", currency, joinAnd(missing), currency, fx.Display)
+	}
+	var other, anywhere *silver.Collector
 	for _, e := range es {
 		for _, f := range e.feeds {
 			c, ok := silver.CollectorNamed(f.Collector)
-			if !ok {
+			if !ok || c.Group == silver.GroupMarketData {
 				continue
 			}
-			if c.FX {
-				return ""
-			}
-			if cur := c.Group.Currency(); cur != "" && cur != currency && other == nil {
+			switch cur := c.Group.Currency(); {
+			case cur == "" && anywhere == nil:
+				anywhere = &c
+			case cur != "" && cur != currency && other == nil:
 				other = &c
 			}
 		}
 	}
-	if other == nil {
-		return ""
+	switch {
+	case other != nil:
+		return fmt.Sprintf("The reports are in %s and %s reports in %s. Add %s so the reports can convert.",
+			currency, other.Display, other.Group.Currency(), fx.Display)
+	case anywhere != nil:
+		return fmt.Sprintf("The reports are in %s. %s can hold accounts in other currencies. Add %s so the reports can convert them.",
+			currency, anywhere.Display, fx.Display)
 	}
-	fred, _ := silver.CollectorNamed("fred")
-	return fmt.Sprintf("The reports are in %s and %s reports in %s. Add %s so the reports can convert.",
-		currency, other.Display, other.Group.Currency(), fred.Display)
+	return ""
+}
+
+// joinAnd is the names joined for a sentence: "a", "a and b",
+// "a, b and c".
+func joinAnd(names []string) string {
+	if len(names) == 1 {
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }

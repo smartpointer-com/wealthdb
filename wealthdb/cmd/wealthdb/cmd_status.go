@@ -73,7 +73,7 @@ and -p reach the two money columns; marked_pct does not move.`)
 		return err
 	}
 	if *marks {
-		return runStatusMarks(ctx, g, fs, rf, *verbose, stdout)
+		return runStatusMarks(ctx, g, fs, rf, *verbose, stdout, stderr)
 	}
 	if isSet(fs, "f", "format", "C", "columns", "F", "filter", "x", "currency", "p", "privacy") {
 		return errs.Newf(errs.ExitUsage, "status: -f, -C, -F, -x and -p belong to --marks")
@@ -102,8 +102,9 @@ and -p reach the two money columns; marked_pct does not move.`)
 }
 
 // runStatusMarks is `status --marks`. Its positionals are a window, not a
-// source.
-func runStatusMarks(ctx context.Context, g globalFlags, fs *flag.FlagSet, rf *reportFlags, verbose bool, stdout io.Writer) error {
+// source. Its two money columns are in the output currency, so it says
+// on stderr what does not convert to it, as a report does (runReport).
+func runStatusMarks(ctx context.Context, g globalFlags, fs *flag.FlagSet, rf *reportFlags, verbose bool, stdout, stderr io.Writer) error {
 	if verbose {
 		return errs.Newf(errs.ExitUsage, "status: --marks takes no -v")
 	}
@@ -117,7 +118,7 @@ func runStatusMarks(ctx context.Context, g globalFlags, fs *flag.FlagSet, rf *re
 		return err
 	}
 	req := request{view: "marks", currency: outCcy, from: fromEpoch, to: toEpoch}
-	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
+	open := func() (*sql.DB, error) { return openGoldForReport(ctx, g, cfg, outCcy, stderr) }
 	return writeReport(ctx, marksReport(req), rf.output(fmtChoice, marksFamily, req, cfg, g.clock()), open, stdout)
 }
 
@@ -140,9 +141,10 @@ func buildMarkColumnRegistry(outCcy string) []columnSpec[gold.MarkRow] {
 	}
 }
 
-// runStatusOverview prints a line per configured source. The collect
-// command it names for a source with no data yet reads the config at
-// configPath (collectFor).
+// runStatusOverview prints a line per configured source, then a line
+// for the currencies gold holds amounts in that do not convert to the
+// config's currency (warnUnconvertible). The commands it names read the
+// config at configPath (collectFor, setupCommand).
 func runStatusOverview(ctx context.Context, db *sql.DB, cfg *config.Config, configPath string, verbose bool, stdout io.Writer) {
 	if len(cfg.SilverSources) == 0 {
 		fmt.Fprintln(stdout, "status: no silver sources configured")
@@ -152,6 +154,7 @@ func runStatusOverview(ctx context.Context, db *sql.DB, cfg *config.Config, conf
 	for i := range cfg.SilverSources {
 		printOneLineStatus(ctx, results[i], &cfg.SilverSources[i], configPath, verbose, stdout)
 	}
+	warnUnconvertible(ctx, db, configPath, cfg.DefaultCurrency, "status", stdout)
 }
 
 // sourceIDs are the configured sources' ids, in config order.

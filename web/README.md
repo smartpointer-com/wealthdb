@@ -47,6 +47,13 @@ defaults to 3000. The dashboards open in the config's
 `default_currency` when it is USD, CHF, EUR or GBP, and in USD
 otherwise; each dashboard's Currency picker switches between the four.
 
+`wealthdb web start` and `wealthdb web refresh` say when gold holds
+amounts in a currency of money with no exchange rate to the config's
+currency. The dashboards then show nothing of those amounts. The line
+names the currencies and the command that adds a source of exchange
+rates
+([DESIGN.md §10.6](../wealthdb/docs/DESIGN.md#106-currency-conversion-with-historic-fx-rates)).
+
 Operational knobs are environment variables, not config: the image,
 the container name, the data dir, the address family to bind, and the
 admin login. `wealthdb web help` lists them.
