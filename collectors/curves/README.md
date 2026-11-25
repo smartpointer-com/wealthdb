@@ -150,9 +150,12 @@ reclaims it.
 
 ### In wealthdb.cfg
 
+`wealthdb config banks` adds the `silver_sources` entry; by hand it is
+the one below. The `yield` block is written by hand.
+
 ```jsonc
 "silver_sources": [
-  { "id": "curves", "kind": "curves", "path": "$XDG_DATA_HOME/wealthdb/curves/curves.db" }
+  { "id": "curves", "kind": "curves", "path": "${WEALTHDB_DATA_ROOT}/curves/curves.db" }
 ],
 "yield": {
   "curves": {

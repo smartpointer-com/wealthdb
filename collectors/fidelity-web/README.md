@@ -106,8 +106,9 @@ make test-fidelity-web
 
 fidelity-web is a hybrid collector. `download`, `vnc-login` and
 `explore` run in the Docker image. `load`, `prune` and `recompress` run
-on a host venv built from `requirements.txt`. `wealthdb-collect fidelity-web build`
-builds the image alone. The image builds on the shared
+on a host venv built from `requirements.txt`.
+`wealthdb-collect fidelity-web build` builds the image alone, once its
+base images are built. The image builds on the shared
 `wealthdb/base-camoufox`
 ([`shared/images/base-camoufox.Dockerfile`](../../shared/images/base-camoufox.Dockerfile)),
 which pins Camoufox and the Playwright release that matches it.
@@ -139,8 +140,8 @@ wealthdb-collect fidelity-web load                         # bronze → silver
 wealthdb-collect fidelity-web prune --dry-run              # preview the disk reclaim
 ```
 
-`wealthdb-collect fidelity-web help` lists the verbs, and `download --help` the flags.
-A few behaviours worth knowing:
+`wealthdb-collect fidelity-web help` lists the verbs, and
+`download --help` the flags. A few behaviours worth knowing:
 
 - `--mode` picks one phase: `positions`, `activity`, `documents`,
   `balances` or `performance`. `all` (the default) runs every phase.

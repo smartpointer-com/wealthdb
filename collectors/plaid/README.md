@@ -267,9 +267,9 @@ Some institutions leave one out.
 ### Who the data is shared with
 
 The last question is Plaid's own text for an application on the free
-Trial plan, with the application's name in front. Nobody is testing anything with the data. "wealthdb on your
-computer" is the name the collector sends, and it stands for your own
-installation:
+Trial plan, with the application's name in front. Nobody is testing
+anything with the data. "wealthdb on your computer" is the name the
+collector sends, and it stands for your own installation:
 
 - The request is made with your own Plaid account and your own keys.
   The access token Plaid issues is stored on your computer.
@@ -380,11 +380,12 @@ column. [DESIGN.md §6](DESIGN.md#6-the-load-verb) says how runs load.
 ## Gold
 
 Each linked login's silver database is a gold source of its own, of
-kind `plaid`. Add one entry per Item to `silver_sources` in the gold
-config:
+kind `plaid`, with one entry per Item in `silver_sources` of the gold
+config. `wealthdb config banks` adds one entry per linked login; by
+hand it is:
 
 ```json
-{"id": "broker", "kind": "plaid", "path": "<data-dir>/broker/broker.db"}
+{"id": "broker", "kind": "plaid", "path": "${WEALTHDB_DATA_ROOT}/plaid/broker/broker.db"}
 ```
 
 Reports then name the source `broker`. The

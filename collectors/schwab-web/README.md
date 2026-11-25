@@ -135,8 +135,9 @@ fresh the cookies and `_abck` on disk are.
 So sign-in and scrape share one continuous Firefox session. `download`
 signs in, walks Statements & Tax Forms and Transaction History, and
 exits. Each `download` pays one 2FA challenge. `login` is a no-op that
-says so. With a credential missing, it says what to set up first. `download --check` reports whether the stored profile is
-alive; after Firefox has closed, it reports DEAD.
+says so. With a credential missing, it says what to set up first.
+`download --check` reports whether the stored profile is alive; after
+Firefox has closed, it reports DEAD.
 
 On a new IP, Schwab may add a device-trust prompt on top of 2FA the
 first time. The profile dir under `/secrets/schwab-web-profile/` then
@@ -145,7 +146,7 @@ carries enough state for later sign-ins.
 ## Build
 
 ```sh
-make build-schwab-web    # or: wealthdb-collect schwab-web build
+make build-schwab-web    # the base images, then the image
 make test-schwab-web
 ```
 
@@ -193,8 +194,8 @@ wealthdb-collect schwab-web load                             # bronze → silver
 wealthdb-collect schwab-web prune --dry-run                  # preview the disk reclaim
 ```
 
-`wealthdb-collect schwab-web help` lists the verbs, and `download --help` the flags. A
-few behaviours worth knowing:
+`wealthdb-collect schwab-web help` lists the verbs, and
+`download --help` the flags. A few behaviours worth knowing:
 
 - `--mode` is `statements`, `transactions` or `all` (the default).
 - `--lookback` sets where the window starts; the default is 90 days
@@ -260,8 +261,8 @@ $XDG_DATA_HOME/wealthdb/schwab-web/
 `<suffix>` is the account-number suffix Schwab shows beside the account
 name. [DESIGN.md §6](DESIGN.md#6-bronze-artefact-layout-for-reference)
 has the full layout and what `load` parses from each file. Inside the
-container (`wealthdb-collect schwab-web sh`), `python3 pdf_parsers.py <pdf>...` prints
-a statement's parse as JSON.
+container (`wealthdb-collect schwab-web sh`),
+`python3 pdf_parsers.py <pdf>...` prints a statement's parse as JSON.
 
 ## Reclaiming disk (`prune`)
 

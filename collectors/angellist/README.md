@@ -84,12 +84,14 @@ The silver tables and their columns are in
 `wealthdb/internal/silver/angellist/` projects that silver into the
 canonical model ([DESIGN.md § Gold mapping](DESIGN.md#gold-mapping)). A
 run reads the source once `wealthdb.cfg` lists it under `silver_sources`.
+`wealthdb config banks` adds this entry.
 
 ## Quick start
 
 ```sh
-# 1. Build the image (stock Firefox + Camoufox base; ~1-2 min on warm cache).
-wealthdb-collect angellist build
+# 1. From the repo root, build the image and its base images (stock
+#    Firefox + Camoufox base; ~1-2 min on warm cache).
+make build-angellist
 
 # 2. Lift a session. A still-valid saved session exits at once with the
 #    cookie refreshed. Otherwise stock Firefox opens under VNC: connect,

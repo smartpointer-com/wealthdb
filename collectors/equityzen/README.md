@@ -86,8 +86,9 @@ warns that the flag has no effect.
 ## Examples
 
 ```sh
-# Build the image (on the shared base-camoufox image).
-wealthdb-collect equityzen build
+# From the repo root, build the image and the shared base-camoufox
+# image under it.
+make build-equityzen
 
 # Credentials: ~/.secrets/equityzen.env, chmod 0600.
 #   EQUITYZEN_USERNAME='buyer@example.com'   # alias: EQUITYZEN_EMAIL
@@ -154,7 +155,7 @@ the tables `offerings`, `positions`, `cash_flows`, `tax_documents`,
 [DESIGN.md §5](DESIGN.md#5-silver-schema) describes each table, and
 [§6](DESIGN.md#6-gold-adapter) the gold adapter that reads them. A gold
 run includes the source once `wealthdb.cfg` lists this silver DB under
-`silver_sources`.
+`silver_sources`. `wealthdb config banks` adds this entry.
 
 ## Run status and pruning
 

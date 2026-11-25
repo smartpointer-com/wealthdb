@@ -77,8 +77,8 @@ detail.
 ## Quick start
 
 ```sh
-# 1. Build the image.
-wealthdb-collect cointracking build
+# 1. From the repo root, build the image and its base images.
+make build-cointracking
 
 # 2. Put the credentials in the env file and chmod it 0600.
 #    cat > ~/.secrets/cointracking.env <<'EOF'

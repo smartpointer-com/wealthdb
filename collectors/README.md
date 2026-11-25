@@ -43,7 +43,7 @@ A collector's runtime is set by whether it ships a Dockerfile (the
 | Runtime | Marker | Invocation |
 | --- | --- | --- |
 | **Host venv** | a `requirements.txt`, no Dockerfile — no browser and no container | A wrapper runs the collector's `.py` under its `.venv`. |
-| **Docker** | a Dockerfile + `entrypoint.sh` — browser-based scrapers run headed inside the container | A host wrapper script drives `docker run`: `./<tool> {build,login,download,load}`. `prune` runs on the host. |
+| **Docker** | a Dockerfile + `entrypoint.sh`. The browser-based scrapers run headed inside the container | The wrapper drives `docker run`: `wealthdb-collect <name> {build,login,download,load}`. `prune` runs on the host. |
 
 Two collectors are **hybrid**, and a `.host-venv` marker tells the
 Makefile to build both halves and to test on the host venv.
@@ -251,15 +251,24 @@ wrapper then calls `wrapper_init`, prints its help when
 `wrapper_wants_help`, and ends with `wrapper_main "$@"`. A wrapper whose
 `login` folds into `download` calls `wrapper_login_folds` before that.
 A bare `login` then prints a notice and starts no container.
-`wrapper_main` and `wrapper_login_folds` run the setup check first. `wrapper_main`
-runs `build`, and runs `prune` on the host through
+`wrapper_main` and `wrapper_login_folds` run the setup check first.
+`wrapper_main` runs `build`, and runs `prune` on the host through
 `wrapper_host_prune`; fidelity-web and schwab-api route `prune`
 themselves. The library bind-mounts the dirs listed under Docker mounts
 and Caches, plus the checkout over `/app` (and `/silver` and `/debug`
-when applicable), and runs as `--user $(id -u):$(id -g)`. It runs only
-an image built on this computer: a missing image stops the run with
-`wealthdb-collect <name> build`, and every run passes `--pull=never`,
-so no registry is asked for an image of that name.
+when applicable), and runs as `--user $(id -u):$(id -g)`.
+
+The library runs only an image built on this computer. A missing image
+stops the run and names `make build-<name>`, which builds the base
+images first. Every run passes `--pull=never`, so no registry is asked
+for an image of that name. `wealthdb-collect <name> build` refuses when
+a `wealthdb/` base image is not local, so no registry is asked for one
+either. An installed copy builds no image: there the message says to
+run the collector from a checkout.
+
+In a tree of the native engine, a verb that writes silver runs its
+container with a lock on the database held
+([NATIVE.md, "Collectors and the lock"](../wealthdb/docs/NATIVE.md#collectors-and-the-lock)).
 
 A **host-venv** wrapper (for tools that need no browser) sets `NAME`,
 sources [`shared/wrappers/host-lib.sh`](../shared/wrappers/host-lib.sh)
@@ -293,7 +302,7 @@ sourced.
 | Keyword | Value | Meaning |
 | --- | --- | --- |
 | `envfile` | `FILE.env [FALLBACK.env...]` | A file the sign-in reads from the secrets folder. The first name that exists is read. Several lines: several files. With none, `<name>.env`. |
-| `var` | `NAME need kind shape label` | A variable. `need` is `required` or `optional`. `kind` is `secret` or `plain`. `shape` is the placeholder of the template, with no space. `label` is the rest of the line. |
+| `var` | `NAME need kind shape label` | A variable. `need` is `required` or `optional`. `kind` is `secret` or `plain`; it is for the reader, and the wrappers do not use it. `shape` is the placeholder of the template, with no space. `label` is the rest of the line. |
 | `alias` | `NAME OTHER` | `OTHER` is accepted in place of `NAME`. |
 | `flag` | `NAME --flag` | `--flag VALUE` on the command line gives `NAME`. |
 | `keyfile` | `FILE label` | A file that must be in the secrets folder, such as an SSH key. |

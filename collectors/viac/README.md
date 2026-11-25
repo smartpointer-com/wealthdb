@@ -75,7 +75,7 @@ benefits, a similar Airlock-shaped auth stack).
 ## Examples
 
 ```sh
-wealthdb-collect viac build                               # build the image
+make build-viac                                           # from the repo root: the image and its base images
 wealthdb-collect viac login --check                       # session alive? exit 0 or 1; no SMS
 wealthdb-collect viac login                               # mint a session; sends an SMS mTAN
 wealthdb-collect viac download --dry-run                  # walk the JSON endpoints; write nothing

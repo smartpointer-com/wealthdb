@@ -58,7 +58,7 @@ admin login. `wealthdb web help` lists them.
 #    or download Metabase for a native server.
 wealthdb web build         # or: make build-web
 
-# 2. Enable it in wealthdb.cfg (see above), then start it. This snapshots
+# 2. Turn the dashboards on (see above), then start them. This snapshots
 #    gold, runs Metabase, and AUTO-PROVISIONS it: creates the admin,
 #    pre-adds the gold database, and creates the report models mirroring
 #    the CLI plus the dashboards — no "tell us about your company" wizard.

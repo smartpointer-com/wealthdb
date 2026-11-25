@@ -74,7 +74,7 @@ similar REST + mTAN shape).
 ## Examples
 
 ```sh
-wealthdb-collect relevate build                                   # build the image
+make build-relevate                                               # from the repo root: the image and its base images
 wealthdb-collect relevate login --check                           # session alive? no mTAN
 wealthdb-collect relevate login                                   # mint a session; sends an SMS mTAN
 wealthdb-collect relevate download --dry-run                      # read the two listings, log the plan, write nothing

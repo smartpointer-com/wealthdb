@@ -43,8 +43,9 @@ wealthdb config mcp-server
 ```
 
 It writes the `mcp` block of `wealthdb.cfg`:
-`"mcp": { "enabled": true, "port": 3300 }`. `port` defaults to 3300. The server needs no image of its own: build
-the engine as usual (`wealthdb build`).
+`"mcp": { "enabled": true, "port": 3300 }`. `port` defaults to 3300.
+The server needs no image of its own: build the engine as usual
+(`wealthdb build`).
 
 ## Start it and connect a client
 
@@ -197,10 +198,10 @@ the redacted stdio form.
 
 ## Security
 
-- It listens on `127.0.0.1` only, and on `[::1]` as a container.
-  `WEALTHDB_MCP_BIND=v6` moves a native server to `[::1]`. From another
-  machine, use an SSH port-forward: `ssh -L 3300:127.0.0.1:3300
-  <this-host>`.
+- It listens on loopback only: `127.0.0.1`, and as a container `[::1]`
+  too. `WEALTHDB_MCP_BIND=v6` moves a native server to `[::1]`. From
+  another machine, use an SSH port-forward:
+  `ssh -L 3300:127.0.0.1:3300 <this-host>`.
 - Every HTTP request needs the bearer token. It is generated on first
   start into `$XDG_DATA_HOME/wealthdb/mcp/token` (chmod 600), or taken
   from `WEALTHDB_MCP_TOKEN` (for example in

@@ -240,11 +240,11 @@ Underneath, each component also builds directly:
 
 - **Gold engine** (`wealthdb/`): `./wealthdb build` then
   `./wealthdb <subcommand>`; tests via `./wealthdb-test ./...`, any
-  other Go command via `./wealthdb-go <subcommand>`. Both run the
+  other Go command via `./wealthdb-go <subcommand>`. All three run the
   image's toolchain — no host Go, and `make update` resolves the
   module graph there too, so the Dockerfile's base-image tag is the
   only place the Go version is declared. The one exception is a tree
-  configured for the native engine: there the three run the Go that
+  configured for the native engine: there they run the Go that
   `./configure` recorded, and `make update` refuses the Go modules.
   Install no toolchain on a machine to test that path: `make
   test-native` brings its own.

@@ -26,11 +26,12 @@ Federal Reserve, pulled via the [FRED API](https://fred.stlouisfed.org/docs/api/
 | [`prune.py`](prune.py) | Reclaim bronze disk: delete non-complete (crashed) run dirs and `--debug` traces. A complete dump's `load` inputs are never touched. |
 
 FRED authenticates with an API key, not a session, so a bare `login` is
-a no-op. Without a key, it says how to get and store one. `login --check` is the credential probe. It resolves the key
-and asks FRED for a single observation, so a key that is present but
-rejected fails there rather than at the next `download`. It writes
-nothing. `download --dry-run` fetches with the key and writes no bronze.
-Neither one mints a session or raises a challenge.
+a no-op. Without a key, it says how to get and store one.
+`login --check` is the credential probe. It resolves the key and asks
+FRED for a single observation, so a key that is present but rejected
+fails there rather than at the next `download`. It writes nothing.
+`download --dry-run` fetches with the key and writes no bronze. Neither
+one mints a session or raises a challenge.
 
 ## Series
 
@@ -192,13 +193,15 @@ For example, a deployment whose daily rates come from `ubs-psn` gives
 ```jsonc
 "silver_sources": [
   { "id": "ubs",  "kind": "ubs",  /* … */ "fx_priority": 0 },
-  { "id": "fred", "kind": "fred", "path": "$XDG_DATA_HOME/wealthdb/fred/fred.db", "fx_priority": 1 }
+  { "id": "fred", "kind": "fred", "path": "${WEALTHDB_DATA_ROOT}/fred/fred.db", "fx_priority": 1 }
 ]
 ```
 
 A deployment with no daily FX source can add `fred` and leave
-priorities unset; `fred` then supplies every rate. After adding the
-source, `wealthdb load fred` merges it into gold.
+priorities unset; `fred` then supplies every rate.
+`wealthdb config banks` adds the `fred` entry, and `fx_priority` is set
+by hand in the file. After adding the source, `wealthdb load fred`
+merges it into gold.
 
 ## Caveats
 

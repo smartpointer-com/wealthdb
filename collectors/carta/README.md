@@ -83,8 +83,9 @@ pass, the run's dominant cost, and the manifest records `skipped=true`.
 ## Quick start
 
 ```sh
-# 1. Build the image (on top of the shared base-camoufox image).
-wealthdb-collect carta build
+# 1. From the repo root, build the image and the shared base-camoufox
+#    image under it.
+make build-carta
 
 # 2. Put the credentials in ~/.secrets/carta.env (chmod 0600):
 #      CARTA_USERNAME=login-email

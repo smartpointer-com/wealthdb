@@ -110,7 +110,7 @@ gold layer never asks for secrets.
 ### 4.1 Subcommands
 
 ```
-wealthdb config [--wizard] [<section>] (setup) The setup: a wizard, then a menu of sections; edits the config file.
+wealthdb config [<section> | validate] (setup) The setup: a wizard, then a menu of sections; edits the config file. validate checks it.
 wealthdb init                         (RW)    Initialise an empty gold DB at the configured path.
 wealthdb load    <id> | -a            (RW)    Merge new silver snapshots into gold.
 wealthdb reset   <id> | -a            (RW)    Purge a silver source's data from gold.
@@ -146,10 +146,12 @@ the engine binary.
 Four hidden commands serve the host scripts and the collectors.
 `help` does not list them.
 
-- `config-env web|mcp|sources` prints one block of the resolved config
-  as shell `KEY=VALUE` lines. The `web` and `mcp` wrappers read their
+- `config-env web|mcp|sources|collectors` prints one block. `web`,
+  `mcp` and `sources` each print a block of the resolved config as
+  shell `KEY=VALUE` lines. The `web` and `mcp` wrappers read their
   settings through it. `sources` prints one line per silver path, for
-  host scripts.
+  host scripts. `collectors` reads no config: it prints the name of
+  each collector the setup offers, one per line.
 - `web-materialize` rewrites the report and serving tables
   ([web/DESIGN.md §8](../../web/DESIGN.md#8-materialized-returns-gains-exposure-yield-and-serving-tables)).
 - `refdata-wanted` prints the wanted list
@@ -177,11 +179,19 @@ gold DB at all.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `-c`, `--config` | `$WEALTHDB_CONFIG`, else `${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg` | Path to config file. Tilde (`~`) and `$HOME` are expanded. |
+| `-c`, `--config` | `$WEALTHDB_CONFIG`, else `${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg` | Path to the config file. A relative path is read against the working directory. |
 | `-r`, `--read-only` | off | Force read-only access even when the gold DB is writeable, as a safety net for exploration. Without this flag, mode is auto-detected from filesystem permissions (§4.10). |
 
 These come before the subcommand. A subcommand's own `-r` (on
 `transactions` and `gains realized`) means "newest first".
+
+Before a host-side command (`web`, `mcp`, `collect`), the launcher
+hands a `-c` path on as `WEALTHDB_CONFIG`, so
+`wealthdb -c <file> web start` reads that config.
+
+When `-c` names a config other than the default one, a message that
+names a `wealthdb` command to run carries the same `-c <file>`:
+`Run 'wealthdb -c <file> init' first`.
 
 ### 4.3 `wealthdb init`
 
@@ -228,6 +238,13 @@ be one that contributed, and loading the rest would rebuild the
 source from part of its feeds. Its load fails with `<id>: its data
 file is missing: <path>`. `load -a` prints that line, loads the other
 sources, and exits 1.
+
+`reload` follows both rules. One id named alone fails as `load <id>`
+does. With `-a` or several ids, it skips a source with no data yet
+with the same line. A source gold has loaded whose file is missing is
+never reset: `reload -a` stops before it builds or swaps anything, and
+an in-place reload leaves that source's rows as they are, reloads the
+others and exits 1 (§9).
 
 ### 4.5 `wealthdb reset <id> | -a`
 
@@ -464,10 +481,16 @@ source.
 
 The setup of the config file at `-c` (default `$WEALTHDB_CONFIG`,
 else `${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg`). `-c` sets up or
-checks a file at any path, to try a setup or keep several. The file is the only
-saved state. Every confirmed answer is written at once, so a run can
-stop at any prompt (q, Ctrl+D or Ctrl+C) and the next run starts from
-what is saved, each prompt showing the saved value as its default.
+checks a file at any path, to try a setup or keep several. The file is
+the only saved state. Every confirmed answer is written at once, so a
+run can stop at any prompt (q, Ctrl+D or Ctrl+C) and the next run
+starts from what is saved, each prompt showing the saved value as its
+default.
+
+q and Ctrl+D exit 0. So does Ctrl+C where the setup reads single keys:
+in the menu, and at the API key, which is not shown. Ctrl+C at any
+other prompt, a hangup or a termination exits 130, after the write
+under way has finished.
 
 The config is in one of four states, read with `config.Load`'s own
 rules:
@@ -498,9 +521,10 @@ says in one line that it goes on, and walks every step pre-filled.
 A setting gets an editor when its value is a choice, a switch, a number
 or the path of a file; one that takes a list or a map of objects is
 edited in the file. Each field shows its value, or the default the
-engine takes, and what it does. Enter keeps it, and `-` puts back the
-default by removing the member, with each block the removal leaves
-empty. Typing the value it holds already writes nothing.
+engine takes, and what it does. Enter keeps it. For a choice, a number
+or a file, `-` puts back the default (the member is removed, with each
+block the removal leaves empty); a switch takes on or off. Typing the
+value it holds already writes nothing.
 
 - **Report options:** `lots.method`, `lots.missing_basis`,
   `spending.internal_transfer_matching.window_days` and
@@ -508,11 +532,12 @@ empty. Typing the value it holds already writes nothing.
   `cashflow.projection.lookback_months`, `yield.horizon_months` and
   `exposure.max_gap_days`, each within the bounds the engine takes.
 - **Ledger files:** `spending.pins`, `income.pins`,
-  `equity_transfers` and `exposure.declarations`. The engine's
-  container mounts only the config and the data folder, so a ledger
-  must be a file in the data folder; it is written through
-  `${WEALTHDB_DATA_ROOT}` when the variable names that folder. A path
-  with no file yet is taken, with a note.
+  `equity_transfers` and `exposure.declarations`. A ledger must be a
+  file in the data folder: the container engine mounts only the config
+  and that folder, and the setup holds a config to what both kinds of
+  engine can read. The path is written through `${WEALTHDB_DATA_ROOT}`
+  when the variable names that folder. A path with no file yet is
+  taken, with a note.
 
 **AI model** sets one model for every member that names one:
 `symbol_resolution.model`, `spending.categorization.model`, and
@@ -553,7 +578,9 @@ that does not parse at that moment is not written over.
 `wealthdb config <section>` opens one section, by its name in lower
 case with hyphens (`banks-and-brokers`, `mcp-server`), its first word
 (`banks`), or the short names `currency`, `model`, `options`,
-`ledgers` and `file`.
+`ledgers` and `file`. A name that is no section exits 2, with or
+without a terminal:
+`wealthdb: config: no section "<name>" (want one of …, or validate)`.
 
 **The wizard** walks Primary currency, Banks and brokers, Dashboards and MCP
 server. It shows the data folder at the top, then a summary of the
@@ -572,9 +599,10 @@ before it so that it reads as an instruction:
   commands are `wealthdb init` when no gold file exists, the collect
   command of each source with no silver yet, `wealthdb load -a` while a
   source is not loaded, the start command of each server the run
-  turned on, and the commands that use a model the run saved. While a wizard step has no answer, the block names the
-  setup command first, in place of the database and the data. With
-  nothing to run there is no block.
+  turned on, and the commands that use a model the run saved. While a
+  wizard step has no answer, the block names the setup command first,
+  in place of the database and the data. With nothing to run there is
+  no block.
 
 **The screen.** Every line the setup prints passes through one layer
 that keeps the spacing: never two blank lines in a row, and one blank
@@ -588,16 +616,16 @@ no terminal. The to-do block of `init` and of the collectors
 takes the same colours.
 
 **The menu** lists every section with its saved value, one entry that
-walks the wizard again, and one that validates the file. On a terminal it reads keys in raw mode:
-Up and Down or a number move, Enter opens, q or Ctrl+C leaves. A
-section's prompts run with the terminal restored. The menu clears the
-screen when it comes back, so a section that printed more than the
-confirmation of a change after the last answer (a check, a list to
-read) waits for Enter first; one that ended at its own question goes
-back at once. With `TERM=dumb` the
-menu is a numbered list read a line at a time. In a window too short
-for the whole menu, the lines around the marked one show, with a note
-that more stand above or below.
+walks the wizard again, and one that validates the file. On a terminal
+it reads keys in raw mode: Up and Down or a number move, Enter opens,
+q or Ctrl+C leaves. A section's prompts run with the terminal
+restored. The menu clears the screen when it comes back, so a section
+that printed more than the confirmation of a change after the last
+answer (a check, a list to read) waits for Enter first; one that ended
+at its own question goes back at once. With `TERM=dumb` the menu is a
+numbered list read a line at a time. In a window too short for the
+whole menu, the lines around the marked one show, with a note that
+more stand above or below.
 
 **Primary currency** takes any case and stores upper case. Its default is the
 saved value, else the currency of the host locale's region, else USD.
@@ -639,22 +667,22 @@ data. For one more bank it asks the bank's name, the one the
 collector's `--item` flag takes, and offers no default. The entry is
 `${WEALTHDB_DATA_ROOT}/plaid/<item>/<item>.db`, and its collect command
 names the login: `wealthdb-collect plaid link --item <item>`, the start
-the catalogue states for a collector that links one login at a time. An svb pick also
-writes an entry for each of svb's other silvers that exists. UBS and
-Schwab entries use the subsources form, with the kind as the id. A
-pick of the second feed adds its subsource to the existing entry; for
-UBS a line then says that pairing the two feeds needs
-`relationships` (§5.1). A source gold has loaded takes no feed without
-data, since its load reads every feed or none (§4.4): the section
-names the collect command instead, and offers the feed once its data
-is there. After a pick the section prints the collect command,
-`wealthdb-collect <collector> login`, on a line of its own with space
-around it, and says to run it after the setup; or it offers a load
-when the silver exists already. The catalogue is listed on the way in
-and when `?` asks for it, and not again after a pick, so the command
-stays on the screen above the prompt. An
-entry in another shape (the path form of a subsource kind, or a file
-no collector writes) shows as "edited by hand" and is left alone.
+the catalogue states for a collector that links one login at a time.
+An svb pick also writes an entry for each of svb's other silvers that
+exists. UBS and Schwab entries use the subsources form, with the kind
+as the id. A pick of the second feed adds its subsource to the
+existing entry; for UBS a line then says that pairing the two feeds
+needs `relationships` (§5.1). A source gold has loaded takes no feed
+without data, since its load reads every feed or none (§4.4): the
+section names the collect command instead, and offers the feed once
+its data is there. After a pick the section prints the collect
+command, `wealthdb-collect <collector> login`, on a line of its own
+with space around it, and says to run it after the setup; or it offers
+a load when the silver exists already. The catalogue is listed on the
+way in and when `?` asks for it, and not again after a pick, so the
+command stays on the screen above the prompt. An entry in another
+shape (the path form of a subsource kind, or a file no collector
+writes) shows as "edited by hand" and is left alone.
 
 When a source's country uses a currency other than
 `default_currency`, and no configured source states exchange rates,
@@ -662,14 +690,14 @@ the section says in one line that FRED is needed to convert (§10.6).
 
 **Dashboards** and **MCP server** ask on or off. The menu also asks the
 port. Turning one on names `wealthdb web start` or `wealthdb mcp
-start` in the same way, and adds it to the to-do block. Every other member of the block (`mcp.auth`, `mcp.insecure`)
-stays as it is.
+start` in the same way, and adds it to the to-do block. Every other
+member of the block (`mcp.auth`, `mcp.insecure`) stays as it is.
 
-**The data folder** is shown, never asked. It is the folder the wrapper
-mounts (§12.2): `WEALTHDB_DATA_ROOT`, else
-`$XDG_DATA_HOME/wealthdb`, else `~/.local/share/wealthdb`. The first
-saved answer writes `gold_db` as `${WEALTHDB_DATA_ROOT}/wealthdb.db`.
-A `gold_db` that names another place is shown as it is and left alone.
+**The data folder** is shown, never asked. It is `WEALTHDB_DATA_ROOT`,
+else `$XDG_DATA_HOME/wealthdb`, else `~/.local/share/wealthdb`; the
+container engine mounts it (§12.2). The first saved answer writes
+`gold_db` as `${WEALTHDB_DATA_ROOT}/wealthdb.db`. A `gold_db` that
+names another place is shown as it is and left alone.
 
 #### Saving
 
@@ -700,10 +728,11 @@ Before a setup, every other command answers with a pointer and exits
 the first steps instead of the listing. `help`, `version` and
 `config-env collectors` answer whatever the config holds.
 
-#### Non-interactive fallback
+#### Without a terminal
 
-When stdin is a file that is not a terminal (a pipe or a redirect),
-`wealthdb config` refuses to run and exits 2.
+When stdin is a pipe or a redirect, the setup refuses to run and
+exits 2: a script cannot answer for a person.
+`wealthdb config validate` asks nothing and runs anywhere.
 
 ### 4.10 Read-only mode
 
@@ -835,7 +864,7 @@ crash.
 | A config with no `default_currency` or no `gold_db` | 2 | `wealthdb: Setup is not finished. Run: wealthdb config` |
 | Usage error: an unknown subcommand, a bad flag or argument | 2 | the `flag` package's own message; `wealthdb: unknown subcommand "<cmd>"` with the usage; or the subcommand's own `wealthdb: <cmd>: <reason>` |
 | RO subcommand on non-existent DB | 3 | `wealthdb: gold database '<path>' does not exist. Run 'wealthdb init' first (requires write access).` |
-| (retired) | 4 | not emitted: `init` on an existing gold file exits 0 (§4.3), and `config` edits an existing config (§4.9). The code stays reserved |
+| (reserved) | 4 | not emitted. `init` on an existing gold file exits 0 (§4.3), and `config` edits an existing config (§4.9) |
 | DuckDB open fails mid-run | 5 | the driver's own error, passed through whole and prefixed by the stage that hit it: `wealthdb: open duckdb "<path>": <driver error>` (or `ping duckdb` / `migrate gold`) |
 | Gold written by a newer wealthdb, or at a newer schema | 5 | `wealthdb: gold "<path>": binary is older than the database's last writer` with both commits and the rebuild command, or `wealthdb: gold "<path>": binary is older than the database's last writer: the database is at schema <N>, and this binary knows schema <M> at most` |
 | Write subcommand while another holds the write mutex | 5 | `wealthdb: '<cmd>' cannot write '<path>': another wealthdb write command (load / reset / reload / compact / lots / categorize / categorizations --forget / resolve-symbols / web-materialize) is running and holds '<path>.wealthdb.lock'. Wait for it to finish and re-run.` |
@@ -1138,15 +1167,13 @@ load. Every path value in the file is expanded the same way:
 3. a path still relative resolves against the config file's
    directory.
 
-Conventional host layout, produced by `wealthdb config`, which writes
-every path through `${WEALTHDB_DATA_ROOT}`.
-The host wrapper mounts the data root at `$WEALTHDB_DATA_ROOT` when
-that is set (§12.2), so a config can write
-`${WEALTHDB_DATA_ROOT}/...` paths:
+Conventional layout, as `wealthdb config` writes it. The launcher
+always gives the engine `WEALTHDB_DATA_ROOT`, the data root, so every
+path in the config is written through `${WEALTHDB_DATA_ROOT}`:
 
 ```
 $XDG_CONFIG_HOME/wealthdb.cfg          config file (this file)
-$XDG_DATA_HOME/wealthdb/               all wealthdb data
+$XDG_DATA_HOME/wealthdb/               the data root: all wealthdb data
 ├── wealthdb.db                        gold DuckDB
 ├── ubs-psn/ubs-psn.db                UBS PSN silver SQLite + bronze dirs
 ├── ubs-web/ubs-web.db                UBS web silver SQLite + bronze dirs
@@ -1158,7 +1185,7 @@ Example config file:
 
 ```json
 {
-    "gold_db":          "$XDG_DATA_HOME/wealthdb/wealthdb.db",
+    "gold_db":          "${WEALTHDB_DATA_ROOT}/wealthdb.db",
     "default_currency": "USD",
     "silver_sources": [
         {
@@ -1166,8 +1193,8 @@ Example config file:
             "kind": "ubs",
             "fx_priority": 0,
             "subsources": [
-                {"kind": "ubs-web", "path": "$XDG_DATA_HOME/wealthdb/ubs-web/ubs-web.db"},
-                {"kind": "ubs-psn", "path": "$XDG_DATA_HOME/wealthdb/ubs-psn/ubs-psn.db"}
+                {"kind": "ubs-web", "path": "${WEALTHDB_DATA_ROOT}/ubs-web/ubs-web.db"},
+                {"kind": "ubs-psn", "path": "${WEALTHDB_DATA_ROOT}/ubs-psn/ubs-psn.db"}
             ],
             "relationships": [
                 {"label": "Main", "web_id": "<web banking_relationship_id>", "psn_id": "SFTPCHxx"}
@@ -1176,17 +1203,17 @@ Example config file:
         {
             "id":   "schwab-retail",
             "kind": "schwab",
-            "path": "$XDG_DATA_HOME/wealthdb/schwab-api/schwab-api.db"
+            "path": "${WEALTHDB_DATA_ROOT}/schwab-api/schwab-api.db"
         },
         {
             "id":   "swissquote-1",
             "kind": "swissquote",
-            "path": "$XDG_DATA_HOME/wealthdb/swissquote/swissquote.db"
+            "path": "${WEALTHDB_DATA_ROOT}/swissquote/swissquote.db"
         },
         {
             "id":   "fred",
             "kind": "fred",
-            "path": "$XDG_DATA_HOME/wealthdb/fred/fred.db",
+            "path": "${WEALTHDB_DATA_ROOT}/fred/fred.db",
             "fx_priority": 1
         }
     ],
@@ -3014,6 +3041,11 @@ compaction and leaves these tables alone, but the per-source reset
 still clears `symbol_resolutions` there. Removing the gold DB and
 re-running `wealthdb init` is the manual fallback.
 
+A reload leaves out what a load leaves out (§4.4). A source with no
+data yet is skipped. A source gold has loaded whose file is missing
+stops `reload -a` before the rebuild, so nothing is swapped; in place,
+that source is not reset and the others reload.
+
 ## 10. Query patterns
 
 > **Note on SQL throughout this document.** The SQL fragments
@@ -4039,12 +4071,12 @@ The `web_yield*` views are the dashboards' reading of them
 wealthdb/
 ├── README.md                       — what the engine does, with examples
 ├── Dockerfile                      — single-stage; Go toolchain + binary in one image (ENTRYPOINT is the binary)
-├── wealthdb                        — host-side wrapper around `docker run` (production binary)
+├── wealthdb                        — the launcher: `docker run`, or the native program `wealthdb-engine` beside it (NATIVE.md)
 ├── wealthdb-go                     — runs `go` on the engine's toolchain (§12.5)
 ├── wealthdb-test                   — thin alias: `wealthdb-go test ...` (§12.5)
 ├── go.mod / go.sum
 ├── docs/
-│   ├── DESIGN.md · RETURNS-NOTES.md · GAINS.md · EXPOSURE.md · LOTS.md · SPENDING.md · INCOME.md · CASHFLOW.md · TAXONOMY.md
+│   ├── DESIGN.md · RETURNS-NOTES.md · GAINS.md · EXPOSURE.md · LOTS.md · SPENDING.md · INCOME.md · CASHFLOW.md · TAXONOMY.md · YIELD.md · NATIVE.md
 │   └── adapters/                   — per-source adapter design (amex, carta, chase, cointracking, plaid, refdata, schwab, swissquote, synthetic, ubs)
 ├── cmd/
 │   └── wealthdb/                   — CLI entry point: one cmd_<subcommand>.go per subcommand
@@ -4223,9 +4255,11 @@ the command that sets the config up.
 
 Every wrapper runs only an image built on this computer. A missing
 image stops the run with the command that builds it (`wealthdb build`,
-`wealthdb web build`, `wealthdb-collect <name> build`), and every
+`wealthdb web build`, `make build-<name>` for a collector), and every
 `docker run` passes `--pull=never`: no registry is asked for an image
-of that name, which may belong to anyone. Every engine run also names
+of that name, which may belong to anyone. A `docker build` FROM a
+`wealthdb/` image runs only when that image is local, for the same
+reason. Every engine run also names
 `host.docker.internal` (`--add-host … host-gateway`), so an AI model
 served on this computer is reached at the same address on a Mac and on
 Linux.
@@ -4245,8 +4279,8 @@ disk, and nothing is checked.
 
 The host-side `wealthdb` shell wrapper does the mounting. Two shapes:
 
-**Writer host** (runs `wealthdb config`, `wealthdb init`, `wealthdb load`,
-`wealthdb reset`):
+**Writer host** (runs `wealthdb init`, `wealthdb load`,
+`wealthdb reset`; `wealthdb config` differs as said below):
 
 ```sh
 XDG_CFG="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -4255,7 +4289,8 @@ DATA_ROOT="${WEALTHDB_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb}"
 mkdir -p "$(dirname "$CFG")" "$DATA_ROOT"
 [ -f "$CFG" ] || : > "$CFG"
 TTY=""; [ -t 0 ] && [ -t 1 ] && TTY="-it"
-docker run --rm $TTY \
+docker run --rm --pull=never $TTY \
+    --add-host=host.docker.internal:host-gateway \
     -e HOME="$HOME" \
     -e XDG_CONFIG_HOME="$XDG_CFG" \
     -e WEALTHDB_DATA_ROOT="$DATA_ROOT" \
@@ -4266,11 +4301,13 @@ docker run --rm $TTY \
     "$@"
 ```
 
-The empty config file lets the mount exist before `wealthdb config`
-writes it (§4.9). A TTY is allocated only when the host shell has one:
-`wealthdb config` needs it, and a cron or piped run skips it.
+The empty config file keeps Docker from making a folder at the mount's
+path when there is no config yet. A TTY is allocated only when the host
+shell has one: `wealthdb config` needs it, and a cron or piped run
+skips it.
 
-`wealthdb config` mounts the config's folder in place of the file. It saves by renaming a temporary file over the
+`wealthdb config` mounts the config's folder in place of the file, and
+makes no empty file. It saves by renaming a temporary file over the
 config, and a rename onto a file mount fails. It also gets the host's
 locale as `WEALTHDB_LOCALE` and `TERM`. Every other subcommand mounts
 the file alone. When the config is a symbolic link, the wrapper follows
@@ -4283,7 +4320,8 @@ positions` and `wealthdb status`, against a read-only mount of another
 host's gold tree):
 
 ```sh
-docker run --rm \
+docker run --rm --pull=never \
+    --add-host=host.docker.internal:host-gateway \
     -e HOME="$HOME" \
     -e XDG_CONFIG_HOME="$XDG_CFG" \
     -e WEALTHDB_DATA_ROOT="$DATA_ROOT" \
@@ -4315,8 +4353,8 @@ token as a read-only file. The image is the same; the command is
 ./wealthdb holdings positions -f csv    # query
 ```
 
-The wrapper passes through arguments verbatim to the in-container
-`wealthdb` binary.
+The wrapper passes its arguments on to the in-container `wealthdb`
+binary as given, with a `-c` path made absolute.
 
 ### 12.4 Why single-stage
 

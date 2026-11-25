@@ -84,12 +84,12 @@ and exits 0. **The statement PDFs are never deleted.** See
 ## Gold registration
 
 `load` writes one silver DB per statement family, each registered under its
-own source id:
+own source id. `wealthdb config banks` adds these entries; by hand they are:
 
 ```jsonc
-{ "id": "svb",          "kind": "fidelity", "path": "$XDG_DATA_HOME/wealthdb/svb/svb.db" }
-{ "id": "svb-deposit",  "kind": "fidelity", "path": "$XDG_DATA_HOME/wealthdb/svb/svb-deposit.db" }
-{ "id": "svb-mortgage", "kind": "fidelity", "path": "$XDG_DATA_HOME/wealthdb/svb/svb-mortgage.db" }
+{ "id": "svb",          "kind": "fidelity", "path": "${WEALTHDB_DATA_ROOT}/svb/svb.db" }
+{ "id": "svb-deposit",  "kind": "fidelity", "path": "${WEALTHDB_DATA_ROOT}/svb/svb-deposit.db" }
+{ "id": "svb-mortgage", "kind": "fidelity", "path": "${WEALTHDB_DATA_ROOT}/svb/svb-mortgage.db" }
 ```
 
 `kind: "fidelity"` reuses the Fidelity gold adapter. The three ids

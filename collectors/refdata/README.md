@@ -1145,10 +1145,11 @@ describes the tables and how gold reads them.
 The data dir also keeps `finra-usage.json` and `six-asked.json`: the
 state that finra and six keep across runs.
 
-Gold reads the silver as a source of kind `refdata` in `wealthdb.cfg`:
+Gold reads the silver as a source of kind `refdata` in `wealthdb.cfg`.
+`wealthdb config banks` adds this entry; by hand it is:
 
 ```json
-{ "id": "refdata", "kind": "refdata", "path": "$XDG_DATA_HOME/wealthdb/refdata/refdata.db" }
+{ "id": "refdata", "kind": "refdata", "path": "${WEALTHDB_DATA_ROOT}/refdata/refdata.db" }
 ```
 
 ## Reclaiming disk

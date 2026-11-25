@@ -63,7 +63,8 @@ describes what each report answers.
 It runs as a CLI and as an MCP server over the same reports
 (`mcp-serve`, run and managed by `wealthdb mcp` from [../mcp/](../mcp/)).
 The optional Metabase dashboards live in [../web/](../web/). The engine
-runs in one Docker image, with no host-side Go toolchain.
+runs in one Docker image, with no host-side Go toolchain, or as a
+program on the computer ([docs/NATIVE.md](docs/NATIVE.md)).
 
 ## Commands
 
@@ -104,8 +105,9 @@ Adapters fill what silver carries, and the config fills the rest
 
 ## Quickstart
 
-Docker is the one requirement; there is no host-side Go toolchain.
-From the repo root:
+This is the container engine: Docker is its one requirement, and there
+is no host-side Go toolchain. [docs/NATIVE.md](docs/NATIVE.md)
+describes the engine as a program on the computer. From the repo root:
 
 ```sh
 make build-wealthdb                    # build the engine image (~2 min the first time)
@@ -160,14 +162,14 @@ and never writes it. Reports print to standard output.
 
 `wealthdb config` points each source at its collector's own folder in
 the data root. A collector moved elsewhere with its `<PREFIX>_DATA_DIR`
-variable needs its entry edited by hand, and the engine reads only
-files inside the data root.
+variable needs its entry edited by hand. The setup keeps a config to
+files in the data root: the container engine can read no other.
 
-On a Mac, Docker runs in a virtual machine that sees only the folders
-it shares. Colima shares the home folder alone, so the config and the
-data root belong there, or in a folder listed under `mounts:` in
-`~/.colima/default/colima.yaml`. The engine refuses to run on a folder
-Docker does not share, and says which one.
+With the container engine on a Mac, Docker runs in a virtual machine
+that sees only the folders it shares. Colima shares the home folder
+alone, so the config and the data root belong there, or in a folder
+listed under `mounts:` in `~/.colima/default/colima.yaml`. The engine
+refuses to run on a folder Docker does not share, and says which one.
 
 ## Build and run
 
@@ -175,9 +177,10 @@ From the repo root, the `Makefile` drives builds and tests
 (`make build-wealthdb`, `make test-wealthdb`). Underneath, from this
 directory, are the per-component wrappers.
 
-All commands run inside a single Docker image. The host wrapper
-mounts the config file and the data root at the same paths inside the
-container, so paths in the config resolve the same on both sides.
+With the container engine, all commands run inside a single Docker
+image. The host wrapper mounts the config file and the data root at
+the same paths inside the container, so paths in the config resolve
+the same on both sides.
 
 ```sh
 ./wealthdb build               # build the engine image (wealthdb:latest, or the checkout's tag)
@@ -194,6 +197,9 @@ and the read-only sharing pattern.
 - **[docs/DESIGN.md](docs/DESIGN.md)** — gold-layer architecture,
   schema, CLI, plugin contract, load semantics, query patterns,
   package layout.
+- **[docs/NATIVE.md](docs/NATIVE.md)** — the engine, the dashboards
+  and the MCP server as programs on the computer, in place of
+  containers.
 - **[docs/RETURNS-NOTES.md](docs/RETURNS-NOTES.md)** — TWR / MWR
   method and rationale.
 - **[docs/GAINS.md](docs/GAINS.md)** — realized and unrealized gains:

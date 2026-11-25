@@ -7,7 +7,7 @@ A tree of wealthdb runs one of two kinds of engine:
   when nothing else is chosen.
 - **The native engine.** The same three run as programs on the
   computer. Docker is then needed for one thing only: the collectors
-  that drive a browser.
+  that run in a container.
 
 Both read the same config and the same data folder, and give the same
 answers. This page is about the native engine. The container engine is
@@ -20,8 +20,8 @@ answers. This page is about the native engine. The container engine is
 | `wealthdb <report>`, `load`, `config`, `init` | container | program |
 | MCP server (`wealthdb mcp`) | container | program, kept running |
 | Dashboards (`wealthdb web`, Metabase) | container | Java program, kept running |
-| Collectors that drive a browser | container | container |
-| Collectors in plain Python | program | program |
+| Collectors with a Dockerfile | container | container |
+| Collectors on a Python venv | program | program |
 
 ## Choosing it
 
@@ -79,6 +79,9 @@ To move a database to the other kind of engine:
 1. Stop the servers with `wealthdb mcp stop` and `wealthdb web stop`.
    Each ends a server of either kind.
 2. Delete that file.
+3. If the config names an AI model on this computer, set its address
+   again with `wealthdb config model`: `localhost` for the native
+   engine, `host.docker.internal` for the container engine.
 
 The next write command records the new kind. The database itself needs
 no change.
@@ -182,7 +185,7 @@ dashboards.
 
 ## Collectors and the lock
 
-A collector that drives a browser runs in a container, and writes its
+A collector with a Dockerfile runs in a container, and writes its
 database there. A native `wealthdb load` reads that database on the
 computer. SQLite's own locks do not reach between the two, for the
 reason given above.
@@ -202,9 +205,10 @@ So the two meet on a lock on the computer:
   that moment: the source shows no "new data" note.
 - A collector that finds a load reading waits for it.
 
-Collectors in plain Python need none of this: they run on the computer,
-where SQLite's locks work. The container engine takes no lock either:
-it is in the virtual machine with the collectors that run in containers.
+Collectors on a Python venv need none of this: they run on the
+computer, where SQLite's locks work. The container engine takes no lock
+either: it is in the virtual machine with the collectors that run in
+containers.
 
 ## Days are UTC days
 

@@ -77,7 +77,7 @@ confirmations, statements, fee notes).
 ## Examples
 
 ```sh
-wealthdb-collect swissquote build                       # Docker image on the shared base-playwright image
+make build-swissquote                                   # from the repo root: the image and the shared base-playwright image
 
 wealthdb-collect swissquote login                       # sign in; approve the Mobile Level 3 push
 wealthdb-collect swissquote login --check               # is the stored session alive? no push

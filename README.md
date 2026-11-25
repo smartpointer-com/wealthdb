@@ -195,8 +195,8 @@ for irreversible damage. wealthdb keeps the two apart:
    `refdata` asks about each holding.
 4. **Agent access is read-only by construction.** The MCP server
    (`wealthdb mcp`, [mcp/README.md](mcp/README.md)) serves the
-   reports as tools. It has no tool that writes, it opens the
-   database read-only for one call at a time, and its container
+   reports as tools. It has no tool that writes, and it opens the
+   database read-only for one call at a time. As a container it also
    mounts the data read-only. An agent with a shell can run the CLI
    instead, with `--read-only`.
    [skills/wealthdb-ro/SKILL.md](skills/wealthdb-ro/SKILL.md) teaches
@@ -271,9 +271,9 @@ Four parts, and a demo, in one repository:
 | Part | What it is | Runs as |
 | --- | --- | --- |
 | [`collectors/`](collectors/) | One program per source. Each logs in, downloads the raw files (bronze) and parses them into a source-shaped SQLite database (silver). | Docker, or a Python venv |
-| [`wealthdb/`](wealthdb/) | The gold engine. It reads every silver database into one canonical DuckDB store and serves the reports. | Go, in Docker |
-| [`web/`](web/) | The optional dashboards: Metabase over a read-only snapshot of gold. | Docker |
-| [`mcp/`](mcp/) | The optional MCP server: the reports as tools for AI agents, read-only over live gold. | the engine image, in Docker |
+| [`wealthdb/`](wealthdb/) | The gold engine. It reads every silver database into one canonical DuckDB store and serves the reports. | Go, in Docker or as a program |
+| [`web/`](web/) | The optional dashboards: Metabase over a read-only snapshot of gold. | Docker, or a Java program |
+| [`mcp/`](mcp/) | The optional MCP server: the reports as tools for AI agents, read-only over live gold. | the engine, in Docker or as a program |
 | [`demo/`](demo/) | An invented household, generated into synthetic silver sources, for trying wealthdb without a bank. | Python, stdlib only |
 
 ```
@@ -298,8 +298,8 @@ bronze → silver → gold model.
 Needs `git`, `make`, Docker and Python 3.10 or newer, on macOS or
 Linux. No Go toolchain: the engine builds inside its container. The
 engine, the dashboards and the MCP server can also run as programs on
-the computer, with Docker left to the collectors that drive a browser:
-[wealthdb/docs/NATIVE.md](wealthdb/docs/NATIVE.md).
+the computer, with Docker left to the collectors that run in a
+container: [wealthdb/docs/NATIVE.md](wealthdb/docs/NATIVE.md).
 
 ```sh
 git clone <this repo> && cd wealthdb
@@ -386,6 +386,8 @@ describes the household and how to query it from the command line.
   of containers.
 - **[AGENTS.md](AGENTS.md)** — agent ground rules shared across
   every component (security, PII, read-only access).
+- **[SECURITY.md](SECURITY.md)** — where to report a security problem,
+  and what counts as one.
 - **[skills/wealthdb-ro/SKILL.md](skills/wealthdb-ro/SKILL.md)** — a
   skill that teaches an AI agent which read-only reports to run.
 - **[.claude/skills/wealthdb-pii-review/SKILL.md](.claude/skills/wealthdb-pii-review/SKILL.md)**

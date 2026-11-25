@@ -81,8 +81,9 @@ liability ([adapter doc](../../wealthdb/docs/adapters/chase.md)).
 ## Quick start
 
 ```sh
-# 1. Build the image (on the shared base-camoufox image).
-wealthdb-collect chase build                    # or, from the repo root: make build-chase
+# 1. From the repo root, build the image and the shared base-camoufox
+#    image under it.
+make build-chase
 
 # 2. Put the credentials in ~/.secrets/chase.env (chmod 0600):
 #    CHASE_USERNAME=example-username

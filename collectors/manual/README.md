@@ -167,9 +167,9 @@ realizes the gain against the position's cost basis.
 
 ## Maintaining the files
 
-Every edit is just a line in a CSV followed by `wealthdb-collect manual load`. The load
-rebuilds silver from scratch each time, so there is no state to reconcile and
-no way to get a half-applied change: fix the line, run it again.
+Every edit is just a line in a CSV followed by `wealthdb-collect manual load`.
+The load rebuilds silver from scratch each time, so there is no state to
+reconcile and no way to get a half-applied change: fix the line, run it again.
 
 **Add a holding.** One row in `positions.csv`, and one row in
 `valuations.csv` dated *exactly* its `acquired_at` — that first valuation is
@@ -276,12 +276,12 @@ silver keeps its previous contents.
 
 ## Reclaiming disk (`prune`)
 
-`prune` is a **no-op** here. `wealthdb-collect manual prune` explains why and exits 0.
-The collector keeps no timestamped run dirs and writes no debug
-artefacts. The CSVs are `load`'s only input and the only copy, so they
-are never a prune target. `manual.db` is rebuilt from them by `load`, so
-deleting it by hand is safe. [DESIGN.md](DESIGN.md) §1 gives the
-reasoning.
+`prune` is a **no-op** here. `wealthdb-collect manual prune` explains
+why and exits 0. The collector keeps no timestamped run dirs and writes
+no debug artefacts. The CSVs are `load`'s only input and the only copy,
+so they are never a prune target. `manual.db` is rebuilt from them by
+`load`, so deleting it by hand is safe. [DESIGN.md](DESIGN.md) §1 gives
+the reasoning.
 
 ## Tests
 
