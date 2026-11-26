@@ -18,6 +18,8 @@
 #   - native-macos: the same engine built on a Mac, its Go tests in a
 #     time zone far from UTC, and the walk with the servers under
 #     launchd;
+#   - dco: on a pull request, every commit the change adds is signed
+#     off by its author (CONTRIBUTING.md);
 #   - check: passes only when every job above has.
 # .github/ci-suites.sh splits the Makefile's suite list between the
 # jobs, so a new suite runs in CI without an edit here. It fails when a
@@ -69,6 +71,36 @@ jobs:
             BASE=HEAD~1
           fi
           shared/pii/check_at.sh "$BASE" range "$BASE" HEAD
+
+  # The Developer Certificate of Origin: every commit a pull request adds
+  # carries its author's Signed-off-by line (.github/dco.sh). The check
+  # runs as the base of the change holds it, as the privacy check does,
+  # so a change to the script never judges itself. A push to main adds
+  # no pull request's commits, and passes.
+  dco:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Sign-offs
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then
+            echo "dco: a push to main, no pull request to check"
+            exit 0
+          fi
+          script="$RUNNER_TEMP/dco.sh"
+          if git cat-file -e "$BASE:.github/dco.sh" 2>/dev/null; then
+            git show "$BASE:.github/dco.sh" > "$script"
+          else
+            cp .github/dco.sh "$script"
+          fi
+          sh "$script" "$BASE" HEAD
 
   lint:
     runs-on: ubuntu-24.04
@@ -282,7 +314,7 @@ jobs:
   # whatever its needs did, since a check skipped after a failed need
   # would count as passed, and it fails unless every need succeeded.
   check:
-    needs: [pii, lint, go, demo, collectors, rest, native, native-macos]
+    needs: [pii, dco, lint, go, demo, collectors, rest, native, native-macos]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 30

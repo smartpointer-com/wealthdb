@@ -337,6 +337,10 @@ and move on.
   (dead code, stale comments, comments encoding disproven theories)
   before milestone commits; squash to milestone commits with tight
   WHAT-level messages carrying no user data; never git push.
+- A commit bound for a pull request carries its author's sign-off
+  (`git commit -s`, [CONTRIBUTING.md](CONTRIBUTING.md)). The sign-off is
+  the person's own certification, so the agent adds it only when the
+  person says so.
 - Keep DESIGN.md and AGENTS.md current in the same commit as each
   change: record each live-run root cause as a fleet lesson, and
   correct the allow/forbid surface when discovery reclassifies a

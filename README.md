@@ -394,6 +394,8 @@ describes the household and how to query it from the command line.
   every component (security, PII, read-only access).
 - **[SECURITY.md](SECURITY.md)** — where to report a security problem,
   and what counts as one.
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — what a pull request needs:
+  a sign-off on every commit, passing tests, no real data.
 - **[skills/wealthdb-ro/SKILL.md](skills/wealthdb-ro/SKILL.md)** — a
   skill that teaches an AI agent which read-only reports to run.
 - **[.claude/skills/wealthdb-pii-review/SKILL.md](.claude/skills/wealthdb-pii-review/SKILL.md)**
