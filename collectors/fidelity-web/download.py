@@ -112,7 +112,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from collectorkit import bronze, cli, compress, debugcap, envfile, launch
+from collectorkit import bronze, cli, compress, debugcap, envfile, launch, loginform
 
 import lot_parsers
 # The walk's landmarks and its pure rules live in the modules below.
@@ -3094,28 +3094,18 @@ def ensure_trust_browser_checked(page):
 
 
 def submit_mfa_code(page, code_locator, code):
-    """Fill the MFA input and submit. Try button candidates; on
-    no-match, press Enter inside the input."""
+    """Fill the MFA input and submit it once: the first submit button the
+    page shows, else Enter in the input (loginform.submit_once)."""
     code_locator.fill(code)
-    for sel in SEL_2FA_SUBMIT_CANDIDATES:
-        try:
-            btn = page.locator(sel).first
-            if btn.count() == 0:
-                continue
-            if not btn.is_visible(timeout=500):
-                continue
-            btn.click(timeout=10_000)
-            log.info("submitted 2FA via %s", sel)
-            return True
-        except Exception as e:
-            log.debug("2FA submit candidate %s failed: %s", sel, e)
-    try:
-        code_locator.press("Enter")
-        log.info("submitted 2FA via Enter key in input")
-        return True
-    except Exception as e:
-        log.error("could not press Enter to submit 2FA: %s", e)
+    gesture = loginform.submit_once(
+        [(page.locator(sel).first, "click") for sel in SEL_2FA_SUBMIT_CANDIDATES]
+        + [(code_locator, "enter")], what="the 2FA code", timeout_ms=10_000)
+    if gesture is None:
+        log.error("could not submit 2FA: no submit button and no code input "
+                  "on the page")
         return False
+    log.info("submitted 2FA by %s", gesture)
+    return True
 
 
 def wait_for_post_auth_url(page, timeout_s):

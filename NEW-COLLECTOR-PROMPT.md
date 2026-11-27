@@ -245,11 +245,12 @@ and move on.
    honour parses cleanly and warns loudly, never silently no-ops.
    Exit statuses are collectorkit.cli's: a probe that could not run
    exits 3, never 1 ("dead"), and a download that came back short
-   exits 4. Submit a sign-in form once: choose the control before
-   acting, and never follow a click that raised with a second submit.
-   Guard every call that carries the credential: a Playwright error
-   repeats the request headers, so log it through debugcap.safe_error
-   and let no traceback print it. A 401 or 403 on a data call is the
+   exits 4. Submit a sign-in form or a code once
+   (collectorkit.loginform.submit_once), never with a second gesture
+   after one that raised. A Playwright error repeats the request
+   headers: cli.configure_logging guards what the process prints, and
+   an error written anywhere else (a manifest, a capture) goes through
+   debugcap.safe_error. A 401 or 403 on a data call is the
    end of the credential, never an empty answer. A roster that came
    back short of the count it declares fails the run.
 4. **load** — bronze → SQLite silver (JSON1 payloads), migrations,
@@ -503,15 +504,16 @@ as hard rules rather than advice.
 - **A sign-in form is submitted once.** A click can raise after it
   went out, when the page navigates under it. A fallback that then
   presses Enter submits a second time: a second push or code, and one
-  step closer to a lockout. Choose the control before acting. When the
-  one attempt raises, look for the challenge before calling it a
-  failure.
+  step closer to a lockout. `collectorkit.loginform.submit_once` chooses
+  the control before acting and makes one gesture. When that gesture
+  raises, look for the challenge before calling it a failure.
 - **An error can carry the credential.** An error from Playwright's
   request API prints a call log that repeats the request headers: the
   bearer, the API key, the whole cookie jar. One uncaught error in a
   data call puts them on the terminal and in every log a scheduler
-  keeps. Catch around the sign-in and the walk, and log
-  `debugcap.safe_error(exc)`, never the exception itself.
+  keeps. `cli.configure_logging` guards what the process prints (an
+  error that ends it, one a log line carries); an error written to a
+  manifest or a capture goes through `debugcap.safe_error`.
 - **A probe has three answers.** `login --check` says alive, dead, or
   that it could not tell (exit 3): no network, a site outage, a browser
   that did not start. An outage reported as a dead session sends a

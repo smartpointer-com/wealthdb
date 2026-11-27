@@ -47,7 +47,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
-from collectorkit import cli, debugcap, launch
+from collectorkit import cli, debugcap, launch, loginform
 from collectorkit import explore as kit_explore
 from collectorkit.launch import page_url, pump, wait_for
 
@@ -300,26 +300,23 @@ def _page_shape(page) -> str:
 
 
 def _submit_signin(page) -> bool:
-    """Submit the sign-in form (which lives in a chase.com iframe). Pressing
-    Enter in the password field triggers the form's native submit — robust
-    without a hard-coded button selector — with a button as fallback."""
+    """Submit the sign-in form (which lives in a chase.com iframe) once.
+    Pressing Enter in the password field triggers the form's native submit,
+    robust without a hard-coded button selector; a button is used only when
+    the field is not there (loginform.submit_once)."""
     # The pre-fill has already waited for the form; this wait only covers
     # a form that mounted after a fill was skipped or failed.
     wait_for(lambda: _locate(page, "input[type='password']") is not None,
              page, 15)
     pwd = _locate(page, "input[type='password']")
-    if pwd is not None:
-        with contextlib.suppress(Exception):
-            pwd.press("Enter")
-            return True
+    choices = [(pwd, "enter")] if pwd is not None else []
     for sel in ('button:has-text("Sign in")', 'button[type="submit"]',
                 'input[type="submit"]', '#signin-button', '#signin'):
         b = _locate(page, sel)
         if b is not None:
-            with contextlib.suppress(Exception):
-                b.click(timeout=3000)
-                return True
-    return False
+            choices.append((b, "click"))
+    return loginform.submit_once(choices, what="the sign-in form",
+                                 timeout_ms=3000) is not None
 
 
 def _click_factor(page, factor: str) -> bool:

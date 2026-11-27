@@ -567,7 +567,10 @@ Which **identity** surface to copy for a new collector:
 A `--check` mode probes the stored session without a new MFA push. It never
 merely asserts that the credential is *present*. A key that exists but is
 rejected is exactly what it exists to catch. So it makes the cheapest
-authenticated call the source allows and maps the answer onto its exit code.
+authenticated call the source allows and maps the answer onto its exit code:
+`0` alive, `1` dead (the sign-in shows, or the source refuses the
+credential), `3` when the probe could not tell (no network, an outage, a
+browser that did not start).
 Where a static credential is the session (fred's API key, ubs-psn's RSA
 key), that call is the cheapest authenticated read. schwab-api reports
 its token file's age. It then refreshes the access token from that file
@@ -591,6 +594,19 @@ no browser and fires no MFA. Five collectors differ:
   `<secrets>/finra.env`. Their `--check` asks each source for its
   cheapest answer and maps it onto the exit code. For `finra` that
   answer is a token, and no data is asked.
+
+A sign-in form or a code is submitted with one gesture,
+[`collectorkit.loginform`](../shared/collectorkit/collectorkit/loginform.py)
+`submit_once`: the first control the page shows, and nothing after it, even
+when that gesture raised. A click can raise after it went out, and a second
+submit fires a second push or code.
+
+An error can carry the credential: Playwright's request errors print a call
+log with every request header. `collectorkit.cli.configure_logging` sets a
+guard (`guard_errors`) that prints an error which ends the process, and one a
+log line carries, with that call log cut off and URL secrets masked. A
+collector that sets up logging on its own calls `cli.guard_errors()` first;
+the collectorkit suite fails one that does not.
 
 The full authentication policy is in root [AGENTS.md](../AGENTS.md) §3.
 

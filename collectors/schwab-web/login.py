@@ -51,7 +51,7 @@ from landmarks import (  # noqa: F401
 from landmarks import LOGIN_ID_ENV, PASSWORD_ENV
 from download import maybe_screenshot
 
-from collectorkit import cli, debugcap, envfile, launch
+from collectorkit import cli, debugcap, envfile, launch, loginform
 
 log = logging.getLogger("schwab-web.login")
 
@@ -885,30 +885,23 @@ def _prompt_for_mfa_code() -> str:
 
 
 def _submit_mfa_code(page, code_locator, code: str) -> str | None:
-    """Fill the MFA input with `code` and click the Continue button
-    (trying each candidate selector). Returns "clicked" on a button
-    click, "enter" when only the Enter-key fallback landed, None
-    when nothing could submit."""
+    """Fill the MFA input with `code` and submit it once: the first
+    Continue button the page shows, else Enter in the input
+    (loginform.submit_once). Returns "clicked" for the button, "enter"
+    for the key, None when nothing could submit."""
     code_locator.fill(code)
-    for sel in schwab.MFA_CONTINUE_BUTTON_CANDIDATES:
-        try:
-            btn = page.locator(sel).first
-            if btn.count() == 0:
-                continue
-            if not btn.is_visible(timeout=500):
-                continue
-            btn.click(timeout=10_000)
-            log.info("submitted 2FA via Continue selector %s", sel)
-            return "clicked"
-        except Exception as e:
-            log.debug("continue button candidate %s failed: %s", sel, e)
-    log.warning("no Continue button matched; pressing Enter in the input")
-    try:
-        code_locator.press("Enter")
+    gesture = loginform.submit_once(
+        [(page.locator(sel).first, "click")
+         for sel in schwab.MFA_CONTINUE_BUTTON_CANDIDATES]
+        + [(code_locator, "enter")], what="the 2FA code", timeout_ms=10_000)
+    if gesture == "click":
+        log.info("submitted 2FA by the Continue button")
+        return "clicked"
+    if gesture == "enter":
+        log.warning("no Continue button matched; pressed Enter in the input")
         return "enter"
-    except Exception as e:
-        log.error("could not press Enter to submit 2FA: %s", e)
-        return None
+    log.error("could not submit 2FA: no Continue button and no code input")
+    return None
 
 
 def _verify_mfa_outcome(page, code_input, *, budget_s: float = 60,
@@ -1094,6 +1087,7 @@ def _prefill_login_iframe(page, login_id_value: str, password_value: str) -> Non
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     console_level = logging.DEBUG if args.verbose else logging.INFO
+    cli.guard_errors()
     logging.basicConfig(level=console_level, format=cli.LOG_FORMAT)
     debugcap.tee_debug_log(args.screenshot_dir, console_level, log=log)
     if args.trace and args.screenshot_dir is None:

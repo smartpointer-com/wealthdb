@@ -48,7 +48,7 @@ import sys
 import time
 from pathlib import Path
 
-from collectorkit import cli, debugcap, envfile, launch
+from collectorkit import cli, debugcap, envfile, launch, loginform
 from collectorkit import explore as kit_explore
 from collectorkit.launch import page_url, pump, wait_for
 
@@ -291,15 +291,12 @@ def _fill_pin(page, pin: str) -> bool:
 
 
 def _submit(page) -> bool:
-    with contextlib.suppress(Exception):
-        btn = page.locator(elba.SEL_SUBMIT).first
-        if btn.count():
-            btn.click(timeout=5000)
-            return True
-    with contextlib.suppress(Exception):
-        page.locator(elba.SEL_PIN).first.press("Enter")
-        return True
-    return False
+    """Submit the sign-in form once: its button, or Enter in the PIN field
+    when the page shows no button (loginform.submit_once)."""
+    return loginform.submit_once(
+        [(page.locator(elba.SEL_SUBMIT).first, "click"),
+         (page.locator(elba.SEL_PIN).first, "enter")],
+        what="the sign-in form") is not None
 
 
 def _drive_login_form(context, page, watch: _Watch, args) -> bool:
@@ -409,17 +406,25 @@ def authenticate(context, page, watch: _Watch, *, args, cli_mfa: bool,
         # compared against the code in the app. Prefer the captured
         # displayText; fall back to reading it off the screen (the pinned
         # Camoufox can drop the pushtan response event).
-        wait_for(lambda: watch.pushtan_display is not None
-                 or elba.is_pushtan_url(page_url(page))
-                 or _probe_authenticated(context, watch), page,
-                 PUSHTAN_SCREEN_TIMEOUT_S)
+        # Only a screen that came up is announced: a push the run never
+        # saw sent is no push to approve.
+        if not wait_for(lambda: watch.pushtan_display is not None
+                        or elba.is_pushtan_url(page_url(page))
+                        or _probe_authenticated(context, watch), page,
+                        PUSHTAN_SCREEN_TIMEOUT_S):
+            _capture(page, args, "pushtan-screen-missing")
+            log.error("the pushTAN screen did not appear after the sign-in "
+                      "was submitted, so no pushTAN is known to be sent. "
+                      "Retry with vnc-login. (DOM captured with --debug.)")
+            return False
         code = watch.pushtan_display or _read_vergleichswert(page)
         if code:
             log.info("pushTAN sent — approve the sign-in in the Raiffeisen "
                      "app. Vergleichswert (compare on your phone): %s", code)
-        else:
-            log.info("pushTAN sent — approve the sign-in in the Raiffeisen "
-                     "app (compare the Vergleichswert shown on screen).")
+        elif not _probe_authenticated(context, watch):
+            log.warning("pushTAN sent, but its Vergleichswert could not be "
+                        "read. Approve it in the Raiffeisen app only if it "
+                        "is the sign-in just started here.")
     else:
         log.info("Complete the login (form/card + pushTAN approval) in the "
                  "browser over VNC — waiting up to %ds.", pushtan_timeout)
@@ -476,20 +481,48 @@ def _capture(page, args, name: str) -> None:
 
 # --- verbs ----------------------------------------------------------------
 
+def _shown(page, selector: str) -> bool:
+    with contextlib.suppress(Exception):
+        loc = page.locator(selector).first
+        return loc.count() > 0 and loc.is_visible()
+    return False
+
+
+def _signin_shown(page) -> bool:
+    """Whether the page shows the sign-in: the blank form, or the saved
+    profile card that leads to it."""
+    return any(_shown(page, sel) for sel in
+               (elba.SEL_VERFUEGER, elba.SEL_PIN, elba.SEL_PROFILE_CARD))
+
+
 def run_check(args: argparse.Namespace) -> int:
     """Load the app on the persisted profile and probe for an authenticated
-    session. Exit 0 if alive, 1 otherwise. Dead between runs is expected —
-    the session does not survive a browser restart (§F). Sends no pushTAN."""
-    with camoufox(args.profile_dir) as (context, page):
-        watch = _Watch().attach(context)
-        with contextlib.suppress(Exception):
-            page.goto(elba.START_URL, wait_until="domcontentloaded",
-                      timeout=45_000)
-        if wait_for(lambda: _probe_authenticated(context, watch), page, 20):
-            log.info("session ALIVE")
-            return 0
-    log.info("session DEAD — a fresh login is required (expected between runs)")
-    return 1
+    session. Exit 0 if alive, 1 when the sign-in shows (dead: expected
+    between runs, since the session does not survive a browser restart,
+    §F), and 3 when neither appeared or the browser did not start: no
+    verdict either way. Sends no pushTAN."""
+    try:
+        with camoufox(args.profile_dir) as (context, page):
+            watch = _Watch().attach(context)
+            with contextlib.suppress(Exception):
+                page.goto(elba.START_URL, wait_until="domcontentloaded",
+                          timeout=45_000)
+            wait_for(lambda: _probe_authenticated(context, watch)
+                     or _signin_shown(page), page, 20)
+            if _probe_authenticated(context, watch):
+                log.info("session ALIVE")
+                return cli.EXIT_OK
+            if _signin_shown(page):
+                log.info("session DEAD — a fresh login is required "
+                         "(expected between runs)")
+                return cli.EXIT_FAILED
+    except Exception as exc:
+        log.error("no verdict: the session probe could not run (%s)",
+                  debugcap.safe_error(exc))
+        return cli.EXIT_NO_VERDICT
+    log.warning("no verdict: neither a session nor the sign-in page "
+                "appeared (no network, or the site is down?)")
+    return cli.EXIT_NO_VERDICT
 
 
 def run_login_and_fetch(args: argparse.Namespace) -> int:

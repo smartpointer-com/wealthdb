@@ -38,7 +38,7 @@ import sys
 import time
 from pathlib import Path
 
-from collectorkit import cli, debugcap, launch, session
+from collectorkit import cli, debugcap, launch, loginform, session
 from collectorkit import explore as kit_explore
 from collectorkit.launch import page_url, pump, wait_for
 
@@ -154,20 +154,14 @@ def _prefill(page, username: str, password: str) -> bool:
 
 
 def _submit(page) -> bool:
-    """Submit the login form — click the digital-banking submit button,
-    falling back to Enter in the password field. The SPA then makes the
-    sensor-bearing preLogonUser / logonUser calls."""
-    with contextlib.suppress(Exception):
-        btn = page.locator(q2client.SEL_SUBMIT).first
-        if btn.count():
-            btn.click(timeout=5000)
-            return True
-    with contextlib.suppress(Exception):
-        pwd = page.locator(q2client.SEL_PASSWORD).first
-        if pwd.count():
-            pwd.press("Enter")
-            return True
-    return False
+    """Submit the login form once: the digital-banking submit button, or
+    Enter in the password field when the page shows no button
+    (loginform.submit_once). The SPA then makes the sensor-bearing
+    preLogonUser / logonUser calls."""
+    return loginform.submit_once(
+        [(page.locator(q2client.SEL_SUBMIT).first, "click"),
+         (page.locator(q2client.SEL_PASSWORD).first, "enter")],
+        what="the sign-in form") is not None
 
 
 # --- REST over the browser context ---------------------------------------

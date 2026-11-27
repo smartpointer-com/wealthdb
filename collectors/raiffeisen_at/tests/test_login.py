@@ -148,3 +148,138 @@ def test_probe_authenticated_requires_a_bearer():
     w = login._Watch()
     assert w.bearer is None
     assert login._probe_authenticated(context=None, watch=w) is False
+
+# ============================================================
+# The sign-in submit, the session probe, the pushTAN announcement
+# ============================================================
+
+import contextlib  # noqa: E402
+import types  # noqa: E402
+
+
+class _Control:
+    def __init__(self, done, name, *, present=True, raises=False):
+        self.done, self.name, self.present, self.raises = (
+            done, name, present, raises)
+
+    @property
+    def first(self):
+        return self
+
+    def count(self):
+        return 1 if self.present else 0
+
+    def is_visible(self):
+        return self.present
+
+    def is_enabled(self):
+        return True
+
+    def click(self, timeout=None):
+        self.done.append(("click", self.name))
+        if self.raises:
+            raise RuntimeError("element was detached from the DOM")
+
+    def press(self, key):
+        self.done.append((key, self.name))
+
+
+class _FormPage:
+    def __init__(self, controls):
+        self.controls = controls
+
+    def locator(self, selector):
+        return self.controls[selector]
+
+
+def test_a_click_that_raised_is_not_followed_by_enter():
+    # The click may have gone out before it raised: a second submit would
+    # fire a second pushTAN.
+    done = []
+    page = _FormPage({
+        login.elba.SEL_SUBMIT: _Control(done, "submit", raises=True),
+        login.elba.SEL_PIN: _Control(done, "pin")})
+    assert login._submit(page) is True
+    assert done == [("click", "submit")]
+
+
+def test_without_a_button_enter_submits_in_the_pin_field():
+    done = []
+    page = _FormPage({
+        login.elba.SEL_SUBMIT: _Control(done, "submit", present=False),
+        login.elba.SEL_PIN: _Control(done, "pin")})
+    assert login._submit(page) is True
+    assert done == [("Enter", "pin")]
+
+
+def _probe(monkeypatch, *, alive=False, signin=False, launch_fails=False):
+    """run_check over a stub browser: a session that is alive or not, a
+    sign-in page that shows or not, or a browser that does not start."""
+    @contextlib.contextmanager
+    def camoufox(*a, **kw):
+        if launch_fails:
+            raise RuntimeError("browser did not start\nCall log:\n  - x")
+        yield object(), types.SimpleNamespace(goto=lambda *a, **kw: None)
+
+    monkeypatch.setattr(login, "camoufox", camoufox)
+    monkeypatch.setattr(login, "_Watch",
+                        lambda: types.SimpleNamespace(attach=lambda c: None))
+    monkeypatch.setattr(login, "wait_for", lambda pred, page, t: pred())
+    monkeypatch.setattr(login, "_probe_authenticated", lambda c, w: alive)
+    monkeypatch.setattr(login, "_signin_shown", lambda page: signin)
+    return login.run_check(types.SimpleNamespace(profile_dir=Path("/x")))
+
+
+def test_check_alive_is_0(monkeypatch):
+    assert _probe(monkeypatch, alive=True) == 0
+
+
+def test_check_dead_is_1_only_when_the_sign_in_shows(monkeypatch):
+    assert _probe(monkeypatch, signin=True) == 1
+
+
+def test_check_with_neither_is_no_verdict(monkeypatch):
+    assert _probe(monkeypatch) == login.cli.EXIT_NO_VERDICT == 3
+
+
+def test_check_whose_browser_did_not_start_is_no_verdict(monkeypatch):
+    assert _probe(monkeypatch, launch_fails=True) == 3
+
+
+def _announce(monkeypatch, caplog, *, screen, code=None):
+    """authenticate's CLI path up to the wait for approval, with the
+    pushTAN screen up or not and a code read or not."""
+    monkeypatch.setattr(login, "_drive_to_pushtan", lambda *a: True)
+    monkeypatch.setattr(login, "wait_for", lambda pred, page, t: screen)
+    monkeypatch.setattr(login, "_read_vergleichswert", lambda page: code)
+    monkeypatch.setattr(login, "_probe_authenticated", lambda c, w: False)
+    monkeypatch.setattr(login, "_capture", lambda *a: None)
+    waited = []
+    monkeypatch.setattr(login, "_wait_for_auth",
+                        lambda *a: waited.append(1) or True)
+    watch = types.SimpleNamespace(pushtan_display=None)
+    args = types.SimpleNamespace(debug=False)
+    caplog.set_level("INFO")
+    ok = login.authenticate(object(), object(), watch, args=args,
+                            cli_mfa=True, pushtan_timeout=1)
+    return ok, waited, caplog.text
+
+
+def test_no_pushtan_is_announced_when_its_screen_did_not_appear(
+        monkeypatch, caplog):
+    ok, waited, text = _announce(monkeypatch, caplog, screen=False)
+    assert ok is False and not waited
+    assert "pushTAN sent" not in text
+    assert "did not appear" in text and "vnc-login" in text
+
+
+def test_the_pushtan_is_announced_with_its_vergleichswert(monkeypatch, caplog):
+    ok, waited, text = _announce(monkeypatch, caplog, screen=True, code="4711")
+    assert ok and waited
+    assert "Vergleichswert (compare on your phone): 4711" in text
+
+
+def test_a_vergleichswert_that_could_not_be_read_is_said(monkeypatch, caplog):
+    ok, waited, text = _announce(monkeypatch, caplog, screen=True)
+    assert ok and waited
+    assert "could not be read" in text

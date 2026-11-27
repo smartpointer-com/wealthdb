@@ -100,13 +100,83 @@ def safe_error(exc: BaseException) -> str:
     (everything from the call log on), then masks credential-bearing query
     parameters in whatever URL survives.
     """
-    first = str(exc).split("\n", 1)[0].strip()
-    marker = first.find("Call log:")
-    if marker >= 0:
-        first = first[:marker].strip()
-    # A URL in the message can carry its own secret in the query string.
-    first = re.sub(r"https?://\S+", lambda m: redact_url(m.group(0)), first)
+    first = safe_text(str(exc).split("\n", 1)[0]).strip()
     return f"{type(exc).__name__}: {first}" if first else type(exc).__name__
+
+
+def safe_text(text: str) -> str:
+    """`text` with every Playwright call log cut off and the
+    credential-bearing parameters of every URL in it masked.
+
+    A call log runs from its ``Call log:`` line to the end of the message
+    that holds it, so everything from there on goes. The rest of a message
+    stays as it was, line breaks included: it names the failure. A URL
+    with nothing to mask keeps its spelling."""
+    marker = text.find("Call log:")
+    if marker >= 0:
+        text = text[:marker].rstrip()
+
+    def mask(m):
+        url = m.group(0)
+        return redact_url(url) if _carries_secret(url) else url
+
+    return re.sub(r"https?://\S+", mask, text)
+
+
+def _carries_secret(url: str) -> bool:
+    """Whether redact_url would mask a parameter of `url` (or the whole
+    of a URL it cannot parse)."""
+    try:
+        query = urllib.parse.urlsplit(url).query
+    except ValueError:
+        return True
+    return any(k.lower() in _SECRET_PARAMS
+               for k, _ in urllib.parse.parse_qsl(query, keep_blank_values=True))
+
+
+def _chain(exc: BaseException) -> list[BaseException]:
+    """`exc` and the exceptions it was raised from or while handling, the
+    oldest first, as a traceback prints them."""
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        chain.append(exc)
+        exc = exc.__cause__ or (None if exc.__suppress_context__
+                                else exc.__context__)
+    return chain[::-1]
+
+
+def leaks(exc: BaseException) -> bool:
+    """Whether printing `exc` or an exception of its chain as Python does
+    would print a call log or a URL secret."""
+    return any(safe_text(str(e)) != str(e) for e in _chain(exc))
+
+
+def safe_traceback(exc: BaseException) -> str:
+    """The traceback Python prints for `exc`, with each message of its
+    chain passed through :func:`safe_text`.
+
+    The frames stay: they name files, lines and code, never a value. A
+    note added to an exception is left out, since it can hold anything."""
+    import traceback
+
+    parts: list[str] = []
+    chain = _chain(exc)
+    for i, e in enumerate(chain):
+        if i:
+            parts.append(
+                "\nThe above exception was the direct cause of the "
+                "following exception:\n\n" if e.__cause__ is chain[i - 1]
+                else "\nDuring handling of the above exception, another "
+                "exception occurred:\n\n")
+        if e.__traceback__ is not None:
+            parts.append("Traceback (most recent call last):\n")
+            parts.extend(traceback.format_tb(e.__traceback__))
+        message = safe_text(str(e))
+        parts.append(f"{type(e).__qualname__}: {message}\n" if message
+                     else f"{type(e).__qualname__}\n")
+    return "".join(parts)
 
 
 def redact_headers(headers) -> dict:

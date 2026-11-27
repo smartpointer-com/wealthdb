@@ -333,11 +333,11 @@ def _wire(monkeypatch, *, state=("mfa", "LOC"), code="123456",
           outcome="advanced", error_text=""):
     calls = {"clicked": [], "prompts": 0}
 
-    def click_first(page, candidates):
+    def submit_once(page, candidates, *, field=None, what):
         calls["clicked"].append(tuple(candidates))
-        return True
+        return "click"
 
-    monkeypatch.setattr(login, "_click_first", click_first)
+    monkeypatch.setattr(login, "_submit_once", submit_once)
     loc = FakeLocator(FakePage("x"), True)
     resolved = (state[0], loc if state[1] == "LOC" else None)
     monkeypatch.setattr(login, "_wait_for_mfa_input",

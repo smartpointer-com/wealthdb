@@ -66,7 +66,7 @@ from guard import (  # noqa: F401
     AdvanceGuard,
 )
 
-from collectorkit import cli, debugcap, envfile, launch, session
+from collectorkit import cli, debugcap, envfile, launch, loginform, session
 
 log = logging.getLogger("schwab-login")
 
@@ -531,6 +531,16 @@ def _wait_for_mfa_input(page, timeout_s: float, callback_url: str,
         page_text=_visible_page_text(page))
 
 
+def _submit_once(page, candidates, *, field=None, what: str) -> str | None:
+    """Submit with one gesture (loginform.submit_once): the first of
+    `candidates` the page shows, else Enter in `field`. Returns the
+    gesture made, or None when nothing could submit."""
+    choices = [(page.locator(sel).first, "click") for sel in candidates]
+    if field is not None:
+        choices.append((field, "enter"))
+    return loginform.submit_once(choices, what=what, timeout_ms=10_000)
+
+
 def _click_first(page, candidates) -> bool:
     for sel in candidates:
         try:
@@ -866,7 +876,8 @@ def _attempt_cli_mfa(page, args: argparse.Namespace) -> None:
     TerminalPageError) rather than a fallthrough: driving the consent
     pages while the challenge is unresolved is what DESIGN.md §3.1,
     "Failure discipline", forbids."""
-    if not _click_first(page, lm.LOGIN_SUBMIT_CANDIDATES):
+    if not _submit_once(page, lm.LOGIN_SUBMIT_CANDIDATES,
+                        what="the sign-in form"):
         log.warning("login submit button not found; complete login over VNC")
         return
     state, code_loc = _wait_for_mfa_input(page, args.mfa_page_timeout,
@@ -883,11 +894,10 @@ def _attempt_cli_mfa(page, args: argparse.Namespace) -> None:
         code_loc.fill(code)
     except Exception as e:
         raise LoginFlowError(f"could not fill the 2FA code input: {e}") from e
-    if not _click_first(page, lm.MFA_CONTINUE_BUTTON_CANDIDATES):
-        try:
-            code_loc.press("Enter")
-        except Exception as e:
-            raise LoginFlowError(f"could not submit the 2FA code: {e}") from e
+    if not _submit_once(page, lm.MFA_CONTINUE_BUTTON_CANDIDATES,
+                        field=code_loc, what="the 2FA code"):
+        raise LoginFlowError("could not submit the 2FA code: no Continue "
+                             "button and no code input on the page")
     outcome = _verify_mfa_outcome(page, args.callback_url)
     if outcome == "rejected":
         raise LoginFlowError(
@@ -950,6 +960,7 @@ def cmd_login_manual(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     console_level = logging.DEBUG if args.verbose else logging.INFO
+    cli.guard_errors()
     logging.basicConfig(level=console_level, format=cli.LOG_FORMAT)
     debugcap.tee_debug_log(args.screenshot_dir, console_level, log=log)
     if args.trace and args.screenshot_dir is None:

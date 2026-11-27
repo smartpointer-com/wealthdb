@@ -1,4 +1,5 @@
-"""The sign-in form fill shared by explore harnesses and logins.
+"""The sign-in form fill shared by explore harnesses and logins, and the
+one submit a login makes.
 
 A harness pre-fills the source's sign-in form so the person at the VNC
 session only drives the challenge. A collector's ``login.py`` often reuses
@@ -9,8 +10,9 @@ submits.
   password from their env names.
 - :func:`prefill_login` fills the form, origin-gated and frame-aware, each
   field at most once per page.
+- :func:`submit_once` submits a sign-in or a code with one gesture.
 
-:mod:`collectorkit.explore` re-exports every name here.
+:mod:`collectorkit.explore` re-exports the fill and the credentials.
 """
 from __future__ import annotations
 
@@ -143,3 +145,46 @@ def prefill_login(page, username: str, password: str, filled: set, *,
                           debugcap.safe_error(exc))
         break
     return did
+
+
+_log = logging.getLogger(__name__)
+
+SUBMIT_GESTURES = ("click", "enter")
+
+
+def submit_once(choices, *, what: str = "the form",
+                timeout_ms: int = 5000) -> str | None:
+    """Submit a sign-in form or a code with exactly one gesture.
+
+    `choices` are (locator, gesture) pairs in the order a submit prefers
+    them, the gesture "click" or "enter" (Enter pressed in that field). The
+    first whose control is on the page, visible and (for a click) enabled
+    gets the one gesture, and no other is tried after it. A gesture that
+    raised may still have gone out, since a navigation can detach a control
+    under the click, and a second gesture would submit again: a second push
+    or code, and a step closer to a lockout. The caller then looks for the
+    outcome (a challenge, an error), which also tells whether it went out.
+
+    Returns the gesture made ("click" or "enter"), raised or not, or None
+    when no control was there and nothing was sent."""
+    for locator, gesture in choices:
+        if gesture not in SUBMIT_GESTURES:
+            raise ValueError(f"no such submit gesture: {gesture!r}")
+        try:
+            if not locator.count() or not locator.is_visible():
+                continue
+            if gesture == "click" and not locator.is_enabled():
+                continue
+        except Exception:
+            continue
+        try:
+            if gesture == "click":
+                locator.click(timeout=timeout_ms)
+            else:
+                locator.press("Enter")
+        except Exception as exc:
+            _log.warning("submitting %s: the %s may not have gone out (%s). "
+                        "Not sending it again.", what, gesture,
+                        debugcap.safe_error(exc))
+        return gesture
+    return None

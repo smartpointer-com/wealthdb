@@ -53,7 +53,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from collectorkit import bronze, cli, debugcap, launch
+from collectorkit import bronze, cli, debugcap, launch, loginform
 from collectorkit import explore as kit_explore
 from collectorkit.launch import page_url, pump, wait_for
 
@@ -627,19 +627,12 @@ def _prefill(page, username: str, password: str) -> bool:
 
 
 def _submit(page) -> bool:
-    """Submit the sign-in form — click the submit button, falling back to
-    Enter in the password field."""
-    with contextlib.suppress(Exception):
-        btn = page.locator(amexclient.SEL_SUBMIT).first
-        if btn.count():
-            btn.click(timeout=5000)
-            return True
-    with contextlib.suppress(Exception):
-        pwd = page.locator(amexclient.SEL_PASSWORD).first
-        if pwd.count():
-            pwd.press("Enter")
-            return True
-    return False
+    """Submit the sign-in form once: the submit button, or Enter in the
+    password field when the page shows no button (loginform.submit_once)."""
+    return loginform.submit_once(
+        [(page.locator(amexclient.SEL_SUBMIT).first, "click"),
+         (page.locator(amexclient.SEL_PASSWORD).first, "enter")],
+        what="the sign-in form") is not None
 
 
 def _prefill_and_submit(page, args) -> bool:

@@ -65,7 +65,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
-from collectorkit import cli, envfile, launch
+from collectorkit import cli, envfile, launch, loginform
 
 log = logging.getLogger("equityzen.login")
 
@@ -279,27 +279,18 @@ def _submit_totp(page, code: str, timeout_ms: int, debug: bool) -> bool:
         totp.press_sequentially(code, delay=80)
     except Exception:
         pass  # field may detach if a future variant auto-submits mid-type
-    # Primary: click the 2FA submit button.
-    for sel in ("button:has-text('Submit')", "button:has-text('Verify')",
-                "button:has-text('Continue')", "button:has-text('Confirm')",
-                "button[type='submit']"):
-        try:
-            b = page.locator(sel).first
-            if b.count() and b.is_visible() and b.is_enabled():
-                b.click(timeout=2000)
-                if debug:
-                    log.info("2FA submitted via %s", sel)
-                if _wait_off_login(page, timeout_ms):
-                    return True
-        except Exception:
-            continue
-    # Fallbacks: Enter, then a plain wait for a form that auto-submits.
-    try:
-        if totp.count():
-            totp.press("Enter")
-    except Exception:
-        pass
-    if _wait_off_login(page, 3000):
+    # One submit (loginform.submit_once): the 2FA submit button, else Enter
+    # in the code field. With neither on the page, a form that auto-submits
+    # has gone already, and a short wait shows it.
+    gesture = loginform.submit_once(
+        [(page.locator(sel).first, "click")
+         for sel in ("button:has-text('Submit')", "button:has-text('Verify')",
+                     "button:has-text('Continue')",
+                     "button:has-text('Confirm')", "button[type='submit']")]
+        + [(totp, "enter")], what="the 2FA code", timeout_ms=2000)
+    if gesture and debug:
+        log.info("2FA submitted by %s", gesture)
+    if _wait_off_login(page, timeout_ms if gesture else 3000):
         return True
     log.info("2FA did not submit via known controls; visible buttons: %s",
              _list_buttons(page))

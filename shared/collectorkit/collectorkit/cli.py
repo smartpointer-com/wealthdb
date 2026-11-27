@@ -79,11 +79,92 @@ LOOKBACK_CHOICES = list(LOOKBACK_PRESETS.keys())
 
 
 def configure_logging(verbose: bool = False) -> None:
-    """Set up root logging with the shared collector format."""
+    """Set up root logging with the shared collector format, and the
+    guard that keeps a credential out of every error it prints
+    (guard_errors)."""
+    guard_errors()
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         format=LOG_FORMAT,
     )
+
+
+def guard_errors() -> None:
+    """Keep a credential out of every error the process prints.
+
+    A Playwright error carries a call log that repeats the request's
+    headers: the bearer, the API key, the whole cookie jar
+    (redact.safe_error). An error that ends the process, and one a log
+    line carries (an exception passed as an argument, or `exc_info`),
+    print with the call log cut off and URL secrets masked. An error with
+    neither prints exactly as before. Calling it again changes nothing.
+    configure_logging calls it; a collector that sets up logging on its
+    own calls it first."""
+    global _GUARDED
+    if _GUARDED:
+        return
+    _GUARDED = True
+    import threading
+
+    from . import redact
+
+    previous_hook = sys.excepthook
+
+    def excepthook(kind, exc, tb):
+        if exc is not None and redact.leaks(exc):
+            sys.stderr.write(redact.safe_traceback(exc))
+        else:
+            previous_hook(kind, exc, tb)
+
+    sys.excepthook = excepthook
+    previous_thread_hook = threading.excepthook
+
+    def thread_excepthook(args):
+        if args.exc_value is not None and redact.leaks(args.exc_value):
+            name = getattr(args.thread, "name", "?")
+            sys.stderr.write(f"Exception in thread {name}:\n"
+                             + redact.safe_traceback(args.exc_value))
+        else:
+            previous_thread_hook(args)
+
+    threading.excepthook = thread_excepthook
+
+    def clean(value):
+        if isinstance(value, BaseException):
+            text = str(value)
+            safe = redact.safe_text(text)
+            return safe if safe != text else value
+        if isinstance(value, str):
+            return redact.safe_text(value)
+        return value
+
+    previous_factory = logging.getLogRecordFactory()
+
+    def factory(*args, **kwargs):
+        record = previous_factory(*args, **kwargs)
+        if isinstance(record.msg, str) and record.args:
+            # A format string keeps its URLs as written: masking one
+            # could take a %s with it. Its arguments are cleaned below.
+            cut = record.msg.find("Call log:")
+            if cut >= 0:
+                record.msg = record.msg[:cut].rstrip()
+        else:
+            record.msg = clean(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(clean(a) for a in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {k: clean(v) for k, v in record.args.items()}
+        exc = record.exc_info[1] if isinstance(record.exc_info, tuple) else None
+        if exc is not None and redact.leaks(exc):
+            # A formatter prints exc_text when it is set, and only
+            # renders exc_info itself when it is not.
+            record.exc_text = redact.safe_traceback(exc).rstrip("\n")
+        return record
+
+    logging.setLogRecordFactory(factory)
+
+
+_GUARDED = False
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
