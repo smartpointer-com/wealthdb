@@ -620,7 +620,7 @@ func TestLoadNamesWhatTheConfigLeavesOut(t *testing.T) {
 				"load: to add it, run: wealthdb config banks\n",
 			}
 			if tc.own {
-				prog := "wealthdb -c '" + cfg + "'"
+				prog := `wealthdb -c "` + cfg + `"`
 				wants = []string{
 					"load: first: no data yet. Run: " + prog + " collect plaid link --item first\n",
 					"load: collected, but not in the config, so not loaded: Plaid (linked banks): second\n",
@@ -647,8 +647,8 @@ func TestPointersQuoteTheConfigPath(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	for name, quoted := range map[string]string{
-		"my setup": "'" + filepath.Join(dir, "my setup", "wealthdb.cfg") + "'",
-		"it's":     "'" + filepath.Join(dir, `it'\''s`, "wealthdb.cfg") + "'",
+		"my setup": `"` + filepath.Join(dir, "my setup", "wealthdb.cfg") + `"`,
+		"it's":     `"` + filepath.Join(dir, "it's", "wealthdb.cfg") + `"`,
 	} {
 		cfg := filepath.Join(dir, name, "wealthdb.cfg")
 		// Before a setup: the pointer of a report, and the first steps.

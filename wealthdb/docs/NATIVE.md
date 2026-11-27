@@ -21,6 +21,7 @@ answers. This page is about the native engine. The container engine is
 | MCP server (`wealthdb mcp`) | container | program, kept running |
 | Dashboards (`wealthdb web`, Metabase) | container | Java program, kept running |
 | Collectors with a Dockerfile | container | container |
+| Their host-side verbs (`load`, `prune` and `recompress` of schwab-api and fidelity-web) | program | program |
 | Collectors on a Python venv | program | program |
 
 ## Choosing it

@@ -258,8 +258,8 @@ for sub in web mcp collect; do
     is_out "-c elsewhere, $sub: the folder and the words of its commands" "host:$script
 config:$SP
 root:$TMP/my try
-collect:wealthdb -c '$SP' collect
-program:wealthdb -c '$SP'" "$(shown run -c "$SP" "$sub" start)"
+collect:wealthdb -c \"$SP\" collect
+program:wealthdb -c \"$SP\"" "$(shown run -c "$SP" "$sub" start)"
 done
 is_out "WEALTHDB_CONFIG elsewhere: the same, and the variable as it was set" "host:web/web
 config:$OWN/wealthdb.cfg

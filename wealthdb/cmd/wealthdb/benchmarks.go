@@ -75,8 +75,9 @@ func checkExposureBenchmark(fam *family, name, benchmark, country string, series
 type benchmarkWeights map[string]float64
 
 // load reads the shares the last `web refresh` wrote. A benchmark with
-// none is an error: it says what to run.
-func (w benchmarkWeights) load(name, dimension string) func(context.Context, *sql.DB) error {
+// none is an error: it says what to run, with the run's config
+// (commandFor).
+func (w benchmarkWeights) load(name, dimension, configPath string) func(context.Context, *sql.DB) error {
 	return func(ctx context.Context, db *sql.DB) error {
 		read, err := gold.BenchmarkWeights(ctx, db, name, dimension)
 		if err != nil {
@@ -90,7 +91,7 @@ func (w benchmarkWeights) load(name, dimension string) func(context.Context, *sq
 			if !slices.Contains(names, name) {
 				return errs.Newf(errs.ExitUsage, "exposure: no benchmark named %q; 'wealthdb help benchmarks' lists them", name)
 			}
-			return errs.Newf(errs.ExitUsage, "exposure: %q has no look-through yet; run 'wealthdb web refresh'", name)
+			return errs.Newf(errs.ExitUsage, "exposure: %q has no look-through yet; run '%s'", name, commandFor(configPath, "web refresh"))
 		}
 		for k, v := range read {
 			w[k] = v
@@ -132,5 +133,5 @@ func benchmarkView[T interface{ BenchmarkKey() string }](req request, dimension 
 	}
 	shown = slices.Insert(shown, at, "benchmark", "difference")
 	return withLoads(seriesView(req, cols, shown, fetch),
-		weights.load(req.benchmark, dimension))
+		weights.load(req.benchmark, dimension, req.configPath))
 }

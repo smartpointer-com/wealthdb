@@ -375,17 +375,23 @@ wealthdb_clean_path() (
 
 # wealthdb_shell_word TEXT prints TEXT as one word of a shell command: as
 # it is when it holds only letters, digits and _ . / : @ % + = , -, which
-# no shell acts on, else in single quotes. A single quote of its own
+# no shell acts on; else in double quotes, so a message that quotes the
+# command in single quotes quotes it once. Inside double quotes a shell
+# still acts on $ ` " \ and !, so TEXT with one of them, a line break, or
+# nothing at all goes in single quotes instead: a single quote of its own
 # ends the quoted piece, stands escaped, and starts the next piece. The
 # engine quotes a path by the same rule (shellWord), so a command reads
 # the same from either.
 wealthdb_shell_word() (
     LC_ALL=C
     export LC_ALL
+    nl='
+'
     case "$1" in
-        '' | *[!A-Za-z0-9_./:@%+=,-]*)
+        *[\$\`\"\\!]* | *"$nl"* | '')
             printf "'%s'\n" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
             ;;
+        *[!A-Za-z0-9_./:@%+=,-]*) printf '"%s"\n' "$1" ;;
         *) printf '%s\n' "$1" ;;
     esac
 )

@@ -28,7 +28,7 @@ func TestAWriteCommandHoldsTheDatabaseToItsEnginesKind(t *testing.T) {
 	gold := filepath.Join(t.TempDir(), "wealthdb.db")
 
 	t.Setenv(engineKindEnv, "")
-	if err := claimGoldForEngine(gold, "load", false); err != nil {
+	if err := claimGoldForEngine(gold, "load", "", false); err != nil {
 		t.Fatalf("an engine with no kind: %v", err)
 	}
 	if got := engineKindFile(t, gold); got != "" {
@@ -37,7 +37,7 @@ func TestAWriteCommandHoldsTheDatabaseToItsEnginesKind(t *testing.T) {
 
 	t.Setenv(engineKindEnv, engineNative)
 	for range 2 {
-		if err := claimGoldForEngine(gold, "load", false); err != nil {
+		if err := claimGoldForEngine(gold, "load", "", false); err != nil {
 			t.Fatalf("the native engine: %v", err)
 		}
 		if got := engineKindFile(t, gold); got != "native\n" {
@@ -46,7 +46,7 @@ func TestAWriteCommandHoldsTheDatabaseToItsEnginesKind(t *testing.T) {
 	}
 
 	t.Setenv(engineKindEnv, engineContainer)
-	err := claimGoldForEngine(gold, "load", false)
+	err := claimGoldForEngine(gold, "load", "", false)
 	if err == nil {
 		t.Fatal("the container engine wrote a database the native engine writes")
 	}
@@ -61,7 +61,7 @@ func TestAWriteCommandHoldsTheDatabaseToItsEnginesKind(t *testing.T) {
 	}
 
 	// A new database takes its creator's kind over a file left behind.
-	if err := claimGoldForEngine(gold, "init", true); err != nil {
+	if err := claimGoldForEngine(gold, "init", "", true); err != nil {
 		t.Fatalf("a new database: %v", err)
 	}
 	if got := engineKindFile(t, gold); got != "container\n" {
@@ -69,7 +69,7 @@ func TestAWriteCommandHoldsTheDatabaseToItsEnginesKind(t *testing.T) {
 	}
 
 	t.Setenv(engineKindEnv, "docker")
-	if err := claimGoldForEngine(gold, "load", false); err == nil || !strings.Contains(err.Error(), "no kind of engine") {
+	if err := claimGoldForEngine(gold, "load", "", false); err == nil || !strings.Contains(err.Error(), "no kind of engine") {
 		t.Errorf("an unknown kind: %v", err)
 	}
 }
@@ -86,7 +86,7 @@ func TestAnEngineKindFileThatStatesNoKindIsRefused(t *testing.T) {
 		if err := os.WriteFile(gold+goldEngineSuffix, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		err := claimGoldForEngine(gold, "load", false)
+		err := claimGoldForEngine(gold, "load", "", false)
 		if err == nil || !strings.Contains(err.Error(), "states no kind of engine") || !strings.Contains(err.Error(), gold+goldEngineSuffix) {
 			t.Errorf("content %q: %v", content, err)
 		}
@@ -101,7 +101,7 @@ func TestAnEngineKindFileThatStatesNoKindIsRefused(t *testing.T) {
 	if err := os.Mkdir(gold+goldEngineSuffix, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := claimGoldForEngine(gold, "load", false); err == nil || !strings.Contains(err.Error(), "read the engine kind") {
+	if err := claimGoldForEngine(gold, "load", "", false); err == nil || !strings.Contains(err.Error(), "read the engine kind") {
 		t.Errorf("a file that cannot be read: %v", err)
 	}
 }
@@ -119,7 +119,7 @@ func TestOneOfTwoFirstWritersStatesTheKind(t *testing.T) {
 		_ = os.WriteFile(gold+goldEngineSuffix, []byte("container\n"), 0o600)
 	}()
 	t.Setenv(engineKindEnv, engineNative)
-	err := claimGoldForEngine(gold, "load", false)
+	err := claimGoldForEngine(gold, "load", "", false)
 	if err == nil || !strings.Contains(err.Error(), "the container engine writes") {
 		t.Errorf("the engine that lost the first statement: %v", err)
 	}
@@ -154,19 +154,19 @@ func TestOtherEngineWrites(t *testing.T) {
 func TestTheWriteMutexRefusesTheOtherKindOfEngine(t *testing.T) {
 	gold := filepath.Join(t.TempDir(), "wealthdb.db")
 	t.Setenv(engineKindEnv, engineNative)
-	lock, err := lockGoldForWrite(gold, "load")
+	lock, err := lockGoldForWrite(gold, "load", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	lock.unlock()
 
 	t.Setenv(engineKindEnv, engineContainer)
-	if _, err := lockGoldForWrite(gold, "load"); err == nil {
+	if _, err := lockGoldForWrite(gold, "load", ""); err == nil {
 		t.Fatal("the container engine took the mutex of a database the native engine writes")
 	}
 
 	t.Setenv(engineKindEnv, engineNative)
-	lock, err = lockGoldForWrite(gold, "load")
+	lock, err = lockGoldForWrite(gold, "load", "")
 	if err != nil {
 		t.Fatalf("the refused command kept the mutex: %v", err)
 	}
@@ -235,5 +235,26 @@ func TestAReportDoesNotMigrateADatabaseOfTheOtherKind(t *testing.T) {
 	}
 	if got := stored(""); got == "another-build" {
 		t.Error("a report by the database's own kind left it out of date")
+	}
+}
+
+// The refusal's commands read the run's config, as every command a
+// message names does (commandFor).
+func TestTheEngineKindRefusalNamesTheRunsConfig(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "/x")
+	gold := filepath.Join(t.TempDir(), "wealthdb.db")
+	t.Setenv(engineKindEnv, engineNative)
+	if err := claimGoldForEngine(gold, "load", "/x/try.cfg", false); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(engineKindEnv, engineContainer)
+	err := claimGoldForEngine(gold, "load", "/x/try.cfg", false)
+	if err == nil {
+		t.Fatal("the container engine wrote a database the native engine writes")
+	}
+	for _, want := range []string{"wealthdb -c /x/try.cfg mcp stop", "wealthdb -c /x/try.cfg web stop"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal lacks %q: %v", want, err)
+		}
 	}
 }

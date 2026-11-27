@@ -119,7 +119,7 @@ is "...the same without one" "caf--" "$(LC_ALL=C wealthdb_setup_name "/x/caf$(pr
 out="$(HOME=/home/u XDG_CONFIG_HOME=/cfg paths '/home/u/My Try/wealthdb.cfg')"
 has_item "a folder with a blank: its name" "name=my-try" "$out"
 has_item "...its data root" "root=/home/u/My Try" "$out"
-has_item "...and its command, quoted for a shell" "program=wealthdb -c '/home/u/My Try/wealthdb.cfg'" "$out"
+has_item "...and its command, quoted for a shell" 'program=wealthdb -c "/home/u/My Try/wealthdb.cfg"' "$out"
 
 echo "a path as one word of a command (the engine's shellWord):"
 while IFS='|' read -r in want; do
@@ -127,19 +127,24 @@ while IFS='|' read -r in want; do
 done <<'EOF'
 plain/path.cfg|plain/path.cfg
 /x/a_b-c.d:e@f%g+h=i,j/try.cfg|/x/a_b-c.d:e@f%g+h=i,j/try.cfg
-a b|'a b'
+a b|"a b"
+~/x|"~/x"
+a*b|"a*b"
+a'b'c|"a'b'c"
+a&b|"a&b"
 $HOME/x|'$HOME/x'
-~/x|'~/x'
-a*b|'a*b'
 a"b|'a"b'
-a'b'c|'a'\''b'\''c'
-a&b|'a&b'
+a`b|'a`b'
+a\b|'a\b'
+a!b|'a!b'
+it's $5|'it'\''s $5'
 EOF
 is "nothing is an empty word" "''" "$(wealthdb_shell_word '')"
-is "a letter outside ASCII is quoted, in any locale" "'$(printf '\303\251').cfg'" \
+is "a letter outside ASCII is quoted, in any locale" "\"$(printf '\303\251').cfg\"" \
     "$(LC_ALL=en_US.UTF-8 wealthdb_shell_word "$(printf '\303\251').cfg")"
 # The quoted word reads back as the path it was made from.
-for p in "/x/my setup/try.cfg" "/x/it's/try.cfg" '/x/$HOME & co/"q".cfg'; do
+for p in "/x/my setup/try.cfg" "/x/it's/try.cfg" '/x/$HOME & co/"q".cfg' \
+    "/x/a\`b\\c!d/try.cfg" "$(printf '/x/two\nlines')"; do
     eval "back=$(wealthdb_shell_word "$p")"
     is "a shell reads $p back" "$p" "$back"
 done
@@ -162,9 +167,9 @@ exported() {
 }
 out="$(XDG_CONFIG_HOME=/cfg WEALTHDB_DATA_ROOT=/data exported '/home/u/My Try/wealthdb.cfg')"
 is "a setup of its own: its data root and the words of its commands" \
-    "WEALTHDB_COLLECT=wealthdb -c '/home/u/My Try/wealthdb.cfg' collect
+    'WEALTHDB_COLLECT=wealthdb -c "/home/u/My Try/wealthdb.cfg" collect
 WEALTHDB_DATA_ROOT=/home/u/My Try
-WEALTHDB_PROGRAM=wealthdb -c '/home/u/My Try/wealthdb.cfg'" "$out"
+WEALTHDB_PROGRAM=wealthdb -c "/home/u/My Try/wealthdb.cfg"' "$out"
 out="$(XDG_CONFIG_HOME=/cfg WEALTHDB_DATA_ROOT=/data WEALTHDB_COLLECT=stale WEALTHDB_PROGRAM=stale exported)"
 is "the default config: the data root of the environment, and no words, also not inherited ones" \
     "WEALTHDB_DATA_ROOT=/data" "$out"

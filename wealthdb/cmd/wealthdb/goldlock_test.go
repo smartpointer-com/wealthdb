@@ -25,12 +25,12 @@ func TestGoldWriteLockExcludesASecondWriter(t *testing.T) {
 	goldPath := filepath.Join(t.TempDir(), "wealthdb.db")
 	sidecar := goldPath + goldWriteLockSuffix
 
-	held, err := lockGoldForWrite(goldPath, "categorize")
+	held, err := lockGoldForWrite(goldPath, "categorize", "")
 	if err != nil {
 		t.Fatalf("first take: %v", err)
 	}
 
-	_, err = lockGoldForWrite(goldPath, "compact")
+	_, err = lockGoldForWrite(goldPath, "compact", "")
 	if err == nil {
 		t.Fatal("second take succeeded; the mutex excludes nothing")
 	}
@@ -47,7 +47,7 @@ func TestGoldWriteLockExcludesASecondWriter(t *testing.T) {
 
 	// unlock hands the mutex on rather than poisoning the file.
 	held.unlock()
-	next, err := lockGoldForWrite(goldPath, "compact")
+	next, err := lockGoldForWrite(goldPath, "compact", "")
 	if err != nil {
 		t.Fatalf("take after unlock: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestGoldWriteLockLetsReadersThrough(t *testing.T) {
 		t.Fatal("load failed")
 	}
 
-	held, err := lockGoldForWrite(goldPathFromCfg(cfg), "categorize")
+	held, err := lockGoldForWrite(goldPathFromCfg(cfg), "categorize", "")
 	if err != nil {
 		t.Fatalf("take the mutex: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestGoldWriteLockSidecarSurvivesTheSwap(t *testing.T) {
 	if !os.SameFile(before, after) {
 		t.Error("the sidecar was replaced by the swap; the next writer would lock a different file")
 	}
-	held, err := lockGoldForWrite(goldPath, "load")
+	held, err := lockGoldForWrite(goldPath, "load", "")
 	if err != nil {
 		t.Fatalf("take the mutex after the swap: %v", err)
 	}

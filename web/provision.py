@@ -53,7 +53,8 @@ def wait_health(client, limit=270, delay=0.25):
     while time.monotonic() - start < limit:
         st, _ = client.get("/api/health", timeout=5)
         if st == 200:
-            print(f"provision: timing: wait for Metabase {time.monotonic() - start:.3f}s", file=sys.stderr)
+            if os.environ.get("WEALTHDB_WEB_TIMINGS") == "1":
+                print(f"provision: timing: wait for Metabase {time.monotonic() - start:.3f}s", file=sys.stderr)
             return True
         time.sleep(delay)
     return False

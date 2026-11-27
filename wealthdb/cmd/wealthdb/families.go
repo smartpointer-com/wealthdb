@@ -643,6 +643,7 @@ func runReport(ctx context.Context, g globalFlags, fam *family, view string, arg
 		}
 	}
 	req.categories = overrideCategories(cfg)
+	req.configPath = g.ConfigPath
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
 	if skeletons {
 		return fam.skeletons(ctx, open, req.asOf, req.currency, stdout)

@@ -49,7 +49,7 @@ type goldWriteLock struct {
 // engine's kind (claimGoldForEngine). The returned lock is released by
 // unlock, which tolerates a nil receiver so callers can defer it
 // unconditionally.
-func lockGoldForWrite(goldPath, cmdName string) (*goldWriteLock, error) {
+func lockGoldForWrite(goldPath, cmdName, configPath string) (*goldWriteLock, error) {
 	path := goldPath + goldWriteLockSuffix
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
@@ -63,7 +63,7 @@ func lockGoldForWrite(goldPath, cmdName string) (*goldWriteLock, error) {
 				"lots / categorize / categorizations --forget / resolve-symbols / web-materialize) is running and holds %q. "+
 				"Wait for it to finish and re-run.", cmdName, goldPath, path)
 	}
-	if err := claimGoldForEngine(goldPath, cmdName, false); err != nil {
+	if err := claimGoldForEngine(goldPath, cmdName, configPath, false); err != nil {
 		_ = f.Close()
 		return nil, err
 	}

@@ -74,9 +74,11 @@ serving name, `wealthdb-<inode>-<mtime>.db`, a hard link of the copy:
 - Start removes the spill directories that killed DuckDBs left (§7),
   while no container runs.
 
-Start and refresh print each step's wall time on stderr
-(`web: timing: <step> <seconds>s`). Provisioning prints its wait for
-Metabase too.
+With `WEALTHDB_WEB_TIMINGS=1`, start and refresh print each step's wall
+time on stderr (`web: timing: <step> <seconds>s`), and so do the
+engine's materialize passes and provisioning's wait for Metabase.
+Without it they print none: the lines help to tune a refresh and are
+noise on an ordinary start.
 
 ## 3. The driver: glibc base, version pin, readable JAR (load-bearing)
 

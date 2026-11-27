@@ -78,6 +78,7 @@ type request struct {
 	method, annualize, inception string // returns
 	netting                      bool   // returns
 	benchmark                    string // returns global, exposure: the benchmark beside the rows
+	configPath                   string // the run's config, which the commands a message names carry
 
 	withCash     bool              // holdings positions
 	country      string            // exposure: risk | domicile

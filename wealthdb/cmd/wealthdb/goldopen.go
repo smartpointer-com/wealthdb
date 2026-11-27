@@ -105,7 +105,7 @@ func gateGoldForWrite(g globalFlags, cfg *config.Config, cmdName, missingDBMsg s
 			"'%s' requires write access to the gold database, but '%s' is read-only (detected: %s).",
 			cmdName, cfg.GoldDB, dec.Reason)
 	}
-	return lockGoldForWrite(cfg.GoldDB, cmdName)
+	return lockGoldForWrite(cfg.GoldDB, cmdName, g.ConfigPath)
 }
 
 // openGoldForWrite gates as gateGoldForWrite does, then opens the gold
@@ -160,7 +160,7 @@ func openGoldForOverlay(ctx context.Context, g globalFlags, goldPath, cmdName, m
 				"'%s' requires write access to the gold database, but '%s' is read-only (detected: %s). "+
 					"Pass --dry-run if you only want to %s.", cmdName, goldPath, dec.Reason, dryRunHint)
 		}
-		if lock, err = lockGoldForWrite(goldPath, cmdName); err != nil {
+		if lock, err = lockGoldForWrite(goldPath, cmdName, g.ConfigPath); err != nil {
 			return nil, nil, err
 		}
 		mode = gold.ModeReadWrite

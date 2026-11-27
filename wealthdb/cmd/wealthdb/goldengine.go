@@ -93,8 +93,9 @@ func otherEngineWrites(goldPath string) bool {
 // this kind only, so the first statement is the creation of the file,
 // which one command alone can win: the loser reads the winner's kind. A
 // new database takes the kind whatever a file left from an earlier one
-// says.
-func claimGoldForEngine(goldPath, cmdName string, created bool) error {
+// says. configPath is the run's config, which the commands a refusal
+// names carry (commandFor).
+func claimGoldForEngine(goldPath, cmdName, configPath string, created bool) error {
 	kind, err := engineKind()
 	if err != nil || kind == "" {
 		return err
@@ -124,8 +125,9 @@ func claimGoldForEngine(goldPath, cmdName string, created bool) error {
 				"'%s' cannot write %q: the %s engine writes this database, and this is the %s engine. "+
 					"Two kinds of engine must not write one database, because a file lock does not reach "+
 					"between this computer and Docker. To move the database to this engine, stop the other "+
-					"engine's servers (wealthdb mcp stop, wealthdb web stop), then delete %q.",
-				cmdName, goldPath, stated, kind, path)
+					"engine's servers (%s, %s), then delete %q.",
+				cmdName, goldPath, stated, kind, commandFor(configPath, "mcp stop"),
+				commandFor(configPath, "web stop"), path)
 		}
 		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if errors.Is(err, os.ErrExist) {

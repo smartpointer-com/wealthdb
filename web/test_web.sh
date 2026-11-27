@@ -37,6 +37,9 @@ export WEALTHDB_WEB_DATA_DIR="$tmp/web-data"
 # function of its own.
 mkdir -p "$tmp/secrets" "$tmp/bin"
 export WEALTHDB_SECRETS_DIR="$tmp/secrets" WEALTHDB_NO_LAUNCHD=1
+# The steps' timing lines, which most cases below check, are printed only
+# when asked for; the cases of the default unset it.
+export WEALTHDB_WEB_TIMINGS=1
 cat > "$tmp/bin/launchctl" <<EOF
 #!/bin/sh
 echo "\$*" >> "$tmp/launchctl-calls"
@@ -256,6 +259,11 @@ check_not "...and guesses no cause" "busy" "$mat_err"
 check_eq "...and leaves no temp file" "" "$(ls "$tmp/mat-tmp")"
 mat_err="$( (WEALTHDB="$tmp/engine-fail" SNAP="$tmp/mat-none/wealthdb.db" TMPDIR="$tmp/mat-tmp" _materialize) 2>&1 >/dev/null)"
 check "with no snapshot yet it says none was taken" "No snapshot was taken." "$mat_err"
+mat_err="$( (unset WEALTHDB_WEB_TIMINGS; WEALTHDB="$tmp/engine-fail" SNAP="$tmp/mat-snap/wealthdb.db" TMPDIR="$tmp/mat-tmp" _materialize) 2>&1 >/dev/null)"
+check_not "unasked for, the engine's timing lines are not shown" "timing: serving" "$mat_err"
+check "...its other lines are" "Stack Trace:" "$mat_err"
+check "...and the error line is still found" \
+    "web: materialization failed (exit 1): wealthdb: MaterializeGains: INTERNAL Error: an assertion" "$mat_err"
 # web_start runs it under errexit and pipefail: the message still
 # prints, with the fallback line, and the status comes back.
 printf '#!/bin/sh\necho "timing: serving 1.0s" >&2\nexit 3\n' > "$tmp/engine-quiet" && chmod +x "$tmp/engine-quiet"
@@ -284,6 +292,16 @@ seq_time="$tmp/refresh-time"
 ) >"$seq_time" 2>&1 || true
 check_re "materialize is timed" "web: timing: materialize [0-9]+\\.[0-9]{3}s" "$(cat "$seq_time")"
 check_re "snapshot is timed"    "web: timing: snapshot [0-9]+\\.[0-9]{3}s"    "$(cat "$seq_time")"
+quiet="$(
+    unset WEALTHDB_WEB_TIMINGS
+    _load_config() { GOLD_DB="$tmp/gold.db"; SNAP="$tmp/refresh-time-snap/wealthdb.db"; }
+    _materialize() { :; }
+    _snapshot()    { :; }
+    _mtime()       { echo now; }
+    _is_running()  { return 1; }
+    web_refresh 2>&1
+)" || true
+check_not "unasked for, refresh prints no timing line" "timing:" "$quiet"
 
 echo "== a failed materialize still prints its duration and stops =="
 seq_fail="$tmp/refresh-fail"
@@ -943,7 +961,7 @@ check_eq "the container is named after the folder, the data is in it, and comman
     "container=wealthdb-metabase-my-try
 data=/home/u/My Try/web
 h2=/home/u/My Try/web/metabase
-program=wealthdb -c '/home/u/My Try/wealthdb.cfg'" "$out"
+program=wealthdb -c \"/home/u/My Try/wealthdb.cfg\"" "$out"
 out="$(knobs WEALTHDB_CONFIG=/home/u/TRY/wealthdb.cfg)"
 check    "an upper-case folder gives a lower-case name" "container=wealthdb-metabase-try" "$out"
 out="$(knobs WEALTHDB_CONFIG=/home/u/try//wealthdb.cfg)"
@@ -1055,7 +1073,7 @@ check_eq "...and stops, removes and starts nothing" "" "$(changed)"
 
 echo "== the commands a setup of its own is told to run =="
 OWNCFG="$tmp/own setup/wealthdb.cfg"
-OWNCMD="wealthdb -c '$OWNCFG'"
+OWNCMD="wealthdb -c \"$OWNCFG\""
 # own_run CMD...: CMD with that config named, as `wealthdb -c` names it.
 own_run() {
     (

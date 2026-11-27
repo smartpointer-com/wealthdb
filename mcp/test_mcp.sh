@@ -353,7 +353,7 @@ check     "the data folder is in it" "data=/home/u/My Try/mcp" "$out"
 check     "the data root is the folder" "root=/home/u/My Try" "$out"
 check_not "WEALTHDB_DATA_ROOT is not read" "/data" "$out"
 check_not "nor the XDG data dir" "/xdg" "$out"
-check     "commands name the config, quoted" "program=wealthdb -c '/home/u/My Try/wealthdb.cfg'" "$out"
+check     "commands name the config, quoted" 'program=wealthdb -c "/home/u/My Try/wealthdb.cfg"' "$out"
 check     "the container gets that name" "--name wealthdb-mcp-my-try" "$out"
 check     "...mounts the folder as the data root" "-v /home/u/My Try:/home/u/My Try:ro" "$out"
 check     "...is told so" "-e WEALTHDB_DATA_ROOT=/home/u/My Try" "$out"
@@ -452,7 +452,7 @@ config 1 3300 token 0
 
 echo "== the commands a setup of its own is told to run =="
 OWNCFG="$tmp/own setup/wealthdb.cfg"
-OWNCMD="wealthdb -c '$OWNCFG'"
+OWNCMD="wealthdb -c \"$OWNCFG\""
 # own_run CMD...: CMD with that config named, as `wealthdb -c` names it.
 own_run() {
     (

@@ -439,10 +439,11 @@ web_status() {
 # _epoch is seconds since the epoch, with a fraction. macOS date has no %N.
 _epoch() { "$PYTHON3" -c 'import time; print(f"{time.time():.3f}")'; }
 
-# _timed LABEL CMD... runs CMD and prints its wall time on stderr.
-# The command runs with set -e off so a failure still prints the
-# duration. The function returns that status and leaves the caller's
-# errexit as it found it, so a caller that has set -e still stops.
+# _timed LABEL CMD... runs CMD and, with WEALTHDB_WEB_TIMINGS=1, prints
+# its wall time on stderr. The command runs with set -e off so a failure
+# still prints the duration. The function returns that status and leaves
+# the caller's errexit as it found it, so a caller that has set -e still
+# stops.
 _timed() {
     local label="$1" start rc errexit=0
     shift
@@ -452,10 +453,17 @@ _timed() {
     "$@"
     rc=$?
     [ "$errexit" -eq 1 ] && set -e
-    "$PYTHON3" -c 'import sys, time; print(f"web: timing: {sys.argv[1]} {time.time() - float(sys.argv[2]):.3f}s", file=sys.stderr)' \
-        "$label" "$start"
+    if _timings; then
+        "$PYTHON3" -c 'import sys, time; print(f"web: timing: {sys.argv[1]} {time.time() - float(sys.argv[2]):.3f}s", file=sys.stderr)' \
+            "$label" "$start"
+    fi
     return "$rc"
 }
+
+# _timings succeeds when the steps' timing lines are asked for
+# (WEALTHDB_WEB_TIMINGS=1): they help to tune a refresh, and are noise
+# on an ordinary start.
+_timings() { [ "${WEALTHDB_WEB_TIMINGS:-}" = 1 ]; }
 
 # _stat FIELD PATH prints os.stat(PATH).FIELD (st_mtime_ns, st_ino), or
 # 0 for a missing file.
@@ -640,7 +648,10 @@ _materialize() {
     if [ -n "${WEALTHDB_CONFIG:-}" ]; then cfg=(-c "$WEALTHDB_CONFIG"); fi
     # Inside the left side of ||, a failing pipeline does not stop an
     # errexit caller before its status is read.
-    { "$WEALTHDB" ${cfg[@]+"${cfg[@]}"} web-materialize </dev/null 2>&1 1>&3 3>&- | tee "$log" >&2 3>&-
+    # The log keeps every line for the error line; the terminal gets the
+    # engine's timing lines only when they are asked for (_timings).
+    { "$WEALTHDB" ${cfg[@]+"${cfg[@]}"} web-materialize </dev/null 2>&1 1>&3 3>&- | tee "$log" |
+        if _timings; then cat; else awk '!/^timing: / { print; fflush() }'; fi >&2 3>&-
       rc=${PIPESTATUS[0]}; } 3>&1 || :
     if [ "$rc" != 0 ]; then
         echo "web: materialization failed (exit $rc): $(_error_line "$log")" >&2
@@ -843,7 +854,8 @@ env overrides: WEALTHDB_CONFIG (another wealthdb.cfg: a setup of its own),
 WEALTHDB_IMAGE_TAG (the image's tag; unset, the checkout's .image-tag,
 else latest), WEALTHDB_WEB_IMAGE,
 WEALTHDB_WEB_CONTAINER, WEALTHDB_WEB_DATA_DIR,
-WEALTHDB_WEB_BIND (both|v4|v6), WEALTHDB_WEB_ENV_FILE (default
+WEALTHDB_WEB_BIND (both|v4|v6), WEALTHDB_WEB_TIMINGS=1 (each step's
+wall time on stderr), WEALTHDB_WEB_ENV_FILE (default
 wealthdb-web.env in $WEALTHDB_SECRETS_DIR, else ~/.secrets, and
 wealthdb-web-<folder>.env there for a setup of its own, read for the
 variables above), WEALTHDB_NO_LAUNCHD=1 (on a Mac, the native server as

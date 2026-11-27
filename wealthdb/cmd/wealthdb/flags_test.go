@@ -99,10 +99,13 @@ func TestCommandForNamesTheConfig(t *testing.T) {
 		{"/x/wealthdb.cfg", "", "wealthdb"},
 		{"/x/try.cfg", "load -a", "wealthdb -c /x/try.cfg load -a"},
 		{"/x/try.cfg", "", "wealthdb -c /x/try.cfg"},
+		// No path is the default config.
+		{"", "init", "wealthdb init"},
 		// A path the shell would act on is quoted, so the command works
 		// when pasted; a plain one stays as it is.
-		{"/x/my setup/try.cfg", "init", "wealthdb -c '/x/my setup/try.cfg' init"},
-		{"/x/it's/try.cfg", "load -a", `wealthdb -c '/x/it'\''s/try.cfg' load -a`},
+		{"/x/my setup/try.cfg", "init", `wealthdb -c "/x/my setup/try.cfg" init`},
+		{"/x/it's/try.cfg", "load -a", `wealthdb -c "/x/it's/try.cfg" load -a`},
+		{"/x/$5/try.cfg", "init", "wealthdb -c '/x/$5/try.cfg' init"},
 		{"/x/a_b-c.d:e@f%g+h=i,j/try.cfg", "init", "wealthdb -c /x/a_b-c.d:e@f%g+h=i,j/try.cfg init"},
 	} {
 		if got := commandFor(tc.path, tc.rest); got != tc.want {
@@ -115,13 +118,19 @@ func TestCommandForNamesTheConfig(t *testing.T) {
 	for in, want := range map[string]string{
 		"plain/path.cfg": "plain/path.cfg",
 		"":               "''",
-		"a b":            "'a b'",
-		"$HOME/x":        "'$HOME/x'",
-		"~/x":            "'~/x'",
-		"a*b":            "'a*b'",
-		`a"b`:            `'a"b'`,
-		"a'b'c":          `'a'\''b'\''c'`,
-		"é.cfg":          "'é.cfg'",
+		"a b":            `"a b"`,
+		"~/x":            `"~/x"`,
+		"a*b":            `"a*b"`,
+		"a'b'c":          `"a'b'c"`,
+		"é.cfg":          `"é.cfg"`,
+		// What a shell acts on inside double quotes keeps single quotes.
+		"$HOME/x": "'$HOME/x'",
+		`a"b`:     `'a"b'`,
+		"a`b":     "'a`b'",
+		`a\b`:     `'a\b'`,
+		"a!b":     "'a!b'",
+		"a\nb":    "'a\nb'",
+		"it's $5": `'it'\''s $5'`,
 	} {
 		if got := shellWord(in); got != want {
 			t.Errorf("shellWord(%q) = %s, want %s", in, got, want)
@@ -148,8 +157,8 @@ func TestCollectForNamesTheConfig(t *testing.T) {
 		{"/x/try/wealthdb.cfg", "viac login", "wealthdb -c /x/try/wealthdb.cfg collect viac login"},
 		{"/x/try/wealthdb.cfg", "", "wealthdb -c /x/try/wealthdb.cfg collect"},
 		{"/x/my setup/wealthdb.cfg", "plaid link --item first",
-			"wealthdb -c '/x/my setup/wealthdb.cfg' collect plaid link --item first"},
-		{"/x/it's/try.cfg", "viac login", `wealthdb -c '/x/it'\''s/try.cfg' collect viac login`},
+			`wealthdb -c "/x/my setup/wealthdb.cfg" collect plaid link --item first`},
+		{"/x/it's/try.cfg", "viac login", `wealthdb -c "/x/it's/try.cfg" collect viac login`},
 	} {
 		if got := collectFor(tc.path, tc.rest); got != tc.want {
 			t.Errorf("collectFor(%q, %q) = %q, want %q", tc.path, tc.rest, got, tc.want)

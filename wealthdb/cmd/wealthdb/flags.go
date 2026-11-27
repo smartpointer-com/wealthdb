@@ -62,10 +62,10 @@ func loadConfigAt(path string) (*config.Config, error) {
 // message names reads the config the run read, whichever way the run
 // named it. The path is quoted where a shell needs it (shellWord), so
 // the command works when pasted. An empty rest gives how every such
-// command starts.
+// command starts. An empty path is the default config.
 func commandFor(path, rest string) string {
 	cmd := "wealthdb"
-	if !config.IsDefault(path) {
+	if path != "" && !config.IsDefault(path) {
 		cmd += " -c " + shellWord(path)
 	}
 	if rest != "" {
@@ -83,7 +83,7 @@ func commandFor(path, rest string) string {
 // starts.
 func collectFor(path, rest string) string {
 	cmd := "wealthdb-collect"
-	if !config.IsDefault(path) {
+	if path != "" && !config.IsDefault(path) {
 		cmd = commandFor(path, "collect")
 	}
 	if rest != "" {
@@ -93,8 +93,11 @@ func collectFor(path, rest string) string {
 }
 
 // shellWord is s as one word of a shell command: as it is when it holds
-// only letters, digits and _ . / : @ % + = , -, which no shell acts on,
-// else in single quotes. A single quote of its own ends the quoted
+// only letters, digits and _ . / : @ % + = , -, which no shell acts on;
+// else in double quotes, so a message that quotes the command in single
+// quotes quotes it once. Inside double quotes a shell still acts on $ ` "
+// \ and !, so a word that holds one of them, or a line break, goes in
+// single quotes instead: a single quote of its own ends the quoted
 // piece, stands escaped, and starts the next piece.
 func shellWord(s string) string {
 	plain := func(r rune) bool {
@@ -102,6 +105,9 @@ func shellWord(s string) string {
 	}
 	if s != "" && strings.IndexFunc(s, func(r rune) bool { return !plain(r) }) < 0 {
 		return s
+	}
+	if s != "" && !strings.ContainsAny(s, "$`\"\\!\n") {
+		return `"` + s + `"`
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

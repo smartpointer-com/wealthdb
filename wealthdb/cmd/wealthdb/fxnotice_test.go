@@ -271,9 +271,10 @@ func TestNoticeNamesTheSetup(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/x")
 	const rest = " (FRED exchange and interest rates), or report in USD with -x USD."
 	for path, command := range map[string]string{
-		"/x/wealthdb.cfg":          "'wealthdb config banks'",
-		"/x/try/wealthdb.cfg":      "'wealthdb -c /x/try/wealthdb.cfg config banks'",
-		"/x/my setup/wealthdb.cfg": "'wealthdb -c '/x/my setup/wealthdb.cfg' config banks'",
+		"/x/wealthdb.cfg":     "'wealthdb config banks'",
+		"/x/try/wealthdb.cfg": "'wealthdb -c /x/try/wealthdb.cfg config banks'",
+		// A quoted path nests no quotes in the quoted command.
+		"/x/my setup/wealthdb.cfg": `'wealthdb -c "/x/my setup/wealthdb.cfg" config banks'`,
 	} {
 		want := "no exchange rate from USD to CHF: amounts in USD are missing from every figure in CHF. Add exchange rates with " + command + rest
 		if got := fxNotice(path, []string{"USD"}, "CHF"); got != want {

@@ -165,7 +165,8 @@ jobs:
         with:
           kind: ${{ matrix.name }}
       # -count=1: Go cannot see the files DuckDB opens through C, so a
-      # cached pass could hide a change.
+      # cached pass could hide a change. cmd/wealthdb runs close to go
+      # test's ten minutes a package, so it gets twenty.
       - name: Test
         env:
           PKGS: ${{ matrix.pkgs }}
@@ -181,7 +182,7 @@ jobs:
             PKGS=$(wealthdb/wealthdb-go list ./... | grep -vxF -e "$own" | tr '\n' ' ')
             [ -n "$PKGS" ] || { echo "no other package to test" >&2; exit 1; }
           fi
-          make test-wealthdb WEALTHDB_PKGS="$PKGS" GO_TEST_FLAGS="-count=1 $FLAGS"
+          make test-wealthdb WEALTHDB_PKGS="$PKGS" GO_TEST_FLAGS="-count=1 -timeout 20m $FLAGS"
       - name: Save the Go build cache
         if: always() && github.event_name == 'push'
         uses: ./.github/actions/go-cache

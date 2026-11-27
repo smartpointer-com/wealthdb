@@ -70,7 +70,7 @@ func createGold(ctx context.Context, g globalFlags, cfg *config.Config, stdout i
 	if err := gold.Migrate(ctx, db); err != nil {
 		return errs.Wrap(errs.ExitOpenFailed, fmt.Errorf("apply migrations: %w", err))
 	}
-	if err := claimGoldForEngine(cfg.GoldDB, "init", true); err != nil {
+	if err := claimGoldForEngine(cfg.GoldDB, "init", g.ConfigPath, true); err != nil {
 		return err
 	}
 

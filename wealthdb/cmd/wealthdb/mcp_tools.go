@@ -724,7 +724,7 @@ func (s *mcpServer) settle(tool string, fam *family, cfg *config.Config, a *tool
 		}
 		view = settled
 	}
-	req := request{view: view, categories: overrideCategories(cfg)}
+	req := request{view: view, categories: overrideCategories(cfg), configPath: s.configPath}
 	if fam.currency {
 		req.currency = strings.ToUpper(a.str("currency"))
 		if req.currency == "" {

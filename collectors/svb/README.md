@@ -84,7 +84,8 @@ and exits 0. **The statement PDFs are never deleted.** See
 ## Gold registration
 
 `load` writes one silver DB per statement family, each registered under its
-own source id. `wealthdb config banks` adds these entries; by hand they are:
+own source id. `wealthdb config banks` adds the first entry, and each other
+one once its file exists. By hand they are:
 
 ```jsonc
 { "id": "svb",          "kind": "fidelity", "path": "${WEALTHDB_DATA_ROOT}/svb/svb.db" }

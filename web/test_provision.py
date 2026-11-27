@@ -150,10 +150,18 @@ check("the account filter binds account_label, never the external id",
 section("the wait for Metabase")
 _answers = iter([(503, {}), (0, {}), (200, {})])
 _err = io.StringIO()
-with contextlib.redirect_stderr(_err):
-    _up = p.wait_health(Answering(lambda *_a: next(_answers)), limit=5, delay=0)
+os.environ["WEALTHDB_WEB_TIMINGS"] = "1"
+try:
+    with contextlib.redirect_stderr(_err):
+        _up = p.wait_health(Answering(lambda *_a: next(_answers)), limit=5, delay=0)
+finally:
+    del os.environ["WEALTHDB_WEB_TIMINGS"]
 check("the wait polls until Metabase answers and says how long it took",
       _up is True and re.search(r"provision: timing: wait for Metabase [0-9.]+s", _err.getvalue()), _err.getvalue())
+_err = io.StringIO()
+with contextlib.redirect_stderr(_err):
+    _up = p.wait_health(Answering(lambda *_a: (200, {})), limit=5, delay=0)
+check("...and, unasked for, prints no timing line", _up is True and "timing" not in _err.getvalue(), _err.getvalue())
 _up = p.wait_health(Answering(lambda *_a: (503, {})), limit=0.05, delay=0.01)
 check("...and gives up after its limit", _up is False)
 

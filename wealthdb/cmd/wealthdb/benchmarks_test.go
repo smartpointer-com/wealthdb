@@ -114,7 +114,8 @@ func TestExposureBenchmarkRefusals(t *testing.T) {
 		{[]string{"exposure", "classes", "--benchmark", "Test mix", "--period", "quarterly", "2024"}, "no --period"},
 		{[]string{"exposure", "classes", "--benchmark", "Nope"}, "help benchmarks"},
 		{[]string{"exposure", "countries", "--benchmark", "Test mix", "--country", "domicile"}, "country of risk"},
-		{[]string{"exposure", "sectors", "--benchmark", "Test mix"}, "web refresh"},
+		// The command the hint names reads the run's config.
+		{[]string{"exposure", "sectors", "--benchmark", "Test mix"}, "run '" + commandFor(cfg, "web refresh") + "'"},
 	} {
 		_, se, code := runToday(t, append([]string{"-c", cfg}, c.args...)...)
 		if code == 0 || !strings.Contains(se, c.want) {
