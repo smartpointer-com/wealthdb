@@ -30,7 +30,8 @@ the template should read this whole file plus the docs it names.
    viewer for explore sessions (macOS Screen Sharing works; any VNC
    client on Linux). Commands below invoke the wrapper directly
    (`collectors/<name>/<name> <verb>`); after `make install`,
-   `wealthdb-collect <name> <verb>` is equivalent. Credentials live
+   `wealthdb collect <name> <verb>` is equivalent, and so is
+   `wealthdb-collect <name> <verb>`. Credentials live
    in a file the user creates by hand — `~/.secrets/<name>.env`,
    chmod `0600` — when the agent states the exact variable names at
    the end of scaffolding (explore occasionally adds one later, such
@@ -242,6 +243,15 @@ and move on.
    (add_standard_args / resolve_standard) — the conventions table in
    collectors/README.md is binding; a standard flag the source cannot
    honour parses cleanly and warns loudly, never silently no-ops.
+   Exit statuses are collectorkit.cli's: a probe that could not run
+   exits 3, never 1 ("dead"), and a download that came back short
+   exits 4. Submit a sign-in form once: choose the control before
+   acting, and never follow a click that raised with a second submit.
+   Guard every call that carries the credential: a Playwright error
+   repeats the request headers, so log it through debugcap.safe_error
+   and let no traceback print it. A 401 or 403 on a data call is the
+   end of the credential, never an empty answer. A roster that came
+   back short of the count it declares fails the run.
 4. **load** — bronze → SQLite silver (JSON1 payloads), migrations,
    through the kit's load frame (collectorkit.loader; collectors/README.md,
    "load.py — silver"): re-load is a clean no-op, and --force rebuilds
@@ -280,6 +290,12 @@ and move on.
    (DESIGN.md §6.3), the import in wealthdb/internal/silver/all (a new
    kind needs no gold migration: a load accepts any registered kind; a
    gold guard test fails when a registered kind has no policy).
+   The Source also states its collector (`Collectors`, a
+   `silver.Collector`: name, display name, group, what it covers, its
+   silver files). That list is what `wealthdb config` offers. make
+   test-wealthdb fails while a collector with a wrapper is in no
+   adapter's list, so that check is red from the scaffold until this
+   phase, and a pull request waits for it.
    A deposit or card source declares a `bank.Source`
    (wealthdb/internal/silver/bank) instead of an adapter of its own.
    The change number and window are a `silver.Clock` (`silver.LoadClock`
@@ -289,12 +305,17 @@ and move on.
    rewrites it).
    Map accounts and transactions into the canonical
    enums; unrecognised values fall through to `other` with the raw
-   value in payload — never fail the load. Validation gate: the user
-   registers the new source in their private wealthdb.cfg
-   (per-deployment config, never committed — schema in
-   wealthdb/docs/DESIGN.md §5), rebuilds the gold image, runs the
-   gold load plus a holdings/transactions report against the real
-   silver, and pastes the output; the build is done when that output
+   value in payload — never fail the load (the rule and its
+   departures: wealthdb/docs/DESIGN.md §6.8; on a card ledger `other`
+   reaches neither spending nor the transfer matcher, so amex kinds a
+   row with no usable direction by the sign of its amount).
+   Validation gate: the user rebuilds the engine (make
+   build-wealthdb), adds the new source with `wealthdb config` (it
+   offers the collector once the adapter states it) or by hand in
+   their private wealthdb.cfg (per-deployment config, never committed
+   — schema in wealthdb/docs/DESIGN.md §5), runs the gold load plus a
+   holdings/transactions report against the real silver, and pastes
+   the output; the build is done when that output
    reconciles against the source's own UI and shows no unexpected
    `other` fallthroughs.
 
@@ -338,9 +359,8 @@ and move on.
   before milestone commits; squash to milestone commits with tight
   WHAT-level messages carrying no user data; never git push.
 - A commit bound for a pull request carries its author's sign-off
-  (`git commit -s`, [CONTRIBUTING.md](CONTRIBUTING.md)). The sign-off is
-  the person's own certification, so the agent adds it only when the
-  person says so.
+  (git commit -s; CONTRIBUTING.md). The sign-off is the person's own
+  certification, so the agent adds it only when the person says so.
 - Keep DESIGN.md and AGENTS.md current in the same commit as each
   change: record each live-run root cause as a fleet lesson, and
   correct the allow/forbid surface when discovery reclassifies a
@@ -480,6 +500,22 @@ as hard rules rather than advice.
   entered, surface the provider's own error text verbatim, fail fast.
   Guessed provider policy (code lifetimes, reuse, prefixes) is
   unverifiable and every "clever" retry design has been rejected.
+- **A sign-in form is submitted once.** A click can raise after it
+  went out, when the page navigates under it. A fallback that then
+  presses Enter submits a second time: a second push or code, and one
+  step closer to a lockout. Choose the control before acting. When the
+  one attempt raises, look for the challenge before calling it a
+  failure.
+- **An error can carry the credential.** An error from Playwright's
+  request API prints a call log that repeats the request headers: the
+  bearer, the API key, the whole cookie jar. One uncaught error in a
+  data call puts them on the terminal and in every log a scheduler
+  keeps. Catch around the sign-in and the walk, and log
+  `debugcap.safe_error(exc)`, never the exception itself.
+- **A probe has three answers.** `login --check` says alive, dead, or
+  that it could not tell (exit 3): no network, a site outage, a browser
+  that did not start. An outage reported as a dead session sends a
+  person to sign in for nothing.
 
 ### Browser mechanics
 
@@ -559,7 +595,10 @@ as hard rules rather than advice.
   required" may mean an OTP, a push — or a captcha, which no terminal
   can answer. A CLI 2FA drive must recognise the ones it cannot drive
   and stop with the verb that can, instead of timing out against UI
-  that will never render.
+  that will never render. The same holds when no challenge screen
+  appears at all: say so and stop. A push announced without its
+  screen, or without its comparison code, asks a person to approve
+  something they cannot check.
 
 ### Bronze, silver, and data contracts
 
@@ -577,6 +616,15 @@ as hard rules rather than advice.
   under-collects **silently** — no error, no gap, just fewer accounts
   than exist. A hand-driven capture that records the roster response
   beside the page that listed a fraction of it shows the gap.
+- **A short answer is not an empty one.** A token lapses in the middle
+  of a long backfill; a roster page comes back wrong; a listing call
+  fails. Each ends the run or marks it short (exit 4), and none is
+  written down as "nothing there": a 401 or 403 on a data call is the
+  end of the credential, and a listing that failed leaves no file,
+  never an empty one. A roster that fell short of the count it
+  declares is the costly case. A bank source's listing reads in gold
+  as the whole roster, so every account it leaves out is ended
+  (wealthdb/docs/DESIGN.md §6.4).
 - **Cap captured response bodies generously.** A body truncated at a
   round number loses its tail, and the tail of a ledger response is
   exactly what says how far the history reaches — the one measurement
@@ -677,3 +725,6 @@ as hard rules rather than advice.
   never element text — a challenge screen's labels carry the masked
   destination and the log gets pasted around. Fix a bug in every
   sibling collector that shares the pattern, in the same commit.
+- **A sibling is a template, not a proof.** A copied shape brings its
+  weaknesses along. When a review finds one in the new collector, look
+  for it in the sibling it came from, and fix it there too.

@@ -419,7 +419,7 @@ are the escape, not opt-ins. The canonical spelling per concept:
 | documents / heavy detail | fetched by default; opt out with `--no-documents` (and the same `--no-<detail>` pattern for other heavy passes) | **on** |
 | force reload (on `load`) | `--force` — rebuild silver from all bronze; on the load frame the old silver stays in place until the new one is complete; on the load frame and the loaders that call `rebuild.runs_without_bronze`, a warning first names each loaded run whose bronze is gone | off |
 | session probe | `login --check`: exit `0` = credential or session alive, nonzero = not. See [login.py — the session](#loginpy--the-session) for what it reads and for the five collectors that differ. | — |
-| exit status (`download`, `login --check`) | `collectorkit.cli`: `0` done, `1` failed, `2` usage error, `3` no verdict (a probe that could not run), `6` a person has to sign in first. A full `login` may give its own codes. `78`: the setup check stopped the verb (see [The setup declaration](#the-setup-declaration--setuptxt)). | — |
+| exit status (`download`, `login --check`) | `collectorkit.cli`: `0` done, `1` failed, `2` usage error, `3` no verdict (a probe that could not run), `4` a download that came back short, `6` a person has to sign in first. A full `login` may give its own codes. `78`: the setup check stopped the verb (see [The setup declaration](#the-setup-declaration--setuptxt)). | — |
 | human-MFA wait | `--mfa-timeout SECONDS` | per source; see the list below |
 | MFA-page-appear wait | `--mfa-page-timeout SECONDS` | per source |
 | login-diagnostics dir | `--screenshot-dir` (login); `--debug-dir` on an `explore` harness, and on `prune`, which reclaims that dir | None |
