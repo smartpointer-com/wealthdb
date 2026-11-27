@@ -12,10 +12,8 @@
 # unpacked. An archive that holds anything else, or lacks anything, is
 # refused, and no formula is printed.
 #
-# ARCHIVE is a file to check in place of the download. The formula's
-# pins come from web/Dockerfile, read by formula.sh through
-# shared/wrappers/image-tag.sh, so those two files and shared/brew/ must
-# be as the tag has them.
+# ARCHIVE is a file to check in place of the download. The formula
+# comes from shared/brew/, so that folder must be as the tag has it.
 #
 # Run it on a checkout whose tags are trusted: the tag is the reference.
 set -eu
@@ -37,8 +35,8 @@ command -v python3 >/dev/null 2>&1 || fail "python3 is needed to compare the arc
 
 git -C "$ROOT" rev-parse -q --verify "$REF^{commit}" >/dev/null ||
     fail "this checkout has no tag $TAG"
-git -C "$ROOT" diff --quiet "$REF" -- web/Dockerfile shared/brew shared/wrappers/image-tag.sh ||
-    fail "web/Dockerfile, shared/brew or shared/wrappers/image-tag.sh differs from $TAG here; check the tag out first"
+git -C "$ROOT" diff --quiet "$REF" -- shared/brew ||
+    fail "shared/brew differs from $TAG here; check the tag out first"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

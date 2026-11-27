@@ -127,7 +127,6 @@ web/
 ├── dashboards/    # one file per dashboard's cards; __init__.py declares the dashboards
 ├── tile_timings.py  # times each tile's query on the DuckDB the driver bundles
 ├── Dockerfile     # Metabase (from JAR, glibc base) + pinned DuckDB driver → /plugins
-├── lib/           # the same two files, downloaded by `web build` for the native server (git-ignored)
 ├── test_web.sh    # unit tests: lifecycle script, then provision.py (make test-web)
 ├── test_provision.py  # unit tests: provisioning definitions, client, tile timings (no Metabase)
 ├── requirements-test.txt  # their duckdb module, in the web/.venv make test-web builds

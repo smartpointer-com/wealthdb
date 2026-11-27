@@ -152,11 +152,14 @@ is read-only as well. What protects the data with either kind:
 - Metabase asks for its login, and reads a snapshot, never the live
   database.
 
-The dashboards are Metabase and its DuckDB driver, the two files
-`wealthdb web build` downloads into `web/lib/`. Their versions and
-checksums are the ones `web/Dockerfile` pins for the image, and a
-download that does not match is refused. Metabase runs in UTC, as its
-container does.
+The dashboards are Metabase and its DuckDB driver. The first `wealthdb
+web start` downloads the two files into `~/.cache/wealthdb/metabase/`
+(`$XDG_CACHE_HOME` moves it, and `WEALTHDB_WEB_LIB_DIR` names another
+folder); `wealthdb web build` downloads them ahead of time. An installed
+copy holds no Metabase of its own. The versions and checksums are the
+ones `web/Dockerfile` pins for the image, a download that does not match
+is refused, and a later start downloads again only when a pin has
+moved. Metabase runs in UTC, as its container does.
 
 ### A computer where no one is signed in
 

@@ -1121,6 +1121,15 @@ native_cases() {
     WEALTHDB_WEB_DATA_DIR="$tmp/nweb" _resolve_knobs
     LIB_DIR="$tmp/nlib" MB_JAR="$tmp/nlib/metabase.jar" DRIVER_JAR="$tmp/nlib/duckdb.metabase-driver.jar"
 
+    echo "== native: where Metabase's two files are kept =="
+    out="$(unset WEALTHDB_WEB_LIB_DIR; XDG_CACHE_HOME='' _resolve_knobs; echo "$MB_JAR $DRIVER_JAR")"
+    check_eq  "in the account's cache, never in the tree" \
+        "$tmp/home/.cache/wealthdb/metabase/metabase.jar $tmp/home/.cache/wealthdb/metabase/duckdb.metabase-driver.jar" "$out"
+    out="$(unset WEALTHDB_WEB_LIB_DIR; XDG_CACHE_HOME=/xc _resolve_knobs; echo "$LIB_DIR")"
+    check_eq  "XDG_CACHE_HOME moves the cache" "/xc/wealthdb/metabase" "$out"
+    out="$(XDG_CACHE_HOME=/xc WEALTHDB_WEB_LIB_DIR=/lib-here _resolve_knobs; echo "$LIB_DIR")"
+    check_eq  "WEALTHDB_WEB_LIB_DIR names the folder" "/lib-here" "$out"
+
     echo "== native: Metabase's two files, held to their pins =="
     check_re  "the Dockerfile pins a Metabase version"  '^v[0-9.]+$'      "$(_dockerfile_arg MB_VERSION)"
     check_re  "and its checksum"                        '^[0-9a-f]{64}$'  "$(_dockerfile_arg MB_SHA256)"
@@ -1175,10 +1184,20 @@ native_cases() {
     chmod +x "$tmp/java"
     WEALTHDB_WEB_DATA_DIR="$tmp/nweb" _resolve_knobs
     LIB_DIR="$tmp/nlib" MB_JAR="$tmp/nlib/metabase.jar" DRIVER_JAR="$tmp/nlib/duckdb.metabase-driver.jar"
-    out="$(_require_native_web 2>&1)"; rc=$?
-    check     "no files yet: names the command that downloads them" "Run: wealthdb web build" "$out"
+    out="$( (_fetch_metabase() { echo FETCHED; : > "$MB_JAR"; : > "$DRIVER_JAR"; }; _require_native_web) 2>&1)"; rc=$?
+    check     "no files yet: the server's start downloads them" "0 FETCHED" "$rc $out"
+    out="$( (_fetch_metabase() { return 1; }; _require_native_web) 2>&1)"; rc=$?
+    check_eq  "a download that failed stops the start" "1" "$rc"
+    check     "...and says where it would have gone, and what to run again" \
+        "could not be downloaded to $tmp/nlib." "$out"
+    check     "...the start" "run: wealthdb web start" "$out"
+    # The files a server runs, stamped with the Dockerfile's pins: ready,
+    # and nothing is downloaded (no network here).
     : > "$MB_JAR"; : > "$DRIVER_JAR"
-    if _require_native_web 2>/dev/null; then pass "Java and both files: ready"; else fail "Java and both files: not ready"; fi
+    _dockerfile_arg MB_SHA256 > "$MB_JAR.sha256"
+    _dockerfile_arg DRIVER_SHA256 > "$DRIVER_JAR.sha256"
+    out="$( (curl() { echo "CURL $*"; return 1; }; _require_native_web) 2>&1)"; rc=$?
+    check_eq  "Java and both files at their pins: ready, with no download" "0 " "$rc $out"
 
     echo "== native: the paths provisioning gives Metabase =="
     mkdir -p "$tmp/nweb/snapshot" && : > "$tmp/nweb/snapshot/wealthdb.db"
@@ -1359,7 +1378,16 @@ native_cases() {
     cp "$HERE/web" "$HERE/Dockerfile" "$tree/web/"
     cp "$HERE"/../shared/wrappers/*.sh "$tree/shared/wrappers/"
     : > "$tree/web/lib/metabase.jar"; : > "$tree/web/lib/duckdb.metabase-driver.jar"
+    _dockerfile_arg MB_SHA256 > "$tree/web/lib/metabase.jar.sha256"
+    _dockerfile_arg DRIVER_SHA256 > "$tree/web/lib/duckdb.metabase-driver.jar.sha256"
     printf 'ENGINE=native\nJAVA=%s\n' "$tmp/java" > "$tree/config.mk"
+    # The files at their pins, in a folder of the test's; a download
+    # would fail the case, since a curl here reaches nothing.
+    export WEALTHDB_WEB_LIB_DIR="$tree/web/lib"
+    mkdir -p "$tmp/nocurl"
+    printf '#!/bin/sh\necho "a test reached for the network: curl $*" >&2\nexit 1\n' > "$tmp/nocurl/curl"
+    chmod +x "$tmp/nocurl/curl"
+    PATH="$tmp/nocurl:$PATH"
     ( unset WEALTHDB_BUILD_CONFIG
       WEALTHDB_WEB_DATA_DIR="$tmp/nweb" WEALTHDB_BIN="$tmp/engine-stub" WEALTHDB_WEB_BIND=both TZ=Europe/Zurich \
           "$tree/web/web" serve ) > "$tmp/nserve.out" 2>&1; rc=$?

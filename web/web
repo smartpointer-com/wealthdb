@@ -56,11 +56,14 @@ _resolve_knobs() {
     # a directory under it as the connection's temp_directory, so
     # memory-capped queries spill to disk instead of dying.
     SPILL_DIR="$DATA_DIR/spill"
-    # The native server: the Java ./configure recorded, the two files
-    # `web build` downloads, and the directory Metabase loads its
-    # drivers from, which it also writes to.
+    # The native server: the Java ./configure recorded, the two files it
+    # runs, and the directory Metabase loads its drivers from, which it
+    # also writes to. The two files are downloaded the first time a
+    # native server starts (or by `web build`), at web/Dockerfile's pins,
+    # into a cache of the account's: an installed tree is never written
+    # to, and holds no Metabase of its own.
     JAVA="$(wealthdb_tool "$ROOT" JAVA "")"
-    LIB_DIR="$HERE/lib"
+    LIB_DIR="${WEALTHDB_WEB_LIB_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/metabase}"
     MB_JAR="$LIB_DIR/metabase.jar"
     DRIVER_JAR="$LIB_DIR/duckdb.metabase-driver.jar"
     PLUGINS_DIR="$DATA_DIR/plugins"
@@ -293,15 +296,17 @@ _fetch_metabase() {
 }
 
 # _require_native_web checks what the native server runs on: Java, and
-# the two files.
+# the two files, which it downloads where they are missing or a pin has
+# moved (_fetch_metabase reads nothing again while the pins stand).
 _require_native_web() {
     if [ -z "$JAVA" ] || [ ! -x "$JAVA" ]; then
         echo "web: the dashboards need Java 21 or later, and ./configure found none." >&2
         echo "     Install it, then run ./configure --engine=native again." >&2
         return 1
     fi
-    if [ ! -f "$MB_JAR" ] || [ ! -f "$DRIVER_JAR" ]; then
-        echo "web: the dashboards' program is not downloaded yet. Run: $PROGRAM web build" >&2
+    if ! _fetch_metabase; then
+        echo "web: the dashboards' program could not be downloaded to $LIB_DIR." >&2
+        echo "     Check the network, then run: $PROGRAM web start" >&2
         return 1
     fi
 }
@@ -855,7 +860,9 @@ WEALTHDB_IMAGE_TAG (the image's tag; unset, the checkout's .image-tag,
 else latest), WEALTHDB_WEB_IMAGE,
 WEALTHDB_WEB_CONTAINER, WEALTHDB_WEB_DATA_DIR,
 WEALTHDB_WEB_BIND (both|v4|v6), WEALTHDB_WEB_TIMINGS=1 (each step's
-wall time on stderr), WEALTHDB_WEB_ENV_FILE (default
+wall time on stderr), WEALTHDB_WEB_LIB_DIR (where the native server's
+Metabase and driver are downloaded; default
+~/.cache/wealthdb/metabase), WEALTHDB_WEB_ENV_FILE (default
 wealthdb-web.env in $WEALTHDB_SECRETS_DIR, else ~/.secrets, and
 wealthdb-web-<folder>.env there for a setup of its own, read for the
 variables above), WEALTHDB_NO_LAUNCHD=1 (on a Mac, the native server as

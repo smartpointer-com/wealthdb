@@ -51,6 +51,9 @@ while [ -L "$real" ]; do
 done
 ENGINE_BIN="$(cd "$(dirname "$real")" && pwd)/wealthdb-engine"
 R="$WORK/root"
+# The dashboards' Metabase stays where `web build` put it, outside the
+# walk's own cache, so a walk does not download it again.
+export WEALTHDB_WEB_LIB_DIR="${WEALTHDB_WEB_LIB_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/metabase}"
 export WEALTHDB_DATA_ROOT="$R" XDG_CONFIG_HOME="$R" WEALTHDB_CONFIG="$R/wealthdb.cfg"
 export WEALTHDB_SECRETS_DIR="$WORK/secrets" XDG_CACHE_HOME="$WORK/cache"
 export WEALTHDB_MCP_CONTAINER=wealthdb-mcp-e2e WEALTHDB_MCP_DATA_DIR="$R/mcp" WEALTHDB_MCP_ENV_FILE="$R/mcp.env"
