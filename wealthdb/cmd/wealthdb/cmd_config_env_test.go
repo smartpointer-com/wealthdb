@@ -36,7 +36,7 @@ func TestConfigEnvRefusesABadBlock(t *testing.T) {
 	for _, args := range [][]string{{}, {"nope"}, {"web", "mcp"}} {
 		var out, errb bytes.Buffer
 		argv := append([]string{"-c", "/nonexistent/wealthdb.cfg", "config-env"}, args...)
-		if code := Run(argv, nil, &out, &errb); code != 2 || !strings.Contains(errb.String(), "mcp | sources | web") {
+		if code := Run(argv, nil, &out, &errb); code != 2 || !strings.Contains(errb.String(), "mcp | refresh | sources | web") {
 			t.Errorf("%v: exit %d, stderr=%s", args, code, errb.String())
 		}
 	}

@@ -50,7 +50,7 @@ mkdir -p "$TREE/shared/wrappers" "$TREE/shared/collectorkit" "$TREE/collectors/t
 cp "$ROOT/Makefile" "$TREE/"
 cp "$ROOT"/shared/wrappers/*.sh "$TREE/shared/wrappers/"
 logger "$TREE/wealthdb/wealthdb"
-for f in LICENSE README.md bin/wealthdb-collect mcp/mcp web/web shared/collectorkit/kit.py \
+for f in LICENSE README.md bin/wealthdb-collect bin/wealthdb-refresh mcp/mcp web/web shared/collectorkit/kit.py \
     collectors/testcol/testcol collectors/testcol/load.py collectors/testcol/tests/test_a.py \
     collectors/testcol/test_b.py demo/generate.py skills/s/SKILL.md; do
     echo "$f" > "$TREE/$f"
@@ -81,7 +81,7 @@ omits() { if [ -e "$COPY/$2" ]; then bad "$1 ($2 is in the copy)"; else ok "$1";
 echo "install, in a git checkout:"
 record container
 mk install || bad "make install failed: $(cat "$TMP/err")"
-for f in LICENSE README.md bin/wealthdb-collect wealthdb/wealthdb mcp/mcp web/web \
+for f in LICENSE README.md bin/wealthdb-collect bin/wealthdb-refresh wealthdb/wealthdb mcp/mcp web/web \
     shared/wrappers/image-tag.sh shared/collectorkit/kit.py collectors/testcol/testcol \
     collectors/testcol/load.py demo/generate.py skills/s/SKILL.md; do
     holds "the copy holds the tracked $f" "$f"

@@ -325,6 +325,12 @@ answer, it is a menu that changes one part of the setup at a time, the
 AI model included. After an edit of the file by hand,
 `wealthdb config validate` checks it.
 
+Later, `wealthdb refresh` fetches new data from every bank of the
+config, loads it and refreshes the dashboards in one go: the banks that
+need a sign-in first, then the rest. `wealthdb refresh --unattended`
+runs only what needs no sign-in, for a nightly job
+([collectors/README.md](collectors/README.md#every-collector-at-once-wealthdb-refresh)).
+
 Credentials go in `~/.secrets/<source>.env`; a collector's `login`
 names the variables. Data lands under `$XDG_DATA_HOME/wealthdb`, which
 defaults to `~/.local/share/wealthdb`. `make` alone lists every build

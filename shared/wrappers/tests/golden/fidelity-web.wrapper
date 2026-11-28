@@ -543,13 +543,10 @@ fidelity-web: 'login' folds into 'download' — nothing to persist.
     download    one-shot login -> walk (login is folded in)
 === login --check
 --- calls
-exit: 0
+exit: 6
 --- stdout
 --- stderr
-fidelity-web: 'login' folds into 'download' — nothing to persist.
-  The Fidelity session is browser-lifetime only. Use instead:
-    vnc-login   first-time / re-auth via VNC-assisted MFA
-    download    one-shot login -> walk (login is folded in)
+fidelity-web: no session to check: its download signs in each time it runs. Run: wealthdb-collect fidelity-web download
 === download --dry-run --lookback 1w
 --- calls
 docker

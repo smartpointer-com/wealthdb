@@ -38,7 +38,7 @@ cp "$ROOT/shared/wrappers/image-tag.sh" "$ROOT/shared/wrappers/engine-mode.sh" "
 # path they are told and their arguments. With STUB_SHOW_SETUP they
 # print what a setup of its own hands them instead of the arguments.
 mkdir -p "$TREE/web" "$TREE/mcp" "$TREE/bin"
-for s in web/web mcp/mcp bin/wealthdb-collect; do
+for s in web/web mcp/mcp bin/wealthdb-collect bin/wealthdb-refresh; do
     cat > "$TREE/$s" <<EOF
 #!/bin/sh
 echo "host:$s"
@@ -188,6 +188,9 @@ start" "$(run -c h.cfg web start)"
 is_out "--config=FILE mcp" "host:mcp/mcp
 config:$TMP/work/h.cfg
 url" "$(run --config=h.cfg mcp url)"
+is_out "-c FILE refresh reaches its program, with the config" "host:bin/wealthdb-refresh
+config:$TMP/work/h.cfg
+--unattended" "$(run -c h.cfg refresh --unattended)"
 is_out "-r -c FILE collect, a later -c left to the collector" "host:bin/wealthdb-collect
 config:$TMP/work/h.cfg
 testcol
@@ -252,9 +255,10 @@ n="$(grep -c -x -F -- "$TMP/demo:$TMP/demo" <<<"$out")"
 # What the host-side scripts are handed.
 shown() { STUB_SHOW_SETUP=1 "$@"; }
 SP="$TMP/my try/wealthdb.cfg"
-for sub in web mcp collect; do
+for sub in web mcp collect refresh; do
     script="$sub/$sub"
     [ "$sub" = collect ] && script=bin/wealthdb-collect
+    [ "$sub" = refresh ] && script=bin/wealthdb-refresh
     is_out "-c elsewhere, $sub: the folder and the words of its commands" "host:$script
 config:$SP
 root:$TMP/my try

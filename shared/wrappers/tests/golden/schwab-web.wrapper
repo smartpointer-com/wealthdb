@@ -533,13 +533,10 @@ schwab-web: 'login' folds into 'download' — nothing to persist.
   'vnc-login' when the CLI-MFA selectors drift.
 === login --check
 --- calls
-exit: 0
+exit: 6
 --- stdout
 --- stderr
-schwab-web: 'login' folds into 'download' — nothing to persist.
-  This one-shot scraper mints its session inside 'download'
-  (CLI-MFA prompt on stdin). Run 'download' directly, or
-  'vnc-login' when the CLI-MFA selectors drift.
+schwab-web: no session to check: its download signs in each time it runs. Run: wealthdb-collect schwab-web download
 === download --dry-run --lookback 1w
 --- calls
 docker

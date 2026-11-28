@@ -316,6 +316,46 @@ func TestConfigEnvCollectors(t *testing.T) {
 	}
 }
 
+// TestConfigEnvRefresh: the refresh block names each collector whose
+// silver the config reads, once, in config order, with its start and,
+// for Plaid, its logins; a file no collector writes is left out.
+func TestConfigEnvRefresh(t *testing.T) {
+	t.Parallel()
+	cfg := setupCLITest(t)
+	dir := filepath.Dir(cfg)
+	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD", "silver_sources": [
+  {"id": "first", "kind": "plaid", "path": %q},
+  {"id": "schwab", "kind": "schwab", "subsources": [
+     {"kind": "schwab-api", "path": %q},
+     {"kind": "schwab-web", "path": %q}]},
+  {"id": "second", "kind": "plaid", "path": %q},
+  {"id": "svb", "kind": "fidelity", "path": %q},
+  {"id": "svb-deposit", "kind": "fidelity", "path": %q},
+  {"id": "own", "kind": "fidelity", "path": %q}]}`,
+		filepath.Join(dir, "wealthdb.db"),
+		filepath.Join(dir, "plaid", "first", "first.db"),
+		filepath.Join(dir, "schwab-api", "schwab-api.db"), filepath.Join(dir, "schwab-web", "schwab-web.db"),
+		filepath.Join(dir, "plaid", "second", "second.db"),
+		filepath.Join(dir, "svb", "svb.db"), filepath.Join(dir, "svb", "svb-deposit.db"),
+		filepath.Join(dir, "statements.db"))
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	so, se, code := run(t, "-c", cfg, "config-env", "refresh")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, se)
+	}
+	want := []string{
+		"WEALTHDB_COLLECTOR='plaid' WEALTHDB_START='link --item {item}' WEALTHDB_ITEMS='first second'",
+		"WEALTHDB_COLLECTOR='schwab-api' WEALTHDB_START='login' WEALTHDB_ITEMS=''",
+		"WEALTHDB_COLLECTOR='schwab-web' WEALTHDB_START='login' WEALTHDB_ITEMS=''",
+		"WEALTHDB_COLLECTOR='svb' WEALTHDB_START='login' WEALTHDB_ITEMS=''",
+	}
+	if got := strings.Split(strings.TrimSpace(so), "\n"); !slices.Equal(got, want) {
+		t.Errorf("refresh block:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 // TestLoadSkipsWhatHasNoData: for sources gold has never loaded, load
 // -a loads what has data and names the collect command of what has
 // none, a subsource without data is left out of its source's first

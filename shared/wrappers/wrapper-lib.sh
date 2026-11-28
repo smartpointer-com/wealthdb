@@ -470,6 +470,10 @@ wrapper_safety_guard() {
 # `--check` or a help flag, takes `login` to the container. Before it
 # returns true, the setup check runs (setup_check): a missing credential
 # prints what to do and exits SETUP_EXIT in place of the notice.
+# A `--check` that is no PASS_FLAG probes a collector with no session to
+# probe: every download signs in. It exits 6, a person has to sign in
+# (collectorkit.cli), and never 0, which an orchestrator would read as
+# leave to run the download with no one there (wealthdb refresh).
 wrapper_login_folds() {
     local -a pass=()
     while [[ $# -gt 0 && "$1" != -- ]]; do
@@ -485,6 +489,12 @@ wrapper_login_folds() {
         done
     done
     setup_check docker "$(setup_secrets_dir "$HOST_SECRETS" "$@")" "$@"
+    for a in "$@"; do
+        if [[ "$a" == --check ]]; then
+            echo "${NAME}: no session to check: its download signs in each time it runs. Run: ${WEALTHDB_COLLECT:-wealthdb-collect} ${NAME} download" >&2
+            exit 6
+        fi
+    done
     setup_arm_next "$@"
     return 0
 }

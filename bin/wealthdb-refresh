@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+"""wealthdb refresh — fetch new data from every connected bank and broker,
+load it, and refresh the dashboards.
+
+usage:
+  wealthdb refresh [--unattended] [--lookback WINDOW] [--dry-run] [--no-web] [COLLECTOR...]
+
+The collectors are those whose data the config reads, in config order
+(`wealthdb config-env refresh`), or the ones named. Each is first asked
+`login --check`, which signs in to nothing and fires no challenge:
+
+  - ready (a live session, a key, or nothing to sign in to): downloaded;
+  - needs a person (its sign-in sends a code or a push): with a terminal,
+    and without --unattended, it is run first, one at a time, each
+    announced and skippable, so the person can answer every challenge and
+    then leave; otherwise it is skipped and named;
+  - no verdict (no network, an outage) or not set up: skipped and named.
+
+Then each downloaded collector is loaded, `wealthdb load -a` merges what
+changed, and the dashboards refresh when they are on. One collector's
+failure never stops the others. The summary names every collector, what
+happened, and the command for each one skipped.
+
+flags:
+  --unattended       run nothing that needs a person: for a nightly job.
+                     It signs in to nothing.
+  --lookback WINDOW  every download's window (else each collector's own).
+  --dry-run          each ready collector's own dry run, and no loads. A
+                     collector that would sign in is left out of it.
+  --no-web           no dashboards refresh at the end.
+
+exit status: 0 when everything asked ran, a collector skipped because it
+needs a person included; 4 when a check gave no verdict, a collector is
+not set up, or a download came back short; 1 when a step failed; 2 on a
+usage error.
+
+The launcher runs this (`wealthdb refresh`), and hands it the command it
+was started by (WEALTHDB_ENTRY), the config (WEALTHDB_CONFIG), and the
+words a command it prints starts with (WEALTHDB_PROGRAM, WEALTHDB_COLLECT
+for a setup of its own). Every step runs through that command, so a
+setup of its own is refreshed in its own folder.
+"""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import os
+import shlex
+import subprocess
+import sys
+
+# A collector's `login --check` exit statuses (collectorkit.cli).
+CHECK_READY = 0
+CHECK_NO_VERDICT = 3
+CHECK_NOT_SET_UP = 78
+EXIT_SHORT = 4
+CHECK_TIMEOUT_S = 180
+
+
+def entry() -> list[str]:
+    cmd = os.environ.get("WEALTHDB_ENTRY")
+    if not cmd:
+        sys.exit("wealthdb refresh: run it as `wealthdb refresh`")
+    return [cmd]
+
+
+def program() -> str:
+    return os.environ.get("WEALTHDB_PROGRAM") or "wealthdb"
+
+
+def collect_words() -> str:
+    return os.environ.get("WEALTHDB_COLLECT") or "wealthdb-collect"
+
+
+def run(args: list[str], *, capture: bool = False, timeout: float | None = None):
+    """Run the launcher with args; the CompletedProcess, or None when it
+    did not end within timeout."""
+    try:
+        return subprocess.run(
+            entry() + args,
+            text=True,
+            timeout=timeout,
+            capture_output=capture,
+            stdin=None if not capture else subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+
+
+def collectors() -> list[dict[str, str]]:
+    """The config's collectors: name, start verb and logins, in order."""
+    out = run(["config-env", "refresh"], capture=True)
+    if out is None or out.returncode != 0:
+        msg = (out.stderr.strip() if out else "") or "the config could not be read"
+        sys.exit(f"wealthdb refresh: {msg}")
+    rows = []
+    for line in out.stdout.splitlines():
+        fields = dict(word.split("=", 1) for word in shlex.split(line))
+        rows.append(
+            {
+                "name": fields["WEALTHDB_COLLECTOR"],
+                "start": fields.get("WEALTHDB_START") or "login",
+                "items": fields.get("WEALTHDB_ITEMS", "").split(),
+            }
+        )
+    return rows
+
+
+def last_line(text: str) -> str:
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    return lines[-1] if lines else ""
+
+
+def check(c: dict) -> tuple[str, str]:
+    """A collector's state from its `login --check`, and the line to show."""
+    out = run(
+        ["collect", c["name"], "login", "--check"],
+        capture=True,
+        timeout=CHECK_TIMEOUT_S,
+    )
+    if out is None:
+        return "no-verdict", f"its check did not answer within {CHECK_TIMEOUT_S} s"
+    said = last_line(out.stdout + "\n" + out.stderr)
+    if out.returncode == CHECK_READY:
+        return "ready", said
+    if out.returncode == CHECK_NO_VERDICT:
+        return "no-verdict", said
+    if out.returncode == CHECK_NOT_SET_UP:
+        return "not-set-up", said
+    return "person", said
+
+
+def ask(question: str) -> bool:
+    """Ask at the terminal; Enter goes on, s skips."""
+    try:
+        answer = input(question)
+    except EOFError:
+        return False
+    return answer.strip().lower() not in ("s", "skip")
+
+
+def main(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(
+        prog="wealthdb refresh",
+        add_help=True,
+        description="Fetch new data from every connected bank, load it, "
+        "and refresh the dashboards.",
+    )
+    p.add_argument("collectors", nargs="*", metavar="COLLECTOR")
+    p.add_argument("--unattended", action="store_true")
+    p.add_argument("--lookback")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--no-web", action="store_true")
+    args = p.parse_args(argv)
+    os.umask(0o077)
+
+    every = collectors()
+    if args.collectors:
+        known = {c["name"] for c in every}
+        unknown = [n for n in args.collectors if n not in known]
+        if unknown:
+            print(
+                f"wealthdb refresh: the config reads no data of {', '.join(unknown)}"
+                f" (it reads: {', '.join(sorted(known)) or 'none'})",
+                file=sys.stderr,
+            )
+            return 2
+        every = [c for c in every if c["name"] in args.collectors]
+    if not every:
+        print(
+            f"wealthdb refresh: the config reads no bank's data yet. Run: {program()} config banks"
+        )
+        return 0
+    attended = (
+        not args.unattended
+        and not args.dry_run
+        and sys.stdin.isatty()
+        and sys.stdout.isatty()
+    )
+
+    print(f"refresh: checking {len(every)} collector(s) (no sign-in) …", flush=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        states = list(pool.map(check, every))
+    result: dict[str, tuple[str, str]] = {}
+    downloaded: list[dict] = []
+    short = False
+
+    def download(c: dict) -> None:
+        nonlocal short
+        extra = ["--lookback", args.lookback] if args.lookback else []
+        if args.dry_run:
+            extra.append("--dry-run")
+        out = run(["collect", c["name"], "download", *extra])
+        if out is not None and out.returncode == 0:
+            downloaded.append(c)
+            result[c["name"]] = ("downloaded" if not args.dry_run else "dry run", "")
+        elif out is not None and out.returncode == EXIT_SHORT:
+            downloaded.append(c)
+            short = True
+            result[c["name"]] = ("downloaded, short", "the download came back short")
+        else:
+            result[c["name"]] = (
+                "failed",
+                f"download exit {out.returncode if out else '?'}",
+            )
+
+    people = [
+        (c, said)
+        for c, (state, said) in zip(every, states, strict=True)
+        if state == "person"
+    ]
+    ready = [c for c, (state, _) in zip(every, states, strict=True) if state == "ready"]
+    for c, (state, said) in zip(every, states, strict=True):
+        if state == "no-verdict":
+            result[c["name"]] = ("skipped", f"no verdict: {said}")
+        elif state == "not-set-up":
+            result[c["name"]] = ("skipped", f"not set up: {said}")
+
+    # The ones that need a person first, so the person can leave after.
+    for c, said in people:
+        name = c["name"]
+        if "{item}" in c["start"]:
+            # A collector of one silver per linked login renews a login by
+            # name: its check says which, and the commands are named.
+            cmds = (
+                "; ".join(
+                    f"{collect_words()} {name} {c['start'].replace('{item}', item)}"
+                    for item in c["items"]
+                )
+                or f"{collect_words()} {name} {c['start']}"
+            )
+            result[name] = ("skipped", f"a login needs renewing ({said}). Run: {cmds}")
+            continue
+        if not attended:
+            result[name] = (
+                "skipped",
+                f"needs a person to sign in. Run: {collect_words()} {name} {c['start']}",
+            )
+            continue
+        if not ask(
+            f"\n{name}: the sign-in needs you ({said}).\n"
+            f"Enter to sign in now, s to skip: "
+        ):
+            result[name] = (
+                "skipped",
+                f"skipped at the prompt. Run: {collect_words()} {name} {c['start']}",
+            )
+            continue
+        login = run(["collect", name, *shlex.split(c["start"])])
+        if login is None or login.returncode != 0:
+            result[name] = (
+                "failed",
+                f"{c['start']} exit {login.returncode if login else '?'}",
+            )
+            continue
+        download(c)
+    if people and attended:
+        print("\nrefresh: every sign-in is done; the rest needs no one.", flush=True)
+
+    for c in ready:
+        download(c)
+
+    loaded = 0
+    if not args.dry_run:
+        for c in downloaded:
+            out = run(["collect", c["name"], "load"])
+            if out is not None and out.returncode == 0:
+                loaded += 1
+            else:
+                result[c["name"]] = (
+                    "failed",
+                    f"load exit {out.returncode if out else '?'}",
+                )
+        failed_gold = False
+        if loaded:
+            out = run(["load", "-a"])
+            failed_gold = out is None or out.returncode != 0
+        web = None
+        if loaded and not args.no_web and not failed_gold and web_on():
+            web = run(["web", "refresh"])
+    else:
+        failed_gold, web = False, None
+
+    print("\nrefresh: summary")
+    width = max(len(c["name"]) for c in every)
+    for c in every:
+        state, why = result.get(c["name"], ("skipped", ""))
+        print(f"  {c['name']:<{width}}  {state}{'  ' + why if why else ''}")
+    if not args.dry_run and loaded:
+        print(f"  {'gold':<{width}}  {'failed' if failed_gold else 'loaded'} (load -a)")
+    if web is not None:
+        print(
+            f"  {'dashboards':<{width}}  {'refreshed' if web.returncode == 0 else 'failed'}"
+        )
+
+    states_now = [s for s, _ in result.values()]
+    if (
+        "failed" in states_now
+        or failed_gold
+        or (web is not None and web.returncode != 0)
+    ):
+        return 1
+    whys = [w for s, w in result.values() if s == "skipped"]
+    if short or any(w.startswith(("no verdict", "not set up")) for w in whys):
+        return EXIT_SHORT
+    return 0
+
+
+def web_on() -> bool:
+    out = run(["config-env", "web"], capture=True)
+    if out is None or out.returncode != 0:
+        return False
+    return any(
+        line.startswith("WEALTHDB_WEB_ENABLED=")
+        and line.split("=", 1)[1].strip("'") == "1"
+        for line in out.stdout.splitlines()
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

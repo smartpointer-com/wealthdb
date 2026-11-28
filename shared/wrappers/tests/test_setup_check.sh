@@ -281,6 +281,13 @@ is "a folded login, complete in --secrets-dir: the notice" "folded notice
 rc=0" "$out"
 out="$(FOLD=1 docker_run docker "$DECL" login --help)"
 lacks "a folded login's pass flag: not checked" "rc=78" "$out"
+out="$(FOLD=1 docker_run docker "$DECL" login --check --secrets-dir "$TMP/alt2")"
+has "a folded login's --check: a person has to sign in (6), never alive" "rc=6" "$out"
+has "...saying why, and naming the download" \
+    "testcol: no session to check: its download signs in each time it runs. Run: wealthdb-collect testcol download" "$out"
+lacks "...and no notice" "folded notice" "$out"
+out="$(FOLD=1 docker_run docker "$DECL" login --check)"
+has "a folded login's --check with no credential: the setup check passes a probe over, and it is 6" "rc=6" "$out"
 
 # A declaration with a session, a key file, fallbacks and an optional
 # variable.

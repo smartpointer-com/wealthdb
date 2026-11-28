@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"flag"
 	"fmt"
@@ -26,6 +27,7 @@ var configEnvBlocks = map[string]func(cfg *config.Config, stdout io.Writer){
 	"web":     webEnv,
 	"mcp":     mcpEnv,
 	"sources": sourcesEnv,
+	"refresh": refreshEnv,
 	// collectors reads no config: it is the catalogue.
 	"collectors": nil,
 }
@@ -52,6 +54,9 @@ a host script to eval. The blocks:
   mcp      the MCP server and the gold path
   sources  one line per silver file: the source's id and kind, the
            subsource's kind (empty for a source of one file) and the path
+  refresh  one line per collector whose silver the config reads, in
+           config order: its name, the verb that starts it, and the
+           logins of a collector with one silver per login
   collectors
            the name of each collector the setup offers, one per line;
            reads no config`)
@@ -140,6 +145,37 @@ func sourcesEnv(cfg *config.Config, stdout io.Writer) {
 		for _, sub := range s.Subsources {
 			line(s, sub.Kind, sub.Path)
 		}
+	}
+}
+
+// refreshEnv prints, for `wealthdb refresh`, one line per collector whose
+// silver the config reads, the first time the config names it: the
+// collector, the start the catalogue states for it (`login` when it
+// states none) and, for a collector with one silver per linked login,
+// those logins, a blank apart. A source whose kind no collector writes
+// (a file edited by hand) is left out.
+func refreshEnv(cfg *config.Config, stdout io.Writer) {
+	var order []string
+	items := map[string][]string{}
+	for _, s := range cfg.SilverSources {
+		for _, f := range s.Feeds() {
+			if f.Collector == "" {
+				continue
+			}
+			if _, seen := items[f.Collector]; !seen {
+				order = append(order, f.Collector)
+				items[f.Collector] = nil
+			}
+			if f.Item != "" && !slices.Contains(items[f.Collector], f.Item) {
+				items[f.Collector] = append(items[f.Collector], f.Item)
+			}
+		}
+	}
+	for _, name := range order {
+		c, _ := silver.CollectorNamed(name)
+		fmt.Fprintf(stdout, "WEALTHDB_COLLECTOR=%s WEALTHDB_START=%s WEALTHDB_ITEMS=%s\n",
+			shellSingleQuote(name), shellSingleQuote(cmp.Or(c.Start, "login")),
+			shellSingleQuote(strings.Join(items[name], " ")))
 	}
 }
 

@@ -211,7 +211,7 @@ BINDIR ?= $(HOME)/.local/bin
 LIBEXECDIR ?= $(PREFIX)/libexec
 LIBEXEC = $(LIBEXECDIR)/wealthdb
 STAGE = $(DESTDIR)$(LIBEXECDIR)
-INSTALL_TREE  = LICENSE README.md bin/wealthdb-collect wealthdb/wealthdb \
+INSTALL_TREE  = LICENSE README.md bin/wealthdb-collect bin/wealthdb-refresh wealthdb/wealthdb \
                 mcp/mcp web shared/wrappers shared/collectorkit collectors demo skills
 INSTALL_BUILT = config.mk $(wildcard .image-tag) \
                 $(if $(filter native,$(ENGINE)),wealthdb/wealthdb-engine)

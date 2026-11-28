@@ -136,6 +136,7 @@ wealthdb mcp-serve --stdio | --http ADDR (RO) Serve the read-only reports to AI 
 wealthdb web <verb>                   (host)  The dashboards (web/README.md).
 wealthdb mcp <verb>                   (host)  The MCP server (mcp/README.md).
 wealthdb collect <source> <verb>      (host)  A collector: login, download, load (collectors/README.md).
+wealthdb refresh [<collector>...]     (host)  Every collector of the config, then the loads and the dashboards (collectors/README.md).
 wealthdb version                      (RO)    Print the version: a release tag, or `<last release> nightly <commit>`.
 wealthdb help [<subcommand> | filter | benchmarks]
 ```

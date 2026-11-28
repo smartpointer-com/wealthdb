@@ -169,9 +169,10 @@ wealthdb_engine_paths "$FLAG_CFG"
 ENV_CFG=""
 if [ -n "${WEALTHDB_CONFIG:-}" ]; then ENV_CFG="$(wealthdb_abs_path "$WEALTHDB_CONFIG")"; fi
 
-# `web`, `mcp` and `collect` run on the host, not in the engine: `web`
-# and `mcp` are the web/ and mcp/ components' lifecycle scripts, and
-# `collect` is the collectors' dispatcher. Docker is not reachable from
+# `web`, `mcp`, `collect` and `refresh` run on the host, not in the
+# engine: `web` and `mcp` are the web/ and mcp/ components' lifecycle
+# scripts, `collect` is the collectors' dispatcher, and `refresh` runs
+# every collector of the config, then the loads. Docker is not reachable from
 # inside the engine container, so the servers and the collectors are
 # orchestrated here. (web/, mcp/ and bin/ are siblings of this inner
 # wealthdb/ dir.) The global flags before the subcommand are the
@@ -184,6 +185,7 @@ case "$sub" in
     web)     host="$ROOT/web/web" ;;
     mcp)     host="$ROOT/mcp/mcp" ;;
     collect) host="$ROOT/bin/wealthdb-collect" ;;
+    refresh) host="$ROOT/bin/wealthdb-refresh" ;;
 esac
 if [ -n "$host" ]; then
     shift "$((lead + 1))"

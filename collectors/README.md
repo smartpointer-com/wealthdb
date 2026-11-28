@@ -35,6 +35,30 @@ Every collector exposes the same four steps:
 Bronze is immutable raw capture; silver is the parsed, queryable
 form and the **input contract** to gold. One silver DB per source.
 
+### Every collector at once: `wealthdb refresh`
+
+`wealthdb refresh` runs the lifecycle for every collector whose data the
+config reads, then `wealthdb load -a` and the dashboards' refresh:
+
+```sh
+wealthdb refresh                # every collector; sign-ins first, then the rest
+wealthdb refresh --unattended   # only what needs no person, for a nightly job
+wealthdb refresh plaid fred     # some collectors only
+```
+
+It first asks each collector `login --check`, which signs in to nothing.
+A collector that needs a person to sign in runs first, one at a time,
+each announced (Enter to go on, `s` to skip). The person answers every
+challenge, and the rest then runs alone. Without a terminal, or with
+`--unattended`, such a collector is skipped and named with its command,
+so a scheduled refresh never signs in (root AGENTS.md §2). A collector
+whose check gives no verdict, or that is not set up, is skipped and
+named too. A Plaid login that needs renewing is named with its `link
+--item` command. One collector's failure stops none of the others, and
+the summary says what happened to each. The exit status is 0 when
+everything asked ran (a skip for a person included), 4 when a check
+gave no verdict or something came back short, and 1 when a step failed.
+
 ## Two runtimes
 
 A collector's runtime is set by whether it ships a Dockerfile (the
@@ -579,9 +603,11 @@ no browser and fires no MFA. Five collectors differ:
 
 - **fidelity-web** has no session to probe. Its session lasts as long as
   the browser, so its `login` is a no-op that keeps an orchestrator's
-  `login → download → load` from failing.
+  `login → download → load` from failing. Its `--check` exits 6: every
+  download signs in, so a person has to be there.
 - **schwab-web** has no session to probe either. `download` signs in and
-  keeps nothing for a later run, so its `login` is the same no-op.
+  keeps nothing for a later run, so its `login` is the same no-op, and
+  its `--check` the same 6.
 - **amex** spends a sign-in on its cheapest authenticated call, and
   sign-ins are its scarce resource. Its `--check` reads the device-trust
   cookie from the profile's Firefox jar on disk instead. It opens no
