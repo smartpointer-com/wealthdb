@@ -276,6 +276,36 @@ def _mask_har_pairs(pairs, names, found) -> None:
             pair["value"] = REDACTED
 
 
+_URL_VALUE_RE = re.compile(r"^https?://", re.I)
+
+
+def _mask_url_value(value, found):
+    """A body field's value that is itself a URL carrying a credential
+    parameter, masked as :func:`redact_url` masks it; None otherwise.
+
+    Telemetry posts the page's own URL in a field of its body, and after an
+    implicit grant that URL holds the token in its fragment. No field name
+    marks it, so the URL's own parameter names are what select it. Each
+    value masked is recorded in `found`, for the echo pass to chase.
+    """
+    if not isinstance(value, str) or not _URL_VALUE_RE.match(value):
+        return None
+    try:
+        parts = urllib.parse.urlsplit(value)
+    except ValueError:
+        return None
+    secrets = [v for k, v in urllib.parse.parse_qsl(parts.query,
+                                                    keep_blank_values=True)
+               if k.lower() in _SECRET_PARAMS]
+    secrets += [m["value"] for m in _FRAGMENT_PAIR_RE.finditer(parts.fragment)
+                if m["name"].lower() in _SECRET_PARAMS]
+    if not secrets:
+        return None
+    for secret in secrets:
+        _echo(found, secret)
+    return redact_url(value)
+
+
 def _mask_json_secrets(node, found) -> bool:
     """Mask credential-named values anywhere in a parsed JSON body,
     recording what was masked in `found`. Returns whether anything was.
@@ -303,11 +333,17 @@ def _mask_json_secrets(node, found) -> bool:
                 _echo(found, value)
                 node[key] = REDACTED
                 hit = True
+            elif (masked := _mask_url_value(value, found)) is not None:
+                node[key] = masked
+                hit = True
             elif _mask_json_secrets(value, found):
                 hit = True
     elif isinstance(node, list):
-        for item in node:
-            if _mask_json_secrets(item, found):
+        for i, item in enumerate(node):
+            if (masked := _mask_url_value(item, found)) is not None:
+                node[i] = masked
+                hit = True
+            elif _mask_json_secrets(item, found):
                 hit = True
     return hit
 
@@ -341,6 +377,10 @@ def _mask_urlencoded(text: str, found) -> str | None:
             _echo(found, urllib.parse.unquote_plus(value))
             out.append(f"{name}={REDACTED}")
             hit = True
+        elif sep and (masked := _mask_url_value(
+                urllib.parse.unquote_plus(value), found)) is not None:
+            out.append(f"{name}={urllib.parse.quote(masked, safe='')}")
+            hit = True
         else:
             out.append(field)
     return "&".join(out) if hit else None
@@ -351,8 +391,9 @@ def _mask_body_by_name(text: str, mime, found) -> str:
     recording what was masked in `found`.
 
     The body's own syntax says what the names are: a form's field names, a
-    JSON object's keys. A body in neither shape has no names to read, so it
-    is returned as it is and left to the value-based mask.
+    JSON object's keys. A body in neither shape has no names to read; only
+    the URLs written in it are masked, by their own parameter names, and
+    the rest is left to the value-based mask.
     """
     kind = str(mime or "").lower()
     if "urlencoded" in kind:
@@ -365,7 +406,9 @@ def _mask_body_by_name(text: str, mime, found) -> str:
             return text
         if _mask_json_secrets(body, found):
             return json.dumps(body)
-    return text
+        return text
+    return _EMBEDDED_URL_RE.sub(
+        lambda m: _mask_url_value(m.group(0), found) or m.group(0), text)
 
 
 def redact_body(text, mime=None, redact=None):

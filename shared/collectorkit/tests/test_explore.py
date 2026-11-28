@@ -447,6 +447,29 @@ class SessionTest(_Tmp):
         self.assertEqual([e["kind"] for e in self._events()],
                          ["started", "stopped"])
 
+    def test_ctrl_c_stops_once_and_ignores_the_next(self):
+        # The close after a Ctrl-C writes the HAR; a second Ctrl-C inside
+        # it would abort that write, so the first one switches SIGINT off.
+        import signal
+
+        class _Interrupted(_Context):
+            def wait_for_event(self, event, timeout=None):
+                raise KeyboardInterrupt
+
+        previous = signal.getsignal(signal.SIGINT)
+        self.addCleanup(signal.signal, signal.SIGINT, previous)
+        with mock.patch.dict(sys.modules, _playwright_stub()):
+            with contextlib.ExitStack() as stack:
+                s = self._session(stack)
+                context = _Interrupted()
+                s.attach(context)
+                s.open("https://www.example.com/")
+                reason = s.record("walk it.", max_duration=60)
+        self.assertEqual(reason, "sigint")
+        self.assertIs(signal.getsignal(signal.SIGINT), signal.SIG_IGN)
+        self.assertEqual([e["kind"] for e in self._events()],
+                         ["started", "signal", "stopped"])
+
 
 def _site(**kwargs):
     fields = dict(
