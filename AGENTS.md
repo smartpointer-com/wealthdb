@@ -222,6 +222,11 @@ root, no `cd`-ing into subdirectories:
   signed off ([CONTRIBUTING.md](CONTRIBUTING.md)). The suites run in
   jobs of their own, and the `check` job passes only when every other
   job has.
+- `.github/workflows/release-check.yml` runs what a release needs beyond
+  CI and what takes too long for every push: the native engine built
+  and walked end to end, on Linux (`make test-native`) and on a Mac. It
+  runs when started by hand (Actions, Run workflow) on the commit to be
+  tagged, and a tag waits for it to pass.
 - `make build-<name>` / `make test-<name>` — one component (the
   gold engine is `wealthdb`; e.g. `make test-wealthdb`).
 - `make update` — bring deps forward (host venvs, Go modules, base

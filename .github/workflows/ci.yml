@@ -11,13 +11,6 @@
 #     test-<collector> builds it on an empty runner, and the unit tests
 #     never start one;
 #   - rest: every other suite of `make test`;
-#   - native: the native engine (wealthdb/docs/NATIVE.md) in the
-#     container `make test-native` builds: the suites that need no
-#     Docker, then an install to a prefix and a walk end to end with
-#     both servers;
-#   - native-macos: the same engine built on a Mac, its Go tests in a
-#     time zone far from UTC, and the walk with the servers under
-#     launchd;
 #   - dco: on a pull request, every commit the change adds is signed
 #     off by its author (CONTRIBUTING.md);
 #   - check: passes only when every job above has.
@@ -26,8 +19,10 @@
 # suite is claimed twice, or when the go, demo or collectors job claims
 # one the list lacks. It cannot see this file: the jobs it assumes are
 # the ones below.
-# Every job but native-macos runs on ubuntu-24.04: the free-disk paths
-# and the job timeouts assume that image.
+# Every job runs on ubuntu-24.04: the free-disk paths and the job
+# timeouts assume that image. The native engine, built and walked end
+# to end on Linux and on a Mac, is tested before a release, by hand
+# (release-check.yml): it takes up to half an hour.
 # The Go caches are restored in every run and saved only by pushes to
 # main, also when a run fails. A pull request restores main's.
 # The jobs build and run the change's own code, so they hold a read-only
@@ -253,69 +248,11 @@ jobs:
           split=$(.github/ci-suites.sh)
           make test SUITES="$(echo "$split" | sed -n 's/^rest=//p')"
 
-  # The Go tests are the go jobs' on this toolchain already, so the
-  # suites here are the ones that go through the launcher and the server
-  # scripts.
-  native:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - name: Test
-        run: make test-native NATIVE_SUITES="demo web mcp wrappers"
-
-  native-macos:
-    runs-on: macos-15
-    timeout-minutes: 75
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: wealthdb/go.mod
-          cache-dependency-path: wealthdb/go.sum
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "21"
-      # PYTHON names the interpreter the job set up: ./configure would
-      # otherwise prefer a newer python3.X of the runner's own.
-      - name: Build
-        run: |
-          ./configure --engine=native --prefix="$RUNNER_TEMP/prefix" PYTHON="$(command -v python3)"
-          make build-wealthdb build-web
-      # A day that follows the computer's time zone fails here. Every
-      # package runs at once on this runner's few cores, so a package
-      # gets more than go test's ten minutes.
-      - name: Go tests
-        env:
-          TZ: Pacific/Auckland
-        run: make test-wealthdb GO_TEST_FLAGS="-count=1 -timeout 40m"
-      # The suites of the launcher and the server scripts, which the
-      # other jobs run on Linux alone: a Mac has its own sed and tar,
-      # and launchd.
-      - name: Shell suites
-        env:
-          TZ: Pacific/Auckland
-        run: make test SUITES="wrappers mcp web"
-      - name: Install, then walk end to end
-        env:
-          TZ: Pacific/Auckland
-        run: |
-          make install
-          shared/native/e2e.sh "$RUNNER_TEMP/prefix/bin/wealthdb" "$PWD" "$RUNNER_TEMP/e2e"
-
   # The one status check a ruleset needs, over every job. It runs
   # whatever its needs did, since a check skipped after a failed need
   # would count as passed, and it fails unless every need succeeded.
   check:
-    needs: [pii, dco, lint, go, demo, collectors, rest, native, native-macos]
+    needs: [pii, dco, lint, go, demo, collectors, rest]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 30
