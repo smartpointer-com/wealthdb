@@ -57,12 +57,20 @@ Part of the **wealthdb** suite. See
 gold model and [collectors/README.md](../README.md) for shared collector
 conventions.
 
-## Status
+## How it works
 
-The collector is at its discovery stage. `explore` records a George
-session signed in by hand over VNC. `login`, `download` and `load` are
-not built yet; they exit 2. [DESIGN.md](DESIGN.md) maps the source and
-the runtime they will use.
+- **Sign-in** happens in a Camoufox browser on `login.sparkasse.at`. The
+  form asks for the user name only.
+- **The push** is approved in the George app (or George ID). `download`
+  prints the 4-character comparison code the page shows. A push fires at
+  every sign-in, so `login` folds into `download`: one browser and one
+  push per run.
+- **Data** comes from George's REST API: the account and card rosters,
+  each transaction history (stable ids, booking and value dates, a running
+  balance), and the statement PDFs of accounts and cards.
+- `load` is not built yet.
+
+[DESIGN.md](DESIGN.md) maps the source.
 
 ## Credentials
 
@@ -72,20 +80,32 @@ the runtime they will use.
 ERSTEBANK_AT_USERNAME='example-user'
 ```
 
-The sign-in is confirmed in the George app.
-
-## Example
+## Usage
 
 ```bash
 collectors/erstebank_at/erstebank_at build
-collectors/erstebank_at/erstebank_at explore
+collectors/erstebank_at/erstebank_at download                  # sign in + fetch (default window ~90 days)
+collectors/erstebank_at/erstebank_at download --lookback all   # full history
+collectors/erstebank_at/erstebank_at download --dry-run        # sign in, read the rosters only
+collectors/erstebank_at/erstebank_at login --check             # is a session alive? (dead between runs is expected)
+collectors/erstebank_at/erstebank_at vnc-login                 # sign in by hand over VNC, then fetch
+collectors/erstebank_at/erstebank_at explore                   # discovery harness over VNC
 ```
 
-`explore` prints a VNC address. Sign in there and walk the flows it
-prints. Closing the browser ends the recording. The captures land under
-`~/.cache/wealthdb/debug/erstebank_at/<UTC-ts>/` and hold real account
-data. `prune` reclaims them once they are an hour old:
+Every `download`, `--dry-run` included, fires a real push. Run it
+deliberately and never in quick succession. Nothing is typed in the
+terminal.
+
+`explore` prints a VNC address and records the session under
+`~/.cache/wealthdb/debug/erstebank_at/<UTC-ts>/`. That dir holds real
+account data. `prune` reclaims it once it is an hour old:
 
 ```bash
 collectors/erstebank_at/erstebank_at prune --dry-run
 ```
+
+## Output
+
+Bronze runs land under `$XDG_DATA_HOME/wealthdb/erstebank_at/<UTC-ts>/`.
+Each run holds the rosters, one history file per account or card, and
+the statement PDFs with their listings.
