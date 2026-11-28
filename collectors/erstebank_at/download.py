@@ -29,6 +29,7 @@ downloads, whose POST body carries only the bearer.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
@@ -46,6 +47,9 @@ MAX_STATEMENT_PAGES = 20
 # this far apart, as the SPA does when the button is pressed again.
 RENDER_ATTEMPTS = 6
 RENDER_WAIT_MS = 3000
+# Statements still rendering after their attempts are asked for again once,
+# after the rest of the run and this wait.
+LATE_RETRY_WAIT_MS = 30_000
 
 
 def build_manifest(status: str, *, accounts: list[str], cards: list[str],
@@ -123,12 +127,22 @@ def fetch_history(api, product_id: str, since: date | None) -> dict | None:
             "transactions": rows}
 
 
-def download_document(api, url: str, pump) -> bytes | None:
-    """POST a document download and return its bytes, or None. A `422
-    ASYNCHRON` answer means the server is still rendering it (§E): the
-    same call is repeated after a short wait, a bounded number of times."""
+RENDERING = "rendering"
+
+
+def download_document(api, url: str, pump) -> bytes | str | None:
+    """POST a document download and return its bytes, `RENDERING` while
+    the server still renders it, or None on any other answer. A `422
+    ASYNCHRON` answer is the rendering one (§E): the same call is repeated
+    after a short wait, a bounded number of times."""
     for attempt in range(RENDER_ATTEMPTS):
-        status, body, error = api.post_token_form(url)
+        try:
+            status, body, error = api.post_token_form(url)
+        except Exception as exc:
+            # safe_error, never %r: a Playwright call log repeats the
+            # request headers, the bearer included.
+            log.debug("document failed: %s", debugcap.safe_error(exc))
+            return None
         if 200 <= status < 300 and body:
             return body
         if not george.is_render_pending(status, error):
@@ -136,19 +150,26 @@ def download_document(api, url: str, pump) -> bytes | None:
             return None
         if attempt + 1 < RENDER_ATTEMPTS:
             pump(RENDER_WAIT_MS)
-    log.debug("document: still rendering after %d attempts", RENDER_ATTEMPTS)
-    return None
+    return RENDERING
 
 
-def _doc_name(day, key: str) -> str:
+@dataclass(frozen=True)
+class Document:
+    """One PDF to fetch: where from, where to, and which count it adds to."""
+    url: str
+    path: Path
+    kind: str                                # 'statements' / 'card_statements'
+
+
+def _doc_path(out_dir: Path, day, key: str) -> Path:
     stamp = day.isoformat() if isinstance(day, date) else "undated"
-    return bronze.safe_stem(f"{stamp}_{key}") + ".pdf"
+    return out_dir / (bronze.safe_stem(f"{stamp}_{key}") + ".pdf")
 
 
-def fetch_statements(api, account_id: str, out_dir: Path,
-                     since: date | None, *, documents: bool, pump) -> int:
-    """The statement archive of a checking account: its listing, always,
-    and the PDFs in the window when `documents`. Returns PDFs written."""
+def statement_documents(api, account_id: str, out_dir: Path,
+                        since: date | None) -> list[Document]:
+    """Write a checking account's statement listing and return the PDFs in
+    the window."""
     listing: list[dict] = []
     for page in range(MAX_STATEMENT_PAGES):
         status, body = api.get_json(george.statements_url(account_id, page))
@@ -162,69 +183,67 @@ def fetch_statements(api, account_id: str, out_dir: Path,
         if not george.page_has_more(body, page):
             break
     bronze.atomic_write_json(out_dir / "listing.json", listing)
-    if not documents:
-        return 0
-    written = failed = 0
-    for row in listing:
-        if not george.statement_in_window(row, since) or not row.get("id"):
-            continue
-        sid = str(row["id"])
-        try:
-            data = download_document(
-                api, george.statement_download_url(account_id, sid), pump)
-        except Exception as exc:
-            # safe_error, never %r: a Playwright call log repeats the
-            # request headers, the bearer included.
-            log.debug("statement %s failed: %s", bronze.log_id(sid),
-                      debugcap.safe_error(exc))
-            data = None
-        if data is None:
-            failed += 1
-            continue
-        day = george.iso_day(row.get("statementDate"))
-        bronze.atomic_write_bytes(out_dir / _doc_name(day, sid), data)
-        written += 1
-    if failed:
-        log.warning("%s: %d statement(s) could not be downloaded",
-                    bronze.log_id(account_id), failed)
-    return written
+    return [Document(
+        george.statement_download_url(account_id, str(row["id"])),
+        _doc_path(out_dir, george.iso_day(row.get("statementDate")),
+                  str(row["id"])),
+        "statements")
+        for row in listing
+        if row.get("id") and george.statement_in_window(row, since)]
 
 
-def fetch_invoices(api, card: dict, out_dir: Path, since: date | None, *,
-                   documents: bool, pump) -> int:
-    """A credit card's statements: the listing, always, and the PDFs in
-    the window when `documents`. Returns PDFs written."""
+def invoice_documents(api, card: dict, out_dir: Path,
+                      since: date | None) -> list[Document]:
+    """Write a credit card's statement listing and return the PDFs in the
+    window."""
     status, body = api.get_json(george.invoices_url(card["product_id"]))
     if status != 200:
         log.warning("card statements %s: HTTP %s",
                     bronze.log_id(card["product_id"]), status)
-        return 0
+        return []
     listing = george.invoice_rows(body)
     bronze.atomic_write_json(out_dir / "listing.json", listing)
-    if not documents:
-        return 0
-    written = failed = 0
-    for row in listing:
-        bill = row.get("billId")
-        if not bill or not george.invoice_in_window(row, since):
-            continue
-        try:
-            data = download_document(
-                api, george.invoice_pdf_url(card["card_id"], str(bill)), pump)
-        except Exception as exc:
-            log.debug("card statement %s failed: %s", bronze.log_id(bill),
-                      debugcap.safe_error(exc))
-            data = None
-        if data is None:
+    return [Document(
+        george.invoice_pdf_url(card["card_id"], str(row["billId"])),
+        _doc_path(out_dir, george.iso_day(row.get("billingDate")),
+                  str(row["billId"])),
+        "card_statements")
+        for row in listing
+        if row.get("billId") and george.invoice_in_window(row, since)]
+
+
+def download_documents(api, docs: list[Document], counts: dict,
+                       pump) -> None:
+    """Download `docs`, adding to `counts`. A statement still rendering
+    after its attempts is asked for once more at the end, after
+    `LATE_RETRY_WAIT_MS`: a statement never downloaded before can take
+    longer to render than the attempts span (§E)."""
+    rendering: list[Document] = []
+    failed = 0
+    for doc in docs:
+        data = download_document(api, doc.url, pump)
+        if data == RENDERING:
+            rendering.append(doc)
+        elif data is None:
             failed += 1
-            continue
-        day = george.iso_day(row.get("billingDate"))
-        bronze.atomic_write_bytes(out_dir / _doc_name(day, str(bill)), data)
-        written += 1
+        else:
+            bronze.atomic_write_bytes(doc.path, data)
+            counts[doc.kind] += 1
+    if rendering:
+        log.info("%d statement(s) still rendering — asking again in %ds",
+                 len(rendering), LATE_RETRY_WAIT_MS // 1000)
+        pump(LATE_RETRY_WAIT_MS)
+        for doc in rendering:
+            data = download_document(api, doc.url, pump)
+            if isinstance(data, bytes):
+                bronze.atomic_write_bytes(doc.path, data)
+                counts[doc.kind] += 1
+            else:
+                failed += 1
     if failed:
-        log.warning("%s: %d card statement(s) could not be downloaded",
-                    bronze.log_id(card["product_id"]), failed)
-    return written
+        log.warning("%d statement PDF(s) could not be downloaded; the next "
+                    "run asks again", failed)
+    counts["documents_failed"] = failed
 
 
 def walk(api, bronze_dir: Path, *, since: date | None = None,
@@ -254,7 +273,7 @@ def walk(api, bronze_dir: Path, *, since: date | None = None,
              len(account_ids), len(cards))
 
     counts = {"transactions": 0, "statements": 0, "card_statements": 0,
-              "incomplete_histories": 0}
+              "documents_failed": 0, "incomplete_histories": 0}
     if dry_run:
         log.info("[dry-run] would fetch history%s for each product",
                  " + statements" if documents else "")
@@ -277,16 +296,18 @@ def walk(api, bronze_dir: Path, *, since: date | None = None,
                 counts["incomplete_histories"] += 1
             log.info("  %s %s: %d transaction(s)", kind,
                      bronze.log_id(product_id), len(history["transactions"]))
+        docs: list[Document] = []
         for account_id in account_ids:
-            counts["statements"] += fetch_statements(
+            docs += statement_documents(
                 api, account_id,
-                run_dir / "statements" / bronze.safe_stem(account_id), since,
-                documents=documents, pump=pump)
+                run_dir / "statements" / bronze.safe_stem(account_id), since)
         for card in cards:
-            counts["card_statements"] += fetch_invoices(
+            docs += invoice_documents(
                 api, card,
                 run_dir / "invoices" / bronze.safe_stem(card["product_id"]),
-                since, documents=documents, pump=pump)
+                since)
+        if documents:
+            download_documents(api, docs, counts, pump)
 
     status_str = "dry-run" if dry_run else "complete"
     bronze.atomic_write_json(run_dir / "run.json", build_manifest(

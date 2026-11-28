@@ -143,13 +143,39 @@ def test_a_rendering_statement_is_asked_again(tmp_path):
     assert len(list((run / "statements" / ACCOUNT).glob("*.pdf"))) == 1
 
 
-def test_a_statement_that_never_renders_is_skipped(tmp_path):
+def test_a_slow_render_is_fetched_on_the_late_retry(tmp_path):
+    waits = []
+    api = FakeApi(history=_history(),
+                  render_pending=download.RENDER_ATTEMPTS + 1)
+    summary = download.walk(api, tmp_path, since=date(2026, 1, 1),
+                            until=date(2026, 4, 30), pump=waits.append)
+    assert download.LATE_RETRY_WAIT_MS in waits
+    assert summary["statements"] == 1 and summary["documents_failed"] == 0
+    # The late retry comes after the card statements.
+    kinds = ["card" if "/cards/" in u else "statement" for u in api.posts]
+    assert kinds.index("card") < len(kinds) - 1 and kinds[-1] == "statement"
+
+
+def test_a_statement_that_never_renders_is_counted_as_failed(tmp_path):
     api = FakeApi(history=_history(), render_pending=100)
     summary = download.walk(api, tmp_path, since=date(2026, 1, 1),
                             until=date(2026, 4, 30))
-    assert summary["statements"] == 0
+    assert summary["statements"] == 0 and summary["documents_failed"] == 1
+    assert summary["card_statements"] == 1
     assert sum("/statements/download" in u for u in api.posts) == \
-        download.RENDER_ATTEMPTS
+        2 * download.RENDER_ATTEMPTS
+
+
+def test_a_refused_document_is_not_retried(tmp_path):
+    class Refusing(FakeApi):
+        def post_token_form(self, url):
+            self.posts.append(url)
+            return 404, b"", {"errors": [{"error": "NOT_FOUND"}]}
+
+    api = Refusing(history=_history())
+    summary = download.walk(api, tmp_path, since=date(2026, 1, 1),
+                            until=date(2026, 4, 30))
+    assert len(api.posts) == 2 and summary["documents_failed"] == 2
 
 
 def test_no_documents_keeps_the_listings(tmp_path):
