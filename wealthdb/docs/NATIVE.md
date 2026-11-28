@@ -121,10 +121,26 @@ the signed-in account:
   `mcp-<name>.log` ([DESIGN.md §4.2](DESIGN.md#a-setup-of-its-own)). A
   start refuses a name that the server of another setup holds.
 
-On any other system, `start` runs the server as a plain background
-process, with a pid file and a log in the server's data folder. It does
-not start at login and is not restarted. `WEALTHDB_NO_LAUNCHD=1` asks
-for the same on a Mac.
+On Linux, where systemd's user manager answers (an account with a
+session, on a system that boots with systemd), `start` registers the
+server the same way, as a systemd user unit:
+
+- Its file is `~/.config/systemd/user/com.smartpointer.wealthdb.mcp.service`
+  (`…wealthdb.metabase.service`), enabled so that it starts at login,
+  and restarted half a minute after it dies. It holds what the
+  LaunchAgent holds, and no secret.
+- Its log is the one in the server's data folder.
+- `stop` disables the unit and removes the file; a server that the
+  config has turned off does the same from inside.
+- A user's units stop at logout unless the account lingers (`loginctl
+  enable-linger`); the next section covers a computer where no one is
+  signed in.
+
+Elsewhere (a container, or no user session), `start` runs the server as
+a plain background process, with a pid file and a log in the server's
+data folder. It does not start at login and is not restarted.
+`WEALTHDB_NO_LAUNCHD=1` asks for the same on a Mac, and
+`WEALTHDB_NO_SYSTEMD=1` on Linux.
 
 `start` returns once the server's process runs. It waits up to a
 minute for that. A server that has not come up by then is stopped

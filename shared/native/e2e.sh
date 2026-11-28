@@ -23,8 +23,11 @@
 #     the file, and the walk stops both servers when it ends.
 #   - their logs, Logs/wealthdb/mcp-e2e.log and metabase-e2e.log, which
 #     stay.
-# With WEALTHDB_NO_LAUNCHD=1, and on any other system, the servers are
-# plain background processes, and their logs are in WORKDIR too.
+# On Linux with a systemd user manager, unless WEALTHDB_NO_SYSTEMD=1, the
+# servers are user units of this account in the same way, their files in
+# ~/.config/systemd/user under the walk's own labels, removed at stop.
+# Otherwise the servers are plain background processes, and their logs
+# are in WORKDIR too.
 #
 # E2E_MCP_PORT and E2E_WEB_PORT move the ports (3490, 3190).
 # E2E_SKIP_WEB=1 leaves the dashboards out, which need Java, and

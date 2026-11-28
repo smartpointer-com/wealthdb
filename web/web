@@ -761,7 +761,7 @@ _start_banner() {
         # A server under launchd starts again at login, and only its
         # banner says so.
         local login=
-        if _uses_launchd; then login=" The server starts again at login."; fi
+        if _uses_agent; then login=" The server starts again at login."; fi
         cat >&2 <<EOF
 web: the dashboards are up → $(_base_url)/
 
@@ -865,8 +865,9 @@ Metabase and driver are downloaded; default
 ~/.cache/wealthdb/metabase), WEALTHDB_WEB_ENV_FILE (default
 wealthdb-web.env in $WEALTHDB_SECRETS_DIR, else ~/.secrets, and
 wealthdb-web-<folder>.env there for a setup of its own, read for the
-variables above), WEALTHDB_NO_LAUNCHD=1 (on a Mac, the native server as
-a plain background process: no start at login, no restart).
+variables above), WEALTHDB_NO_LAUNCHD=1 and WEALTHDB_NO_SYSTEMD=1 (on a
+Mac, and on Linux, the native server as a plain background process: no
+start at login, no restart).
 EOF
 }
 

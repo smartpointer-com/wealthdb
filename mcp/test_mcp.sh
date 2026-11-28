@@ -22,7 +22,7 @@ unset WEALTHDB_CONFIG WEALTHDB_COLLECT WEALTHDB_PROGRAM
 # folder is an empty one under $tmp, the servers are plain processes,
 # and `launchctl` is a stub that records its calls (as `docker` below).
 mkdir -p "$tmp/secrets" "$tmp/bin"
-export WEALTHDB_SECRETS_DIR="$tmp/secrets" WEALTHDB_NO_LAUNCHD=1
+export WEALTHDB_SECRETS_DIR="$tmp/secrets" WEALTHDB_NO_LAUNCHD=1 WEALTHDB_NO_SYSTEMD=1
 cat > "$tmp/bin/launchctl" <<EOF
 #!/bin/sh
 echo "\$*" >> "$tmp/launchctl-calls"
@@ -493,7 +493,7 @@ HOME=/home/u XDG_DATA_HOME= XDG_CONFIG_HOME=/cfg WEALTHDB_DATA_ROOT=/data WEALTH
 # reach so that nothing is started on this computer.
 native_cases() {
     printf 'ENGINE=native\n' > "$tmp/native.mk"
-    export WEALTHDB_BUILD_CONFIG="$tmp/native.mk" WEALTHDB_NO_LAUNCHD=1
+    export WEALTHDB_BUILD_CONFIG="$tmp/native.mk" WEALTHDB_NO_LAUNCHD=1 WEALTHDB_NO_SYSTEMD=1
     # A home of its own: an agent file is written under it.
     export HOME="$tmp/home"
     # shellcheck source=/dev/null
@@ -829,6 +829,93 @@ EOS
         exit "$fails"
     )
     fails=$?
+
+    echo "== native: when systemd keeps the server =="
+    sd() {  # sd OS ANSWERS [NO_SYSTEMD]: _uses_systemd on OS, with a user manager that answers or not
+        ( os="$1" answers="$2"
+          uname() { echo "$os"; }; systemctl() { [ "$answers" = 1 ]; }
+          WEALTHDB_NO_SYSTEMD="${3:-0}"; _uses_systemd && echo yes || echo no )
+    }
+    check     "Linux with a user manager that answers" "yes" "$(sd Linux 1)"
+    check     "not when it does not (a container, no session)" "no" "$(sd Linux 0)"
+    check     "not with WEALTHDB_NO_SYSTEMD=1" "no" "$(sd Linux 1 1)"
+    check     "not on a Mac" "no" "$(sd Darwin 1)"
+
+    echo "== native: under systemd (a stub) =="
+    (
+        # systemd is a function that records its calls. On `restart` it
+        # runs the unit: a stand-in that records its pid, as serve does;
+        # `disable --now` and `stop` end it.
+        _uses_launchd() { return 1; }
+        _uses_systemd() { return 0; }
+        systemctl() {
+            echo "$*" >> "$tmp/systemctl-calls"
+            case "$*" in
+                "--user restart "*)
+                    [ -z "${STUB_REFUSE:-}" ] || return 1
+                    sleep 30 >/dev/null 2>&1 &
+                    echo $! > "$(_service_pidfile)" ;;
+                "--user disable --now "* | "--user stop "*)
+                    pid="$(cat "$(_service_pidfile)" 2>/dev/null)"
+                    [ -z "$pid" ] || kill "$pid" 2>/dev/null || true ;;
+            esac
+            return 0
+        }
+        label=com.smartpointer.wealthdb.mcp unit="$tmp/home/.config/systemd/user/com.smartpointer.wealthdb.mcp.service"
+        # A unit of this label that another setup wrote is not this
+        # start's to replace.
+        (DATA_DIR="$tmp/elsewhere/mcp"; _write_unit)
+        cp "$unit" "$tmp/other.service"
+        : > "$tmp/systemctl-calls"
+        out="$(mcp_start 2>&1)"; rc=$?
+        check     "a start over another setup's unit is refused" \
+            "1 mcp: $label is the server of another setup (its files are not in $tmp/native-data)." "$rc $out"
+        check     "systemd is asked for nothing" "[]" "[$(cat "$tmp/systemctl-calls")]"
+        if cmp -s "$unit" "$tmp/other.service"; then pass "and the unit file is as it was"; else fail "the start changed the unit file"; fi
+        # This setup's own unit is replaced.
+        _write_unit
+        : > "$tmp/systemctl-calls"
+        out="$(mcp_start 2>&1)"; rc=$?
+        check     "start succeeds"          "0"                    "$rc"
+        text="$(cat "$unit" 2>/dev/null)"
+        check     "the unit runs serve" "ExecStart=\"$WEALTHDB_ENTRY\" \"mcp\" \"serve\"" "$text"
+        check     "it names its data folder" "Environment=\"WEALTHDB_MCP_DATA_DIR=$tmp/native-data\"" "$text"
+        check     "it names its label, for a retire from inside" "Environment=\"WEALTHDB_AGENT=$label\"" "$text"
+        check     "it restarts, half a minute apart" "RestartSec=30" "$text"
+        check     "its log is the server's own" "StandardOutput=append:$tmp/native-data/mcp.log" "$text"
+        check     "it starts at login" "WantedBy=default.target" "$text"
+        check     "systemd reloads, enables, then restarts it" \
+            "--user daemon-reload|--user enable $label.service|--user restart $label.service|" "$(tr '\n' '|' < "$tmp/systemctl-calls")"
+        check     "the banner says it starts again at login" "It starts again at login." "$out"
+        pid="$(_native_pid)"
+        : > "$tmp/systemctl-calls"
+        out="$(mcp_stop 2>&1)"
+        check     "stop says so"            "mcp: stopped the server" "$out"
+        check     "stop disables the unit and stops it" "--user disable --now $label.service" "$(cat "$tmp/systemctl-calls")"
+        [ ! -e "$unit" ] && pass "and removes its file, so the server stays stopped" || fail "the unit file is left"
+        if _pid_runs "$pid"; then fail "the server still runs after stop"; kill "$pid"; else pass "the server is gone after stop"; fi
+
+        out="$(STUB_REFUSE=1 mcp_start 2>&1)"; rc=$?
+        check     "a start systemd refuses fails" "1 mcp: systemd did not take the server" "$rc $out"
+        [ ! -e "$unit" ] && pass "and leaves no unit file" || fail "a refused start left its unit file"
+
+        # serve of a server the config has turned off, in a process
+        # systemd started under this label: the unit goes.
+        _write_unit
+        echo 1 > "$(_service_pidfile)"
+        : > "$tmp/systemctl-calls"
+        config 0 3300 token false
+        out="$(WEALTHDB_AGENT="$label" mcp_serve 2>&1)"; rc=$?
+        check     "serve of a server that is off fails" "1"        "$rc"
+        check     "under systemd it says that it leaves" "removing the server from systemd" "$out"
+        check     "and disables, then stops its unit" \
+            "--user disable $label.service|--user daemon-reload|--user stop $label.service|" "$(tr '\n' '|' < "$tmp/systemctl-calls")"
+        [ ! -e "$unit" ] && [ ! -e "$(_service_pidfile)" ] && pass "its unit file and pid file are gone" ||
+            fail "serve left the unit file or the pid file"
+        config 1 3300 token false
+        exit "$fails"
+    )
+    fails=$((fails + $?))
 }
 ( native_cases; exit "$fails" )
 fails=$?

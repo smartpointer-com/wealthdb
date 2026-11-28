@@ -26,7 +26,8 @@
 #                  which a pid file's process is known to be the server.
 #   SERVICE_ENV_KEEP
 #                  the environment variables, beside the common ones
-#                  (_write_plist), a LaunchAgent hands to `serve`. Never
+#                  (_agent_env), a LaunchAgent or a systemd unit hands
+#                  to `serve`. Never
 #                  one that holds a secret: `serve` reads the env file
 #                  itself.
 #   SERVICE_CONFIG the config file the server's container mounts, when
@@ -125,7 +126,8 @@ _service_knobs() {
 }
 
 # _is_running: the server runs. _exists: there is a server to stop or
-# remove, running or not: a container, a LaunchAgent or a pid file.
+# remove, running or not: a container, a LaunchAgent or systemd unit, or
+# a pid file.
 _is_running() {
     if [ "$SERVICE_MODE" = native ]; then _native_pid >/dev/null; return; fi
     [ -n "$(docker ps  -q -f "name=^${CONTAINER}\$" -f status=running 2>/dev/null)" ]
@@ -135,7 +137,7 @@ _exists() {
     [ -n "$(docker ps -aq -f "name=^${CONTAINER}\$" 2>/dev/null)" ]
 }
 _native_exists() {
-    [ -f "$(_service_pidfile)" ] || { _uses_launchd && [ -f "$(_service_plist)" ]; }
+    [ -f "$(_service_pidfile)" ] || { _uses_agent && [ -f "$(_agent_file)" ]; }
 }
 
 # _where names the server in a message: its container, or its program.
@@ -224,15 +226,15 @@ _container_reads_config() {
 # _start_guard fails, with a message, when the name this start would
 # take is held by the server of another setup: a container of that name
 # that serves another data folder and reads another config, or, for a
-# native server under launchd, a LaunchAgent of that label that serves
-# another data folder. A start replaces only its own server, so `start`
+# native server under launchd or systemd, an agent (a LaunchAgent or a
+# unit) of that label that serves another data folder. A start replaces only its own server, so `start`
 # and `restart` call this before they stop or remove anything. A native
 # server that is a plain background process has no name to share: its
 # pid file is in its own data folder.
 _start_guard() {
     local name="$CONTAINER"
     if [ "$SERVICE_MODE" = native ]; then
-        _uses_launchd && [ -f "$(_service_plist)" ] || return 0
+        _uses_agent && [ -f "$(_agent_file)" ] || return 0
         _agent_serves_here && return 0
         name="$(_service_label)"
     else
@@ -299,6 +301,24 @@ _uses_launchd() {
 }
 _launchd_domain() { printf 'gui/%s\n' "$(id -u)"; }
 
+# On Linux, systemd's user manager keeps the server running where it
+# answers: an account with a session, on a system that boots with
+# systemd. In a container, or with no user session, the server is a plain
+# background process. WEALTHDB_NO_SYSTEMD=1 asks for that, as
+# WEALTHDB_NO_LAUNCHD=1 does on a Mac.
+_uses_systemd() {
+    [ "${WEALTHDB_NO_SYSTEMD:-0}" != 1 ] && [ "$(uname -s)" = Linux ] &&
+        command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1
+}
+# _uses_agent: a service manager keeps the native server running, and
+# starts it again at login.
+_uses_agent() { _uses_launchd || _uses_systemd; }
+# The user manager reads its units from ~/.config/systemd/user, whatever
+# XDG_CONFIG_HOME a run names.
+_service_unit() { printf '%s/.config/systemd/user/%s.service\n' "$HOME" "$(_service_label)"; }
+# _agent_file: the file the service manager runs the server from.
+_agent_file() { if _uses_launchd; then _service_plist; else _service_unit; fi; }
+
 # _native_pid prints the pid of the running native server: the pid
 # file's, when that process lives and its command line holds
 # SERVICE_PROC. A pid file left by a server that died names no process,
@@ -354,14 +374,35 @@ _plist_value() {
         sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&amp;/\&/g'
 }
 
-# _agent_serves_here succeeds when the LaunchAgent of this label serves
+# _unit_value KEY prints the value the systemd unit gives KEY among its
+# environment variables, as _write_unit wrote it, unescaped; nothing for
+# a key that is not there.
+_unit_value() {
+    awk -v key="$1" '
+        index($0, "Environment=\"" key "=") == 1 {
+            v = substr($0, length("Environment=\"" key "=") + 1)
+            v = substr(v, 1, length(v) - 1)
+            out = ""
+            for (i = 1; i <= length(v); i++) {
+                c = substr(v, i, 1)
+                if ((c == "\\" || c == "%") && i < length(v)) { i++; c = substr(v, i, 1) }
+                out = out c
+            }
+            print out; exit
+        }' "$(_service_unit)" 2>/dev/null
+}
+
+# _agent_value KEY: the value the agent's file gives KEY.
+_agent_value() { if _uses_launchd; then _plist_value "$1"; else _unit_value "$1"; fi; }
+
+# _agent_serves_here succeeds when the agent of this label serves
 # DATA_DIR: the data folder its file names. A file that names none was
 # written for the default data folder, under the XDG_DATA_HOME it names.
 _agent_serves_here() {
     local dir
-    dir="$(_plist_value "${SERVICE_ENV}_DATA_DIR")"
+    dir="$(_agent_value "${SERVICE_ENV}_DATA_DIR")"
     if [ -z "$dir" ]; then
-        dir="$(_plist_value XDG_DATA_HOME)"
+        dir="$(_agent_value XDG_DATA_HOME)"
         dir="${dir:-$HOME/.local/share}/wealthdb/$SERVICE"
     fi
     [ "$(wealthdb_clean_path "$dir")" = "$(wealthdb_clean_path "$DATA_DIR")" ]
@@ -380,17 +421,28 @@ _serve_here() {
     mkdir -p "$DATA_DIR" && printf '%s\n' "$$" > "$(_service_pidfile)"
 }
 
-# _retire_agent ends a LaunchAgent from inside: `serve` calls it when
-# the config has turned the server off since the `start` that wrote the
-# agent. Without it launchd would start a server that exits at once,
-# every half minute, until a `stop`. It acts only in a process launchd
-# started under this server's label, and unloading the agent ends that
-# process.
+# _retire_agent ends an agent from inside: `serve` calls it when the
+# config has turned the server off since the `start` that wrote the
+# agent. Without it launchd or systemd would start a server that exits
+# at once, every half minute, until a `stop`. It acts only in a process
+# the service manager started under this server's label (launchd names it
+# in XPC_SERVICE_NAME, the unit in WEALTHDB_AGENT), and unloading the
+# agent ends that process.
 _retire_agent() {
-    _uses_launchd && [ "${XPC_SERVICE_NAME:-}" = "$(_service_label)" ] || return 0
-    echo "$SERVICE: turned off in the config; removing the server from launchd" >&2
-    rm -f "$(_service_plist)" "$(_service_pidfile)"
-    launchctl bootout "$(_launchd_domain)/$(_service_label)" 2>/dev/null || true
+    if _uses_launchd; then
+        [ "${XPC_SERVICE_NAME:-}" = "$(_service_label)" ] || return 0
+        echo "$SERVICE: turned off in the config; removing the server from launchd" >&2
+        rm -f "$(_service_plist)" "$(_service_pidfile)"
+        launchctl bootout "$(_launchd_domain)/$(_service_label)" 2>/dev/null || true
+    elif _uses_systemd; then
+        [ "${WEALTHDB_AGENT:-}" = "$(_service_label)" ] || return 0
+        echo "$SERVICE: turned off in the config; removing the server from systemd" >&2
+        systemctl --user disable "$(_service_label).service" >/dev/null 2>&1 || true
+        rm -f "$(_service_unit)" "$(_service_pidfile)"
+        systemctl --user daemon-reload 2>/dev/null || true
+        # Last: the stop ends this process.
+        systemctl --user stop "$(_service_label).service" 2>/dev/null || true
+    fi
 }
 
 _xml_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
@@ -398,17 +450,36 @@ _xml_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
 # _plist_string VALUE prints VALUE as a property list string element.
 _plist_string() { printf '<string>%s</string>\n' "$(printf '%s' "$1" | _xml_escape)"; }
 
+# _agent_env prints, as NAME=VALUE lines, what an agent hands `serve`:
+# the paths and knobs of this start, and no secret. The data folder is
+# always among them: it tells whose server the agent is
+# (_agent_serves_here). A relative path among them is printed absolute:
+# the service manager runs `serve` in another directory, and the one of
+# this start may be gone by the next login.
+_agent_env() {
+    local var val
+    # shellcheck disable=SC2086  # SERVICE_ENV_KEEP is a list of names
+    for var in HOME PATH XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME \
+        WEALTHDB_CONFIG WEALTHDB_DATA_ROOT WEALTHDB_SECRETS_DIR \
+        "${SERVICE_ENV}_CONTAINER" "${SERVICE_ENV}_DATA_DIR" "${SERVICE_ENV}_BIND" \
+        "${SERVICE_ENV}_ENV_FILE" ${SERVICE_ENV_KEEP:-}; do
+        val="${!var:-}"
+        if [ "$var" = "${SERVICE_ENV}_DATA_DIR" ]; then val="$DATA_DIR"; fi
+        [ -n "$val" ] || continue
+        case "$var" in
+            XDG_*_HOME | WEALTHDB_CONFIG | WEALTHDB_DATA_ROOT | WEALTHDB_SECRETS_DIR | *_DATA_DIR | *_ENV_FILE)
+                val="$(wealthdb_abs_path "$val")" ;;
+        esac
+        printf '%s=%s\n' "$var" "$val"
+    done
+}
+
 # _write_plist writes the LaunchAgent that runs `<entry> SERVICE serve`:
 # at login, and again whenever it exits. The entry is the command the
 # caller started wealthdb by (WEALTHDB_ENTRY), which stays in place when
-# a newer version is installed. The agent hands `serve` the paths and
-# knobs of this start, and no secret. The data folder is always among
-# them: it tells whose server the agent is (_agent_serves_here). A
-# relative path among them is written absolute: launchd runs `serve` in
-# another directory, and the one of this start may be gone by the next
-# login.
+# a newer version is installed. It hands `serve` _agent_env.
 _write_plist() {
-    local plist log var val
+    local plist log line
     plist="$(_service_plist)" log="$(_service_logfile)"
     mkdir -p "$(dirname "$plist")" "$(dirname "$log")" || return 1
     {
@@ -420,20 +491,11 @@ _write_plist() {
             "        $(_plist_string "${WEALTHDB_ENTRY:-$WEALTHDB}")" \
             "        $(_plist_string "$SERVICE")" '        <string>serve</string>' '    </array>' \
             '    <key>EnvironmentVariables</key>' '    <dict>'
-        # shellcheck disable=SC2086  # SERVICE_ENV_KEEP is a list of names
-        for var in HOME PATH XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME \
-            WEALTHDB_CONFIG WEALTHDB_DATA_ROOT WEALTHDB_SECRETS_DIR \
-            "${SERVICE_ENV}_CONTAINER" "${SERVICE_ENV}_DATA_DIR" "${SERVICE_ENV}_BIND" \
-            "${SERVICE_ENV}_ENV_FILE" ${SERVICE_ENV_KEEP:-}; do
-            val="${!var:-}"
-            if [ "$var" = "${SERVICE_ENV}_DATA_DIR" ]; then val="$DATA_DIR"; fi
-            [ -n "$val" ] || continue
-            case "$var" in
-                XDG_*_HOME | WEALTHDB_CONFIG | WEALTHDB_DATA_ROOT | WEALTHDB_SECRETS_DIR | *_DATA_DIR | *_ENV_FILE)
-                    val="$(wealthdb_abs_path "$val")" ;;
-            esac
-            printf '        <key>%s</key>\n        %s\n' "$var" "$(_plist_string "$val")"
-        done
+        while IFS= read -r line; do
+            printf '        <key>%s</key>\n        %s\n' "${line%%=*}" "$(_plist_string "${line#*=}")"
+        done <<EOF
+$(_agent_env)
+EOF
         printf '%s\n' '    </dict>' \
             '    <key>RunAtLoad</key>' '    <true/>' \
             '    <key>KeepAlive</key>' '    <true/>' \
@@ -442,6 +504,41 @@ _write_plist() {
             '    <key>StandardErrorPath</key>' "    $(_plist_string "$log")" \
             '</dict>' '</plist>'
     } > "$plist"
+}
+
+# _unit_quote VALUE prints VALUE as one double-quoted word of a systemd
+# unit: a backslash and a double quote escaped, a % doubled, which a unit
+# reads as a specifier. EXEC=1 doubles a $ too, which ExecStart expands.
+_unit_quote() {
+    local v
+    v="$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/%/%%/g')"
+    if [ "${EXEC:-0}" = 1 ]; then v="$(printf '%s' "$v" | sed -e 's/\$/$$/g')"; fi
+    printf '"%s"' "$v"
+}
+
+# _write_unit writes the systemd user unit that runs `<entry> SERVICE
+# serve`, as _write_plist writes the LaunchAgent: at login, and again
+# whenever it exits, with _agent_env, and WEALTHDB_AGENT naming the label
+# (_retire_agent). Its log is the one a plain background process writes.
+_write_unit() {
+    local unit log line
+    unit="$(_service_unit)" log="$(_service_logfile)"
+    mkdir -p "$(dirname "$unit")" "$(dirname "$log")" || return 1
+    {
+        printf '%s\n' '[Unit]' "Description=wealthdb $SERVICE server ($(_service_label))" '' '[Service]'
+        printf 'ExecStart=%s %s %s\n' "$(EXEC=1 _unit_quote "${WEALTHDB_ENTRY:-$WEALTHDB}")" \
+            "$(EXEC=1 _unit_quote "$SERVICE")" '"serve"'
+        printf 'Environment=%s\n' "$(_unit_quote "WEALTHDB_AGENT=$(_service_label)")"
+        while IFS= read -r line; do
+            printf 'Environment=%s\n' "$(_unit_quote "$line")"
+        done <<EOF
+$(_agent_env)
+EOF
+        printf '%s\n' 'Restart=always' 'RestartSec=30' \
+            "StandardOutput=append:$(printf '%s' "$log" | sed 's/%/%%/g')" \
+            "StandardError=append:$(printf '%s' "$log" | sed 's/%/%%/g')" \
+            '' '[Install]' 'WantedBy=default.target'
+    } > "$unit"
 }
 
 # _native_start starts the native server and returns once its process
@@ -463,6 +560,17 @@ _native_start() {
             rm -f "$(_service_plist)"
             echo "$SERVICE: launchd did not take the server. It runs servers for an account that is signed in" >&2
             echo "     at the screen. On a server, run '$PROGRAM $SERVICE serve' under a system service instead." >&2
+            return 1
+        fi
+    elif _uses_systemd; then
+        _write_unit || { echo "$SERVICE: could not write $(_service_unit)" >&2; return 1; }
+        if ! { systemctl --user daemon-reload && systemctl --user enable "$(_service_label).service" >/dev/null 2>&1 &&
+            systemctl --user restart "$(_service_label).service"; }; then
+            systemctl --user disable "$(_service_label).service" >/dev/null 2>&1 || true
+            rm -f "$(_service_unit)"
+            systemctl --user daemon-reload 2>/dev/null || true
+            echo "$SERVICE: systemd did not take the server. On a computer where no one is signed in," >&2
+            echo "     run '$PROGRAM $SERVICE serve' under a system service instead." >&2
             return 1
         fi
     else
@@ -497,14 +605,18 @@ _rotate_log() {
     if [ "${size:-0}" -gt "${SERVICE_LOG_MAX:-20971520}" ]; then mv -f "$1" "$1.1"; fi
 }
 
-# _native_stop stops the native server and removes its LaunchAgent, so
-# it stays stopped after the next login. It waits for the process to go.
+# _native_stop stops the native server and removes its agent, so it
+# stays stopped after the next login. It waits for the process to go.
 _native_stop() {
     local pid
     pid="$(_native_pid)" || pid=
     if _uses_launchd; then
         launchctl bootout "$(_launchd_domain)/$(_service_label)" 2>/dev/null || true
         rm -f "$(_service_plist)"
+    elif _uses_systemd; then
+        systemctl --user disable --now "$(_service_label).service" >/dev/null 2>&1 || true
+        rm -f "$(_service_unit)"
+        systemctl --user daemon-reload 2>/dev/null || true
     fi
     if [ -n "$pid" ]; then _end_process "$pid"; fi
     rm -f "$(_service_pidfile)"

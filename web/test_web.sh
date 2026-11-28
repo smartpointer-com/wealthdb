@@ -36,7 +36,7 @@ export WEALTHDB_WEB_DATA_DIR="$tmp/web-data"
 # STUB_CONTAINER set. A test that needs more of Docker defines a
 # function of its own.
 mkdir -p "$tmp/secrets" "$tmp/bin"
-export WEALTHDB_SECRETS_DIR="$tmp/secrets" WEALTHDB_NO_LAUNCHD=1
+export WEALTHDB_SECRETS_DIR="$tmp/secrets" WEALTHDB_NO_LAUNCHD=1 WEALTHDB_NO_SYSTEMD=1
 # The steps' timing lines, which most cases below check, are printed only
 # when asked for; the cases of the default unset it.
 export WEALTHDB_WEB_TIMINGS=1
@@ -1114,7 +1114,7 @@ check_eq "the default config: turning the dashboards on" "web: the dashboards ar
 # launchd out of reach, so that nothing is started on this computer.
 native_cases() {
     printf 'ENGINE=native\nJAVA=%s\n' "$tmp/java" > "$tmp/native.mk"
-    export WEALTHDB_BUILD_CONFIG="$tmp/native.mk" WEALTHDB_NO_LAUNCHD=1 HOME="$tmp/home"
+    export WEALTHDB_BUILD_CONFIG="$tmp/native.mk" WEALTHDB_NO_LAUNCHD=1 WEALTHDB_NO_SYSTEMD=1 HOME="$tmp/home"
     # shellcheck source=/dev/null
     source "$HERE/web"
     PYTHON3=python3

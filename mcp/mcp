@@ -437,7 +437,7 @@ _start_banner() {
     local name="$CONTAINER" after="After rebuilding the image"
     if [ "$SERVICE_MODE" = native ]; then
         name="the server" after="After an upgrade"
-        if _uses_launchd; then after="It starts again at login. $after"; fi
+        if _uses_agent; then after="It starts again at login. $after"; fi
     fi
     cat >&2 <<EOF
 mcp: $name is up → MCP on $(_base_url)/mcp
@@ -512,8 +512,9 @@ WEALTHDB_MCP_INSECURE (the config fields' env forms), WEALTHDB_MCP_CHARS
 names to answer besides loopback, comma-separated), WEALTHDB_MCP_ENV_FILE
 (default wealthdb-mcp.env in $WEALTHDB_SECRETS_DIR, else ~/.secrets, and
 wealthdb-mcp-<folder>.env there for a setup of its own, read for the
-variables above), WEALTHDB_NO_LAUNCHD=1 (on a Mac, the native
-server as a plain background process: no start at login, no restart).
+variables above), WEALTHDB_NO_LAUNCHD=1 and WEALTHDB_NO_SYSTEMD=1 (on a
+Mac, and on Linux, the native server as a plain background process: no
+start at login, no restart).
 EOF
 }
 
