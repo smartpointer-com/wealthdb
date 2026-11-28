@@ -63,9 +63,29 @@ _SECRET_NAMES = frozenset(_SECRET_HEADERS)
 # A percent-escape, for re-spelling one in lower-case hex.
 _PCT_ESCAPE_RE = re.compile(r"%[0-9A-Fa-f]{2}")
 
+# A `name=value` pair inside a URL fragment. An OAuth implicit grant hands
+# its token back as `#access_token=…`, and an SPA route can carry its own
+# query (`#/x?token=…`); neither is part of what urlsplit calls the query.
+_FRAGMENT_PAIR_RE = re.compile(r"(?P<name>[^=&?;/#]+)=(?P<value>[^&;]*)")
+
+# Response headers whose value is a URL, or holds one. A redirect is how a
+# sign-in hands its token to the next page, so the URL it names is masked
+# like any recorded URL.
+_URL_HEADERS = frozenset({"location", "content-location", "refresh", "link"})
+_EMBEDDED_URL_RE = re.compile(r"https?://[^\s<>\"',]+")
+
+
+def _mask_fragment(fragment: str) -> str:
+    def mask(m):
+        if m["name"].lower() in _SECRET_PARAMS:
+            return f"{m['name']}={REDACTED}"
+        return m.group(0)
+    return _FRAGMENT_PAIR_RE.sub(mask, fragment)
+
 
 def redact_url(url: str) -> str:
-    """Return `url` with credential-bearing query parameters masked.
+    """Return `url` with credential-bearing parameters masked, in the query
+    and in the fragment.
 
     Keeps the parameter NAME — that a request carried an `api_key` is the
     diagnostic; its value is the secret. A URL that cannot be parsed is
@@ -76,13 +96,29 @@ def redact_url(url: str) -> str:
         parts = urllib.parse.urlsplit(url)
     except ValueError:
         return REDACTED
-    if not parts.query:
+    if not parts.query and not parts.fragment:
         return url
-    pairs = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
-    masked = [(k, REDACTED if k.lower() in _SECRET_PARAMS else v)
-              for k, v in pairs]
+    query = parts.query
+    if query:
+        pairs = urllib.parse.parse_qsl(query, keep_blank_values=True)
+        query = urllib.parse.urlencode(
+            [(k, REDACTED if k.lower() in _SECRET_PARAMS else v)
+             for k, v in pairs])
+    fragment = _mask_fragment(parts.fragment)
+    if query == parts.query and fragment == parts.fragment:
+        return url
     return urllib.parse.urlunsplit(
-        parts._replace(query=urllib.parse.urlencode(masked)))
+        parts._replace(query=query, fragment=fragment))
+
+
+def _redact_url_header(value):
+    """A URL-valued header with every URL in it masked: a bare (possibly
+    relative) `Location`, or URLs embedded in a `Refresh` / `Link` value."""
+    if not isinstance(value, str):
+        return value
+    if "://" not in value:
+        return redact_url(value)
+    return _EMBEDDED_URL_RE.sub(lambda m: redact_url(m.group(0)), value)
 
 
 def safe_error(exc: BaseException) -> str:
@@ -187,7 +223,9 @@ def redact_headers(headers) -> dict:
     value is only knowable from the header it arrived in — an ``apikey``
     a site issues at runtime, a ``cookie`` a session sets. Keeping the
     name and dropping the value preserves the diagnostic (that the
-    request carried a key) without the key.
+    request carried a key) without the key. A header whose value is a URL
+    (``Location`` and kin) is kept, with that URL masked as
+    :func:`redact_url` masks any recorded URL.
     """
     if not headers:
         return {}
@@ -195,7 +233,9 @@ def redact_headers(headers) -> dict:
         items = headers.items()
     except AttributeError:
         return {}
-    return {k: (REDACTED if k.lower() in _SECRET_HEADERS else v)
+    return {k: (REDACTED if k.lower() in _SECRET_HEADERS
+                else _redact_url_header(v) if k.lower() in _URL_HEADERS
+                else v)
             for k, v in items}
 
 
@@ -236,6 +276,36 @@ def _mask_har_pairs(pairs, names, found) -> None:
             pair["value"] = REDACTED
 
 
+_URL_VALUE_RE = re.compile(r"^https?://", re.I)
+
+
+def _mask_url_value(value, found):
+    """A body field's value that is itself a URL carrying a credential
+    parameter, masked as :func:`redact_url` masks it; None otherwise.
+
+    Telemetry posts the page's own URL in a field of its body, and after an
+    implicit grant that URL holds the token in its fragment. No field name
+    marks it, so the URL's own parameter names are what select it. Each
+    value masked is recorded in `found`, for the echo pass to chase.
+    """
+    if not isinstance(value, str) or not _URL_VALUE_RE.match(value):
+        return None
+    try:
+        parts = urllib.parse.urlsplit(value)
+    except ValueError:
+        return None
+    secrets = [v for k, v in urllib.parse.parse_qsl(parts.query,
+                                                    keep_blank_values=True)
+               if k.lower() in _SECRET_PARAMS]
+    secrets += [m["value"] for m in _FRAGMENT_PAIR_RE.finditer(parts.fragment)
+                if m["name"].lower() in _SECRET_PARAMS]
+    if not secrets:
+        return None
+    for secret in secrets:
+        _echo(found, secret)
+    return redact_url(value)
+
+
 def _mask_json_secrets(node, found) -> bool:
     """Mask credential-named values anywhere in a parsed JSON body,
     recording what was masked in `found`. Returns whether anything was.
@@ -263,11 +333,17 @@ def _mask_json_secrets(node, found) -> bool:
                 _echo(found, value)
                 node[key] = REDACTED
                 hit = True
+            elif (masked := _mask_url_value(value, found)) is not None:
+                node[key] = masked
+                hit = True
             elif _mask_json_secrets(value, found):
                 hit = True
     elif isinstance(node, list):
-        for item in node:
-            if _mask_json_secrets(item, found):
+        for i, item in enumerate(node):
+            if (masked := _mask_url_value(item, found)) is not None:
+                node[i] = masked
+                hit = True
+            elif _mask_json_secrets(item, found):
                 hit = True
     return hit
 
@@ -301,6 +377,10 @@ def _mask_urlencoded(text: str, found) -> str | None:
             _echo(found, urllib.parse.unquote_plus(value))
             out.append(f"{name}={REDACTED}")
             hit = True
+        elif sep and (masked := _mask_url_value(
+                urllib.parse.unquote_plus(value), found)) is not None:
+            out.append(f"{name}={urllib.parse.quote(masked, safe='')}")
+            hit = True
         else:
             out.append(field)
     return "&".join(out) if hit else None
@@ -311,8 +391,9 @@ def _mask_body_by_name(text: str, mime, found) -> str:
     recording what was masked in `found`.
 
     The body's own syntax says what the names are: a form's field names, a
-    JSON object's keys. A body in neither shape has no names to read, so it
-    is returned as it is and left to the value-based mask.
+    JSON object's keys. A body in neither shape has no names to read; only
+    the URLs written in it are masked, by their own parameter names, and
+    the rest is left to the value-based mask.
     """
     kind = str(mime or "").lower()
     if "urlencoded" in kind:
@@ -325,7 +406,9 @@ def _mask_body_by_name(text: str, mime, found) -> str:
             return text
         if _mask_json_secrets(body, found):
             return json.dumps(body)
-    return text
+        return text
+    return _EMBEDDED_URL_RE.sub(
+        lambda m: _mask_url_value(m.group(0), found) or m.group(0), text)
 
 
 def redact_body(text, mime=None, redact=None):
@@ -408,6 +491,8 @@ def _redact_har_entry(entry: dict, redact) -> None:
         for pair in pairs:
             if isinstance(pair, dict):
                 pair["value"] = clean(pair.get("value"))
+                if str(pair.get("name", "")).lower() in _URL_HEADERS:
+                    pair["value"] = _redact_url_header(pair["value"])
     # Both fields on both halves. The spec puts `url` on the request and
     # `redirectURL` on the response, but a recorder that also writes the
     # other spelling would otherwise leave a URL — and the hop carrying a

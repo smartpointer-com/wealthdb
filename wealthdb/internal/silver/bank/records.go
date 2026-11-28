@@ -67,7 +67,7 @@ func appendBalances(ctx context.Context, db *sql.DB, label, q string, args []any
 // appendReportedBalances appends one CURRENT cash balance per account and
 // run that listed it inside w: the account's roster balance as of that run,
 // from its latest `accounts` row at or before it, in its currency (ccy) and
-// as stored. runsTable holds one (snapshot_at, account_external_id) row per
+// in the canonical sign (sign, nil for the figure as stored). runsTable holds one (snapshot_at, account_external_id) row per
 // loaded run and account the run's roster listed; it is the adapter's own
 // constant, and the caller has probed that the silver holds it. An
 // account's own roster rows count as listings too. A roster row with no
@@ -81,7 +81,8 @@ func appendBalances(ctx context.Context, db *sql.DB, label, q string, args []any
 // leaves out ends at that run, by the run's coverage (appendListedCovers,
 // wealthdb/docs/DESIGN.md §10.7).
 func appendReportedBalances(ctx context.Context, db *sql.DB, kind, runsTable string,
-	w canonical.Window, ccy func(accountID string) string, batch *canonical.SnapshotBatch) error {
+	w canonical.Window, ccy func(accountID string) string,
+	sign func(accountID string, v float64) canonical.Decimal, batch *canonical.SnapshotBatch) error {
 	q := `
 SELECT id, at, balance FROM (
     SELECT l.account_external_id AS id, l.snapshot_at AS at,
@@ -94,7 +95,7 @@ SELECT id, at, balance FROM (
  WHERE balance IS NOT NULL
  ORDER BY id, at`
 	return appendBalances(ctx, db, kind+" roster balances", q, []any{w.Start, w.End},
-		canonical.BalanceKindCurrent, `{"basis":"roster"}`, ccy, nil, batch)
+		canonical.BalanceKindCurrent, `{"basis":"roster"}`, ccy, sign, batch)
 }
 
 // appendListedCovers states, for each run inside w that recorded a

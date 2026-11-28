@@ -697,8 +697,9 @@ class Session:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
         self.log.info("recording started — %s Then EITHER close the browser "
-                      "window OR Ctrl-C the terminal to stop. Both paths "
-                      "flush artefacts: %sthe line-buffered clicks.jsonl / "
+                      "window OR press Ctrl-C ONCE in the terminal to stop "
+                      "(only Ctrl-C writes the HAR). Both paths flush "
+                      "artefacts: %sthe line-buffered clicks.jsonl / "
                       "network.jsonl land on disk continuously.", walk,
                       f"trace chunks every {self.chunk_interval}s + "
                       if self.trace else "")
@@ -738,6 +739,14 @@ class Session:
                         self._save_trace_chunk()
                         last_chunk_at = time.monotonic()
         except KeyboardInterrupt:
+            # The browser close that follows is what writes the HAR, and
+            # it takes seconds. A second Ctrl-C inside it aborts the close,
+            # and the HAR is never written, so from here on Ctrl-C is
+            # ignored for the rest of the process.
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            self.log.warning("Ctrl-C: stopping. Closing the browser writes "
+                             "the HAR and takes a few seconds; further "
+                             "Ctrl-C is ignored.")
             self.event({"kind": "signal", "ts": iso_now(),
                         "signal": "SIGINT"})
             reason = "sigint"

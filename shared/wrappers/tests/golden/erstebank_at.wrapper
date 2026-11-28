@@ -1,0 +1,980 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+erstebank_at — host wrapper
+
+Read-only collector for George, the retail e-banking portal of Erste Bank
+und Sparkassen in Austria (george.sparkasse.at): checking accounts
+(Girokonto) and credit cards, their transaction history, and statement
+PDFs.
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  download [args...]  One-shot sign-in + REST fetch of the checking accounts
+                      and credit cards (history + statement PDFs) into a
+                      UTC-stamped bronze run dir. The push is approved in
+                      the George app — no VNC, nothing to type. --lookback
+                      bounds the window; --no-documents skips the PDFs;
+                      --dry-run reads the rosters only. It signs in like a
+                      run, so it fires a push when no session is alive.
+  login [args...]     Folds into download, which signs in only without a
+                      live session. `login --check` reports whether a
+                      session is alive (exit 0 alive, 1 none, 3 no
+                      verdict; no push).
+  vnc-login [args...] Fallback for download: expose VNC and do the sign-in
+                      by hand, then fetch.
+  load [args...]      Ingest bronze into the SQLite silver (accounts,
+                      transactions, daily closing balances, statements).
+                      --force rebuilds from all bronze.
+  explore [args...]   Discovery harness: Camoufox over VNC + HAR / network
+                      log / click log / DOM snapshots / response bodies
+                      under /debug. Sign-in and the push approval are
+                      done by hand.
+  prune [args...]     Delete non-complete dumps from the bronze tree, and
+                      aged entries of the /debug cache (runs host-side).
+                      --dry-run prints the plan.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-erstebank_at/home/.secrets  ->  /secrets
+  <TMP>/w-erstebank_at/xdgdata/wealthdb/erstebank_at     ->  /data
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/erstebank_at  ->  /cache/collector
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/debug/erstebank_at    ->  /debug
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at  ->  /app
+
+Override mounts via env:
+  ERSTEBANK_AT_SECRETS_DIR=/path/to/secrets
+  ERSTEBANK_AT_DATA_DIR=/path/to/data
+  ERSTEBANK_AT_DEBUG_DIR=/path/to/debug
+
+Credentials (read from /secrets/erstebank_at.env inside the container
+= $HOME/.secrets/erstebank_at.env on the host; chmod 0600):
+  ERSTEBANK_AT_USERNAME   the George user name (Verfügernummer or alias)
+  The sign-in is confirmed in the George app.
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+erstebank_at — host wrapper
+
+Read-only collector for George, the retail e-banking portal of Erste Bank
+und Sparkassen in Austria (george.sparkasse.at): checking accounts
+(Girokonto) and credit cards, their transaction history, and statement
+PDFs.
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  download [args...]  One-shot sign-in + REST fetch of the checking accounts
+                      and credit cards (history + statement PDFs) into a
+                      UTC-stamped bronze run dir. The push is approved in
+                      the George app — no VNC, nothing to type. --lookback
+                      bounds the window; --no-documents skips the PDFs;
+                      --dry-run reads the rosters only. It signs in like a
+                      run, so it fires a push when no session is alive.
+  login [args...]     Folds into download, which signs in only without a
+                      live session. `login --check` reports whether a
+                      session is alive (exit 0 alive, 1 none, 3 no
+                      verdict; no push).
+  vnc-login [args...] Fallback for download: expose VNC and do the sign-in
+                      by hand, then fetch.
+  load [args...]      Ingest bronze into the SQLite silver (accounts,
+                      transactions, daily closing balances, statements).
+                      --force rebuilds from all bronze.
+  explore [args...]   Discovery harness: Camoufox over VNC + HAR / network
+                      log / click log / DOM snapshots / response bodies
+                      under /debug. Sign-in and the push approval are
+                      done by hand.
+  prune [args...]     Delete non-complete dumps from the bronze tree, and
+                      aged entries of the /debug cache (runs host-side).
+                      --dry-run prints the plan.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-erstebank_at/home/.secrets  ->  /secrets
+  <TMP>/w-erstebank_at/xdgdata/wealthdb/erstebank_at     ->  /data
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/erstebank_at  ->  /cache/collector
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/debug/erstebank_at    ->  /debug
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at  ->  /app
+
+Override mounts via env:
+  ERSTEBANK_AT_SECRETS_DIR=/path/to/secrets
+  ERSTEBANK_AT_DATA_DIR=/path/to/data
+  ERSTEBANK_AT_DEBUG_DIR=/path/to/debug
+
+Credentials (read from /secrets/erstebank_at.env inside the container
+= $HOME/.secrets/erstebank_at.env on the host; chmod 0600):
+  ERSTEBANK_AT_USERNAME   the George user name (Verfügernummer or alias)
+  The sign-in is confirmed in the George app.
+--- stderr
+=== build
+--- calls
+python3
+  -
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at/Dockerfile
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at/requirements.txt
+  --
+  missing
+docker
+  image
+  inspect
+  -f
+  {{index .Config.Labels "wealthdb.inputs"}}
+  wealthdb/erstebank_at:latest
+docker
+  build
+  --provenance=false
+  --build-arg
+  WEALTHDB_IMAGE_TAG=latest
+  -t
+  wealthdb/erstebank_at:latest
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/erstebank_at:latest
+docker
+  ps
+  --filter
+  name=^erstebank_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  erstebank_at
+docker
+  run
+  --rm
+  --pull=never
+  --name
+  erstebank_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  ERSTEBANK_AT_USERNAME
+  -v
+  <TMP>/w-erstebank_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-erstebank_at/xdgdata/wealthdb/erstebank_at:/data
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/erstebank_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/debug/erstebank_at:/debug
+  -v
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at:/app
+  wealthdb/erstebank_at:latest
+  download
+  [env] ERSTEBANK_AT_USERNAME=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+exit: 0
+--- stdout
+--- stderr
+erstebank_at: 'login' folds into 'download', which signs in only when no session is alive (§F).
+  Run 'download' (one-shot sign-in + fetch), or 'login --check' to probe a session.
+=== vnc-login
+--- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/erstebank_at:latest
+lsof
+  -nP
+  -iTCP:5900
+  -sTCP:LISTEN
+docker
+  ps
+  --filter
+  name=^erstebank_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  erstebank_at
+docker
+  run
+  --rm
+  --pull=never
+  --name
+  erstebank_at
+  -p
+  127.0.0.1:5900:5900
+  -e
+  VNC_HOST_PORT=5900
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  ERSTEBANK_AT_USERNAME
+  -v
+  <TMP>/w-erstebank_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-erstebank_at/xdgdata/wealthdb/erstebank_at:/data
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/erstebank_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/debug/erstebank_at:/debug
+  -v
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at:/app
+  wealthdb/erstebank_at:latest
+  vnc-login
+  [env] ERSTEBANK_AT_USERNAME=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/erstebank_at:latest
+docker
+  ps
+  --filter
+  name=^erstebank_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  erstebank_at
+docker
+  run
+  --rm
+  --pull=never
+  --name
+  erstebank_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  ERSTEBANK_AT_USERNAME
+  -v
+  <TMP>/w-erstebank_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-erstebank_at/xdgdata/wealthdb/erstebank_at:/data
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/erstebank_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/debug/erstebank_at:/debug
+  -v
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at:/app
+  wealthdb/erstebank_at:latest
+  load
+  [env] ERSTEBANK_AT_USERNAME=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== explore
+--- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/erstebank_at:latest
+lsof
+  -nP
+  -iTCP:5900
+  -sTCP:LISTEN
+docker
+  ps
+  --filter
+  name=^erstebank_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  erstebank_at
+docker
+  run
+  --rm
+  --pull=never
+  --name
+  erstebank_at
+  -p
+  127.0.0.1:5900:5900
+  -e
+  VNC_HOST_PORT=5900
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  ERSTEBANK_AT_USERNAME
+  -v
+  <TMP>/w-erstebank_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-erstebank_at/xdgdata/wealthdb/erstebank_at:/data
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/erstebank_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/debug/erstebank_at:/debug
+  -v
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at:/app
+  wealthdb/erstebank_at:latest
+  explore
+  [env] ERSTEBANK_AT_USERNAME=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at/prune.py
+  --bronze-dir
+  <TMP>/w-erstebank_at/xdgdata/wealthdb/erstebank_at
+  --debug-dir
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/debug/erstebank_at
+exit: 0
+--- stdout
+--- stderr
+=== sh
+--- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/erstebank_at:latest
+docker
+  ps
+  --filter
+  name=^erstebank_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  erstebank_at
+docker
+  run
+  --rm
+  --pull=never
+  --name
+  erstebank_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  ERSTEBANK_AT_USERNAME
+  -v
+  <TMP>/w-erstebank_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-erstebank_at/xdgdata/wealthdb/erstebank_at:/data
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/erstebank_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/debug/erstebank_at:/debug
+  -v
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at:/app
+  wealthdb/erstebank_at:latest
+  sh
+  [env] ERSTEBANK_AT_USERNAME=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bash
+--- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/erstebank_at:latest
+docker
+  ps
+  --filter
+  name=^erstebank_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  erstebank_at
+docker
+  run
+  --rm
+  --pull=never
+  --name
+  erstebank_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  ERSTEBANK_AT_USERNAME
+  -v
+  <TMP>/w-erstebank_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-erstebank_at/xdgdata/wealthdb/erstebank_at:/data
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/erstebank_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/debug/erstebank_at:/debug
+  -v
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at:/app
+  wealthdb/erstebank_at:latest
+  bash
+  [env] ERSTEBANK_AT_USERNAME=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login --check
+--- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/erstebank_at:latest
+docker
+  ps
+  --filter
+  name=^erstebank_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  erstebank_at
+docker
+  run
+  --rm
+  --pull=never
+  --name
+  erstebank_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  ERSTEBANK_AT_USERNAME
+  -v
+  <TMP>/w-erstebank_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-erstebank_at/xdgdata/wealthdb/erstebank_at:/data
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/erstebank_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/debug/erstebank_at:/debug
+  -v
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at:/app
+  wealthdb/erstebank_at:latest
+  login
+  --check
+  [env] ERSTEBANK_AT_USERNAME=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/erstebank_at:latest
+docker
+  ps
+  --filter
+  name=^erstebank_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  erstebank_at
+docker
+  run
+  --rm
+  --pull=never
+  --name
+  erstebank_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  ERSTEBANK_AT_USERNAME
+  -v
+  <TMP>/w-erstebank_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-erstebank_at/xdgdata/wealthdb/erstebank_at:/data
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/erstebank_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/debug/erstebank_at:/debug
+  -v
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at:/app
+  wealthdb/erstebank_at:latest
+  download
+  --dry-run
+  --lookback
+  1w
+  [env] ERSTEBANK_AT_USERNAME=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db <TMP>/w-erstebank_at/silver/x.db
+--- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/erstebank_at:latest
+docker
+  ps
+  --filter
+  name=^erstebank_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  erstebank_at
+docker
+  run
+  --rm
+  --pull=never
+  --name
+  erstebank_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  ERSTEBANK_AT_USERNAME
+  -v
+  <TMP>/w-erstebank_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-erstebank_at/xdgdata/wealthdb/erstebank_at:/data
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/erstebank_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
+  <TMP>/w-erstebank_at/silver:/silver
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/debug/erstebank_at:/debug
+  -v
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at:/app
+  wealthdb/erstebank_at:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] ERSTEBANK_AT_USERNAME=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-erstebank_at/silver/x.db
+--- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/erstebank_at:latest
+docker
+  ps
+  --filter
+  name=^erstebank_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  erstebank_at
+docker
+  run
+  --rm
+  --pull=never
+  --name
+  erstebank_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  ERSTEBANK_AT_USERNAME
+  -v
+  <TMP>/w-erstebank_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-erstebank_at/xdgdata/wealthdb/erstebank_at:/data
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/erstebank_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
+  <TMP>/w-erstebank_at/silver:/silver
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/debug/erstebank_at:/debug
+  -v
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at:/app
+  wealthdb/erstebank_at:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] ERSTEBANK_AT_USERNAME=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-erstebank_at/alt-data
+--- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/erstebank_at:latest
+docker
+  ps
+  --filter
+  name=^erstebank_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  erstebank_at
+docker
+  run
+  --rm
+  --pull=never
+  --name
+  erstebank_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  ERSTEBANK_AT_USERNAME
+  -v
+  <TMP>/w-erstebank_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-erstebank_at/alt-data:/data
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/erstebank_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/debug/erstebank_at:/debug
+  -v
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at:/app
+  wealthdb/erstebank_at:latest
+  load
+  [env] ERSTEBANK_AT_USERNAME=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-erstebank_at/alt-data
+--- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/erstebank_at:latest
+docker
+  ps
+  --filter
+  name=^erstebank_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  erstebank_at
+docker
+  run
+  --rm
+  --pull=never
+  --name
+  erstebank_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  ERSTEBANK_AT_USERNAME
+  -v
+  <TMP>/w-erstebank_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-erstebank_at/alt-data:/data
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/erstebank_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/debug/erstebank_at:/debug
+  -v
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at:/app
+  wealthdb/erstebank_at:latest
+  load
+  [env] ERSTEBANK_AT_USERNAME=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-erstebank_at/alt-secrets
+--- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/erstebank_at:latest
+docker
+  ps
+  --filter
+  name=^erstebank_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  erstebank_at
+docker
+  run
+  --rm
+  --pull=never
+  --name
+  erstebank_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  ERSTEBANK_AT_USERNAME
+  -v
+  <TMP>/w-erstebank_at/alt-secrets:/secrets
+  -v
+  <TMP>/w-erstebank_at/xdgdata/wealthdb/erstebank_at:/data
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/erstebank_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/debug/erstebank_at:/debug
+  -v
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at:/app
+  wealthdb/erstebank_at:latest
+  download
+  [env] ERSTEBANK_AT_USERNAME=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir=<TMP>/w-erstebank_at/alt-secrets
+--- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/erstebank_at:latest
+docker
+  ps
+  --filter
+  name=^erstebank_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  erstebank_at
+docker
+  run
+  --rm
+  --pull=never
+  --name
+  erstebank_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  ERSTEBANK_AT_USERNAME
+  -v
+  <TMP>/w-erstebank_at/alt-secrets:/secrets
+  -v
+  <TMP>/w-erstebank_at/xdgdata/wealthdb/erstebank_at:/data
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/erstebank_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/debug/erstebank_at:/debug
+  -v
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at:/app
+  wealthdb/erstebank_at:latest
+  download
+  [env] ERSTEBANK_AT_USERNAME=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+docker
+  image
+  inspect
+  --format
+  {{.Id}}
+  wealthdb/erstebank_at:latest
+docker
+  ps
+  --filter
+  name=^erstebank_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  erstebank_at
+docker
+  run
+  --rm
+  --pull=never
+  --name
+  erstebank_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  ERSTEBANK_AT_USERNAME
+  -v
+  <TMP>/w-erstebank_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-erstebank_at/xdgdata/wealthdb/erstebank_at:/data
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/erstebank_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
+  <TMP>/w-erstebank_at/xdgcache/wealthdb/debug/erstebank_at:/debug
+  -v
+  <TMP>/w-erstebank_at/tree/collectors/erstebank_at:/app
+  wealthdb/erstebank_at:latest
+  bogus-verb
+  [env] ERSTEBANK_AT_USERNAME=<unset>
+exit: 0
+--- stdout
+--- stderr

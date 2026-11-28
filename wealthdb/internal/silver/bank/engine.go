@@ -1,8 +1,9 @@
 // Package bank projects the silver of a deposit or card relationship into
-// canonical change records. Four collectors share the shape: amex, chase,
-// firstcitizens and raiffeisen_at. Their silvers hold the same tables
-// (dump_runs, accounts, transactions) and differ in column names, in where
-// the closing balances come from, and in the rule that kinds a ledger row.
+// canonical change records. Five collectors share the shape: amex, chase,
+// erstebank_at, firstcitizens and raiffeisen_at. Their silvers hold the
+// same tables (dump_runs, accounts, transactions) and differ in column
+// names, in where the closing balances come from, and in the rule that
+// kinds a ledger row.
 // A source states those as a Source, and New gives the adapter that walks
 // them.
 //
@@ -92,6 +93,10 @@ type Source struct {
 	IDCol string
 	// Cols are the ledger's other columns.
 	Cols LedgerCols
+	// Where, where set, is a predicate a ledger row must meet to be read;
+	// "" reads every row. A silver that keeps rows booking no amount
+	// states here which rows move a balance.
+	Where string
 	// TxKind kinds a ledger row of an account that is a card or not. known
 	// is false for a type the rule does not recognise: the raw kind then
 	// rides in the payload (canonical.PayloadSourceKind). resign forces
@@ -294,7 +299,8 @@ func (c *connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	}
 	if c.listed {
 		from := len(batch.CashBalances)
-		if err := appendReportedBalances(ctx, c.db, c.src.Kind, c.src.Listing, w, f.currency, &batch); err != nil {
+		if err := appendReportedBalances(ctx, c.db, c.src.Kind, c.src.Listing, w, f.currency,
+			func(id string, v float64) canonical.Decimal { return signed(v, f.card(id)) }, &batch); err != nil {
 			return nil, err
 		}
 		if err := appendListedCovers(ctx, c.db, c.src.Kind, c.src.Listing, w, roster,
@@ -415,6 +421,10 @@ func (c *connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		}
 		return expr
 	}
+	where := ""
+	if s.Where != "" {
+		where = " AND (" + s.Where + ")"
+	}
 	q := `
 SELECT ` + s.IDCol + `, posted_at, account_external_id, amount,
        ` + text(s.Cols.Kind) + `, ` + text(s.Cols.Description) + `,
@@ -422,7 +432,7 @@ SELECT ` + s.IDCol + `, posted_at, account_external_id, amount,
        ` + or(s.Cols.TxnDate, "NULL") + `, ` + text(s.Cols.Currency) + `,
        ` + text(s.Cols.CheckNumber) + `, ` + or(s.Cols.Pending, "0") + `, payload
   FROM transactions
- WHERE posted_at BETWEEN ? AND ?
+ WHERE posted_at BETWEEN ? AND ?` + where + `
  ORDER BY posted_at, ` + s.IDCol
 
 	var out canonical.TransactionBatch

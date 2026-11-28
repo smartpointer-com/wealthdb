@@ -9,6 +9,7 @@ import (
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/chase"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/cointracking"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/equityzen"
+	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/erstebank_at"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/fidelity"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/firstcitizens"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/manual"
