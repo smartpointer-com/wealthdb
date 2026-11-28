@@ -1,0 +1,62 @@
+# Python, test, editor and OS artefacts are ignored by the root
+# .gitignore. This file adds what this collector must never commit.
+
+# Playwright / Camoufox debugging artefacts — may contain logged-in
+# screenshots or session state. Never commit.
+trace*.zip
+trace-chunks/
+screenshots/
+playwright-report/
+network.har
+network.jsonl
+clicks.jsonl
+
+# Never commit credentials, browser profiles, session cookies, or
+# downloaded account data. The default mount layout puts these on the
+# host under ~/.secrets/, ~/.cache/wealthdb/debug/erstebank_at/, and
+# $XDG_DATA_HOME/wealthdb/erstebank_at/ respectively, but a stray
+# in-tree drop must still be blocked.
+*.pem
+*.key
+storageState*.json
+erstebank_at-session*.json
+erstebank_at-profile/
+token.json
+tokens.json
+.env
+.envrc
+data/
+downloads/
+
+# Bronze / silver default in-tree paths in case someone overrides the
+# mount layout to put the data tree under the repo.
+bronze/
+silver/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Bootstrap material dropped in for landmarking (sample HTML, MHTML
+# saves of the account UI). These contain real IBANs, balances, and
+# counterparties and must never be committed. Move them into a tracked
+# location only after redaction.
+samples/
+fixtures/raw/
+*.mhtml
+*.har
+
+# Statement PDFs and transaction exports are the most sensitive artefacts
+# this collector will touch — IBANs, balances, counterparties, names, and
+# addresses. They land under the host debug/data trees; block any in-tree
+# drop outright.
+*.pdf
+statements/
+exports/
+
+# Local-only fixtures holding real captures; only synthetic data goes
+# into version control.
+tests/fixtures/raw/
+tests/fixtures/*.csv
+tests/fixtures/*.html
+tests/fixtures/*.json
