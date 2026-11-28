@@ -2,7 +2,7 @@
 # Host-side wrapper around `docker run` for the erstebank_at container.
 # Mounts ~/.secrets/ (RW; persistent Camoufox profile + env file), the
 # bronze tree (RW), and a /debug dir for explore artefacts. Single-writer:
-# a sign-in waiting on an s Identity push can't tolerate a concurrent
+# a sign-in waiting on a George app push can't tolerate a concurrent
 # invocation, and the safety guard refuses to evict a container hosting a
 # live VNC session.
 #
@@ -10,8 +10,8 @@
 # session driven by hand over VNC (DESIGN.md §2-§3), and `prune` reclaims
 # its captures host-side. `login`, `download` and `load` are accepted so an
 # orchestrator's login → download → load parses, and say they are not built
-# yet. The verb split they get is decided by what explore measures
-# (DESIGN.md §F).
+# yet. No trust survives the browser, so `login` will fold into
+# `download` (DESIGN.md §F, §4).
 #
 # The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
 
@@ -48,7 +48,7 @@ Subcommands:
   build               Build the Docker image (\`docker build\`).
   explore [args...]   Discovery harness: Camoufox over VNC + HAR / network
                       log / click log / DOM snapshots / response bodies
-                      under /debug. Sign-in and the s Identity approval are
+                      under /debug. Sign-in and the George approval are
                       done by hand. --fresh wipes the profile so the next
                       sign-in takes the unknown-device path.
   login [args...]     Not built yet (exits 2).
@@ -71,7 +71,7 @@ Override mounts via env:
 Credentials (read from /secrets/erstebank_at.env inside the container
 = \$HOME/.secrets/erstebank_at.env on the host; chmod 0600):
   ERSTEBANK_AT_USERNAME   the George user name (Verfügernummer or alias)
-  The sign-in is confirmed in the s Identity app.
+  The sign-in is confirmed in the George app.
 EOF
     exit 0
 fi

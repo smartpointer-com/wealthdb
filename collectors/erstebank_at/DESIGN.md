@@ -4,10 +4,8 @@ Design notes for the Erste Bank und Sparkassen (George, Austria) retail
 collector. Sections: scope (§1), the discovery harness (§2), the
 discovery walk (§3), the source's behaviour (§3-Surface, with lettered
 parts §A–§H), and the runtime (§4). The layout follows
-[raiffeisen_at](../raiffeisen_at/DESIGN.md).
-
-A section marked *(unverified)* still holds a hypothesis that no capture
-has confirmed. Everything else is stated from captures.
+[raiffeisen_at](../raiffeisen_at/DESIGN.md). Everything below is stated
+from captures; §H lists what is still open.
 
 ## 1. Scope
 
@@ -23,7 +21,7 @@ has confirmed. Everything else is stated from captures.
   card half.** raiffeisen_at is the same country and the same archetype:
   a Camoufox sign-in with a push approval, then REST. amex carries the
   card semantics: statement cycles, and balances signed as liabilities.
-- **2FA is an s Identity push** (§B). The browser shows a 4-character
+- **2FA is a George app push** (§B). The browser shows a 4-character
   comparison code. Completion is a plain JSON poll.
 - **The data is REST/JSON on `api.sparkasse.at`** (§C), authenticated by
   an OAuth implicit-grant bearer plus session cookies. The transaction
@@ -56,9 +54,13 @@ entry URL, a host gate and the detector's field selectors.
   in a URL fragment (§A). The shared redactor masks secret parameters in
   a fragment and in URL-valued response headers (`Location` and kin), so
   the captures hold `#access_token=<redacted>`.
-- **The HAR** is written only when the run stops by Ctrl-C or SIGTERM.
-  Closing the browser window leaves `network.jsonl` as the record, with
-  headers and response bodies.
+- **The HAR** is written only when the run stops by one Ctrl-C or
+  SIGTERM; further Ctrl-C presses are ignored while the browser closes and
+  writes it. Closing the browser window leaves `network.jsonl` as the
+  record, with headers and response bodies.
+- **Captures run the image's collectorkit**, not the checkout's. A fix to
+  the shared redactors reaches `explore` only after `make base-images`
+  and a rebuild.
 - **Screenshots** of the snapshots render blank on this site. The
   `frame0.html` beside each one is the record.
 - `--trace` stays off by default: a trace stores every input's value
@@ -69,7 +71,7 @@ entry URL, a host gate and the detector's field selectors.
 An `explore` session walks four flows over VNC. Each is one continuous
 segment.
 
-1. **Sign-in + s Identity.** The user-name form, the push wait screen,
+1. **Sign-in + push.** The user-name form, the push wait screen,
    the comparison code, and its completion. A second short run on the
    same profile (without `--fresh`) shows what the profile remembers
    (§F).
@@ -137,14 +139,19 @@ identified: no known vendor's cookie or script name appears.
   `tools.sparkasse.at/proxy/lux-collector-internet/…`. Neither is bot
   defense.
 
-### §B — The s Identity challenge
+### §B — The push challenge (George app / George ID)
 
-- Submitting the user name fires the push at once. The wait screen shows
-  the user name read-only (`input#user`), a **4-character comparison
-  code in `b#verificationCode`**, a loader (`#loader`, `role="status"`),
-  an info box (`#infoContainer` / `#infoMsgContainer`) and a cancel link
+- Submitting the user name fires the push at once. It is approved in the
+  **George app** on a phone, or in **George ID** on a computer; the info
+  box names both. The wait screen shows the user name read-only
+  (`input#user`), a **4-character comparison code in
+  `b#verificationCode`**, a loader (`#loader`, `role="status"`), the info
+  box (`#infoContainer` / `#infoMsgContainer`) and a cancel link
   (`a#cancelLink`). `a#cancelIcon` ("Benutzer wechseln") switches the
   user. The code is read from the DOM, never from a network event.
+- The wait screen shows no deadline. A push approved four minutes after
+  it fired still completed the sign-in, inside the fleet's five-minute
+  MFA wait.
 - **Completion is a JSON poll.** The page calls
   `POST /sts/secapp/secondfactor?client_id=georgeclient` (no body,
   `X-Requested-With: XMLHttpRequest`) every `pollingIntervalMs` (3000).
@@ -201,12 +208,21 @@ scale.
 - `GET /proxy/g/api/my/transactions/<id>/similar` is the detail view's
   "similar transactions" read.
 
-### §D — Exports *(unverified)*
+### §D — Exports: per statement, poorer than the JSON
 
-- No export ran in the first capture, so its format, columns and
-  mechanism are open. The transaction JSON (§C) already carries ids, both
-  dates and a running balance, so an export is the ledger source only if
-  it holds something the JSON lacks.
+- George has no free-range transaction export. The export is the
+  statement download (§E) in another format. The dialog's format
+  drop-down offers `PDF (A4)`, `Text (A4)`, `Text (A4/3)`, `Text (A6)` and
+  `OFX`; the wire codes seen are `PDF_A4`, `TXT_A4` and `OFX`.
+- **OFX** is OFX 1.02 SGML (`CHARSET:1252`). It carries one
+  `BANKTRANLIST` over the statement's period, a closing `LEDGERBAL`, and
+  per row only `TRNTYPE` (always `XFER`), `DTPOSTED`, `TRNAMT`, `FITID`,
+  `NAME` and `MEMO`. There is no value date and no running balance.
+- **Text** is the printed statement laid out as plain text.
+- **The JSON is the ledger source** (§C): it carries everything the OFX
+  does, plus value dates, a running balance, types and counterparties,
+  over the whole history rather than one statement period. The exports
+  are not used.
 
 ### §E — Statements (Kontoauszüge)
 
@@ -217,28 +233,30 @@ scale.
   The listing takes no date window and answers the whole archive in one
   page. Whether the server caps its reach is open.
 - **Download:** `POST /rest/netbanking/my/accounts/<accountId>/statements/download?format=<fmt>&statementIds=<statementId>&includeVoucher=<bool>`
-  with the bearer as a form field (`access_token=…`) → the PDF
+  with the bearer as a form field (`access_token=…`) → the file
   (`application/octet-stream`). The SPA turns it into a `blob:` URL. The
   dialog's toggles are `includeVoucher` and `bankSigned`. This is a
   read-only export trigger.
+- **Statements render on demand** (the `isAsynchronous` flag). The first
+  download of a statement in a format can answer
+  `422 {"errors": [{"scope": "ASYNCHRON", "error": "FIELD_INVALID"}]}`
+  while the server renders it. The same call a few seconds later returns
+  the file. Once rendered, a format answers at once.
 - **The open period:** `GET …/statements/current` returns the period not
   yet printed: `previousBalance`, `newBalance`, `totalCredits`,
   `totalDebits` and its `transactions[]`.
 - `GET …/statements/<statementId>/at/fees?includeVoucher=…&format=…` lists
   the fees a statement charges.
 
-### §F — Session persistence and device trust *(unverified)*
+### §F — Session persistence and device trust: none
 
-- Unknown. The measurement: close the browser after a signed-in explore,
-  then run a second short explore on the same profile, without
-  `--fresh`.
-  - Does the session survive the restart?
-  - Does the push fire again?
-- This one measurement decides the verb split (§4): a push at every
-  sign-in folds `login` into `download`; durable trust gives a separate
-  `login` verb.
-- The bearer lives one hour (§A), so one download run fits inside one
-  token whatever the answer.
+- **Nothing survives a browser restart.** A run on the same profile
+  without `--fresh` opens on an empty login form. Neither the session nor
+  the user name is remembered, and the push fires again.
+- The bearer lives in the page, handed over in the redirect fragment
+  (§A), for one hour. One run fits inside one token.
+- So `login` folds into `download` (§4): one browser lifetime and one
+  push per run, as in raiffeisen_at.
 
 ### §G — Credit cards: served by George itself
 
@@ -260,25 +278,31 @@ scale.
   milliseconds). The PDF:
   `POST /rest/netbanking/my/cards/<cardId>/invoices/<billId>/pdf` with
   the bearer as a form field → `application/pdf`.
-- Open: the sign of a card balance and of card transaction amounts, and
-  whether the server returns more than `numberOfMonths=36` reaches.
+- **Signs.** A card amount is signed like a checking one: outgoing
+  (a purchase) negative, incoming (a refund or repayment) positive. The
+  card's `balance`, in its detail and in each row's running balance, is
+  negative while money is owed. That is already the fleet's liability
+  sign, as in amex. A credit card's detail has `type: CREDIT`.
+- Open: whether the server returns more than `numberOfMonths=36` reaches.
 
 ### §H — Still open
 
-What the next explore must answer, in order of what it decides:
-
-1. Session persistence and device trust across a browser restart (§F).
-2. The export formats against the SPA's JSON (§D).
-3. The push's declined or expired answer (§B).
-
-The history floor (§C) and the statement and invoice caps (§E, §G) are
-measured by the first download that pages to the end.
+- The push's declined or expired answer (§B). The first run that meets
+  one records it; the collector shows the page's own error text.
+- The history floor (§C), the statement archive's cap (§E) and the
+  invoice listing's cap (§G). The first download that pages to the end
+  measures all three, and they decide whether a statement backfill is
+  needed at all.
 
 ## 4. Runtime
 
-Built from the explore captures. The verb split (§F) and the runtime tier
-are proposed from the evidence before `login` and `download` are written.
-The captures so far point to a Camoufox sign-in followed by REST through
-`page.request`, which shares the browser's cookie jar (§A, §C). Until then
-only `explore` and `prune` run. `login`, `download` and `load` are
-accepted by the wrapper and exit 2.
+- **Verbs.** No trust survives the browser (§F), so `login` folds into
+  `download`: one Camoufox lifetime per run, signed in by one push.
+- **Tier.** Bot defense rides the pages, not the data API (§A), so the
+  browser signs in and the data is read as REST through `page.request`,
+  which shares the browser's cookie jar, with the bearer from the
+  redirect added to each call.
+
+`login` and `download` are not built yet. Until then only `explore` and
+`prune` run. `login`, `download` and `load` are accepted by the wrapper
+and exit 2.

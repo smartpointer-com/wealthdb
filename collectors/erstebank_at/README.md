@@ -9,7 +9,7 @@
 
 This collector **impersonates a human user**: it drives a real,
 stealth-hardened browser session that signs in to George
-(george.sparkasse.at) with your user name and your s Identity
+(george.sparkasse.at) with your user name and your George app
 confirmations. The session it holds is **fully privileged** — the same
 login a human uses to move money — and George offers no read-only
 sub-scope, so nothing but this codebase's own discipline restricts the
@@ -61,8 +61,8 @@ conventions.
 
 The collector is at its discovery stage. `explore` records a George
 session signed in by hand over VNC. `login`, `download` and `load` are
-not built yet; they exit 2. [DESIGN.md](DESIGN.md) lists what the
-captures must answer before they are.
+not built yet; they exit 2. [DESIGN.md](DESIGN.md) maps the source and
+the runtime they will use.
 
 ## Credentials
 
@@ -72,7 +72,7 @@ captures must answer before they are.
 ERSTEBANK_AT_USERNAME='example-user'
 ```
 
-The sign-in is confirmed in the s Identity app.
+The sign-in is confirmed in the George app.
 
 ## Example
 
