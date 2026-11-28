@@ -10,6 +10,8 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import load  # noqa: E402
@@ -271,3 +273,55 @@ def test_the_same_pdf_in_two_runs_is_one_document(tmp_path):
     assert db.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 2
     assert db.execute("SELECT MIN(snapshot_at) = MAX(snapshot_at) "
                       "FROM documents").fetchone()[0] == 1
+
+
+def test_runs_loaded_one_by_one_equal_one_forced_load(tmp_path):
+    from collectorkit import incremental
+
+    fixture = tmp_path / "fixture"
+    runs = [make_run(fixture, "20260116T080000Z"),
+            make_run(fixture, "20260117T080000Z", account_rows=[
+                _tx("t4", date(2026, 1, 16), -500, 98500),
+                _tx("t3", date(2026, 1, 15), -1000, 99000)])]
+    incremental.check(load.main, lambda db, bronze: [
+        "--silver-db", str(db), "--bronze-dir", str(bronze)],
+        runs, tmp_path / "work")
+
+
+@pytest.mark.parametrize("victim", ["accounts.json", "raw/cards.json"])
+def test_a_run_with_an_unreadable_roster_fails_the_load(tmp_path, victim):
+    run = make_run(tmp_path, "20260116T080000Z")
+    (run / victim).write_text("{not json")
+    with pytest.raises(ValueError, match="unreadable"):
+        _load(tmp_path)
+    db = _db(tmp_path)
+    assert db.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 0
+    assert db.execute("SELECT COUNT(*) FROM run_accounts").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("victim", ["accounts.json", "raw/cards.json"])
+def test_a_run_with_a_missing_roster_fails_the_load(tmp_path, victim):
+    run = make_run(tmp_path, "20260116T080000Z")
+    (run / victim).unlink()
+    with pytest.raises(ValueError, match="unreadable"):
+        _load(tmp_path)
+
+
+def test_a_failed_force_keeps_the_old_silver(tmp_path):
+    run = make_run(tmp_path, "20260116T080000Z")
+    _load(tmp_path)
+    (run / "accounts.json").write_text("{not json")
+    with pytest.raises(ValueError):
+        _load(tmp_path, "--force")
+    db = _db(tmp_path)
+    assert db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] > 0
+    assert db.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 1
+
+
+def test_a_product_without_history_loads_without_a_ledger(tmp_path):
+    run = make_run(tmp_path, "20260116T080000Z")
+    (run / "history" / f"{ACCOUNT_ID}.json").unlink()
+    (run / "statements" / ACCOUNT_ID / "listing.json").unlink()
+    assert _load(tmp_path) == 0
+    db = _db(tmp_path)
+    assert db.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 2
