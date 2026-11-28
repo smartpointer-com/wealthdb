@@ -202,8 +202,15 @@ list-collectors:
 # servers, when the command in BINDIR is this tree's: a server's
 # LaunchAgent runs that command, and would keep starting a program that
 # is gone.
+# LIBEXECDIR is where the copy goes (default PREFIX/libexec; a Debian
+# package names /usr/lib). DESTDIR stages an install for a package: every
+# file goes under it, and the links name the place the package puts them,
+# without it. uninstall removes a copy in the default place; a package's
+# copy is its package manager's to remove.
 BINDIR ?= $(HOME)/.local/bin
-LIBEXEC = $(PREFIX)/libexec/wealthdb
+LIBEXECDIR ?= $(PREFIX)/libexec
+LIBEXEC = $(LIBEXECDIR)/wealthdb
+STAGE = $(DESTDIR)$(LIBEXECDIR)
 INSTALL_TREE  = LICENSE README.md bin/wealthdb-collect wealthdb/wealthdb \
                 mcp/mcp web shared/wrappers shared/collectorkit collectors demo skills
 INSTALL_BUILT = config.mk $(wildcard .image-tag) \
@@ -256,9 +263,9 @@ install:
 		esac; \
 		exit 1; \
 	done
-	@mkdir -p "$(PREFIX)/libexec" "$(BINDIR)"
-	@rm -rf "$(PREFIX)/libexec/wealthdb.new"
-	@mkdir "$(PREFIX)/libexec/wealthdb.new"
+	@mkdir -p "$(STAGE)" "$(DESTDIR)$(BINDIR)"
+	@rm -rf "$(STAGE)/wealthdb.new"
+	@mkdir "$(STAGE)/wealthdb.new"
 	@if [ -e .git ]; then \
 		{ git ls-files -z -- $(INSTALL_TREE) && \
 			printf '%s\0' $(INSTALL_BUILT); } | \
@@ -266,19 +273,19 @@ install:
 	else \
 		tar -cf - $(call TAR_SKIP,$(INSTALL_SKIP) $(INSTALL_SKIP_UNTRACKED)) \
 			$(INSTALL_BUILT) $(INSTALL_TREE); \
-	fi | tar -C "$(PREFIX)/libexec/wealthdb.new" -xf -
+	fi | tar -C "$(STAGE)/wealthdb.new" -xf -
 	@for f in $(INSTALL_BUILT) $(INSTALL_TREE); do \
-		[ -e "$(PREFIX)/libexec/wealthdb.new/$$f" ] || \
-			{ echo "install: the copy lacks $$f; $(LIBEXEC) is left as it was" >&2; exit 1; }; \
+		[ -e "$(STAGE)/wealthdb.new/$$f" ] || \
+			{ echo "install: the copy lacks $$f; $(DESTDIR)$(LIBEXEC) is left as it was" >&2; exit 1; }; \
 	done
-	@rm -rf "$(PREFIX)/libexec/wealthdb.old"
-	@if [ -e "$(LIBEXEC)" ]; then mv "$(LIBEXEC)" "$(PREFIX)/libexec/wealthdb.old"; fi
-	@mv "$(PREFIX)/libexec/wealthdb.new" "$(LIBEXEC)"
-	@rm -rf "$(PREFIX)/libexec/wealthdb.old"
-	@ln -sf "$(LIBEXEC)/wealthdb/wealthdb"    "$(BINDIR)/wealthdb"
-	@ln -sf "$(LIBEXEC)/bin/wealthdb-collect" "$(BINDIR)/wealthdb-collect"
-	@echo "  installed $(LIBEXEC)"
-	@echo "  linked $(BINDIR)/wealthdb and $(BINDIR)/wealthdb-collect"
+	@rm -rf "$(STAGE)/wealthdb.old"
+	@if [ -e "$(STAGE)/wealthdb" ]; then mv "$(STAGE)/wealthdb" "$(STAGE)/wealthdb.old"; fi
+	@mv "$(STAGE)/wealthdb.new" "$(STAGE)/wealthdb"
+	@rm -rf "$(STAGE)/wealthdb.old"
+	@ln -sf "$(LIBEXEC)/wealthdb/wealthdb"    "$(DESTDIR)$(BINDIR)/wealthdb"
+	@ln -sf "$(LIBEXEC)/bin/wealthdb-collect" "$(DESTDIR)$(BINDIR)/wealthdb-collect"
+	@echo "  installed $(DESTDIR)$(LIBEXEC)"
+	@echo "  linked $(DESTDIR)$(BINDIR)/wealthdb and $(DESTDIR)$(BINDIR)/wealthdb-collect"
 
 uninstall:
 	@$(call STOP_SERVERS,$(LIBEXEC)/wealthdb/wealthdb)

@@ -9,6 +9,11 @@
 #     UTC, the suites of the launcher and the server scripts (a Mac has
 #     its own sed and tar, and launchd), and an install with a walk end
 #     to end under launchd.
+#   - deb: the Debian package built on x86-64 (shared/deb/build.sh) and
+#     installed with apt on each Ubuntu release it supports
+#     (shared/deb/test-install.sh). This build uploads nothing: the
+#     package a release publishes is built on the maintainer's computer,
+#     and this one is the second build to compare it with.
 # Like ci.yml, the job builds and runs the tree's own code, so it holds a
 # read-only token and no secrets.
 name: release-check
@@ -77,3 +82,18 @@ jobs:
         run: |
           make install
           shared/native/e2e.sh "$RUNNER_TEMP/prefix/bin/wealthdb" "$PWD" "$RUNNER_TEMP/e2e"
+
+  deb:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # A package of a check, never published: its Maintainer is a stand-in.
+      - name: Build
+        env:
+          WEALTHDB_DEB_MAINTAINER: "wealthdb release check <12345+example@users.noreply.github.com>"
+        run: shared/deb/build.sh 0.0.0 "$HOME/deb" HEAD
+      - name: Install on each Ubuntu release
+        run: shared/deb/test-install.sh "$HOME/deb/wealthdb_0.0.0_amd64.deb"

@@ -2,8 +2,9 @@
 # test-in-container.sh SUITE... — what `make test-native` runs inside the
 # wealthdb/native-test image: copy the tree from /src, configure it for
 # the native engine, build, run the named suites of `make test`, install
-# to a prefix, check what the copy holds, walk the installed tree end to
-# end (e2e.sh), and uninstall. The exit status is the walk's when the
+# to a prefix, check what the copy holds, package the tree as a Debian
+# package and check that, walk the installed tree end to end (e2e.sh),
+# and uninstall. The exit status is the walk's when the
 # walk fails.
 #
 # /src is the checkout, read-only. /cache persists between runs: Go's
@@ -55,6 +56,20 @@ done
 extra="$(find /work/prefix \( -name tests -o -name 'test_*' -o -name .venv -o -name __pycache__ \
     -o -name core -o -name '*.log' \) -print)"
 [ -z "$extra" ] || fail "the copy holds what a run does not need: $extra"
+
+echo "==> package"
+# The same tree, staged for /usr as a Debian package stages it, and
+# packaged (shared/deb/package.sh). Installing it needs root, which this
+# run is not; the package's files are checked instead.
+make --no-print-directory install DESTDIR=/work/stage PREFIX=/usr BINDIR=/usr/bin LIBEXECDIR=/usr/lib
+WEALTHDB_DEB_MAINTAINER="wealthdb test <12345+test@users.noreply.github.com>" \
+    shared/deb/package.sh 0.0.0 /work/stage /work/wealthdb.deb
+files="$(dpkg-deb -c /work/wealthdb.deb)"
+for f in ./usr/lib/wealthdb/wealthdb/wealthdb-engine ./usr/lib/wealthdb/config.mk \
+    ./usr/lib/wealthdb/bin/wealthdb-collect "./usr/bin/wealthdb -> /usr/lib/wealthdb/wealthdb/wealthdb"; do
+    case "$files" in *"$f"*) ;; *) fail "the package lacks $f" ;; esac
+done
+case "$files" in *.jar*) fail "the package holds a jar" ;; esac
 
 echo "==> end to end, from the installed tree"
 rc=0

@@ -238,9 +238,9 @@ make all
 make install        # /opt/wealthdb/libexec/wealthdb, linked from /opt/wealthdb/bin
 ```
 
-The copy has the checkout's layout, the built engine and the
-dashboards' two files. It has no tests, no Python environments and no
-source of the engine. From a git checkout it holds only the files git
+The copy has the checkout's layout and the built engine. It has no
+Metabase (the dashboards download theirs on first start), no tests, no
+Python environments and no source of the engine. From a git checkout it holds only the files git
 tracks, so nothing git ignores is copied. A version built from a source
 archive of a release states that release: git writes it into
 `wealthdb/.archive-version` when it makes the archive.
@@ -254,6 +254,30 @@ only. A second install replaces the copy as a whole.
 `make uninstall` removes the copy and the two links. In a tree of the
 native engine it first stops both servers, when the command in the bin
 directory is this tree's.
+
+For a package, the install is staged: `DESTDIR` puts every file under a
+folder of its own, and the links name the place the package puts them.
+`LIBEXECDIR` moves the copy, `/usr/lib` for a Debian package.
+`shared/deb/package.sh` then makes the `.deb` of such a stage:
+
+```sh
+./configure --engine=native --prefix=/usr
+make build-wealthdb
+make install DESTDIR=/tmp/stage LIBEXECDIR=/usr/lib
+WEALTHDB_DEB_MAINTAINER="Name <id+login@users.noreply.github.com>" \
+    shared/deb/package.sh 1.2.3 /tmp/stage wealthdb_1.2.3.deb
+```
+
+The package's Maintainer is a GitHub noreply address, so a problem goes
+to the repository's issues.
+
+`shared/deb/build.sh VERSION OUT [REF]` does all of that for a release:
+from git's archive of REF, in an Ubuntu 22.04 container, for x86-64. On
+a Mac with Apple silicon the container is arm64 and builds the x86-64
+engine with Ubuntu's cross compilers. `shared/deb/test-install.sh DEB`
+installs a package with apt on Ubuntu 22.04, 24.04 and 26.04 and checks
+that it runs; it needs an x86-64 machine, and the release check
+(`release-check.yml`) runs both.
 
 ## Testing it
 

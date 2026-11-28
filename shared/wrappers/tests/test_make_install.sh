@@ -106,6 +106,20 @@ omits "no Makefile: the copy builds nothing" Makefile
 [ "$P/bin/wealthdb-collect" -ef "$COPY/bin/wealthdb-collect" ] && ok "and the dispatcher" ||
     bad "bin/wealthdb-collect is not the copy's dispatcher"
 
+echo "a staged install, for a package:"
+S="$TMP/stage"
+mk install DESTDIR="$S" LIBEXECDIR="$P/lib" || bad "make install DESTDIR failed: $(cat "$TMP/err")"
+[ -e "$S$P/lib/wealthdb/wealthdb/wealthdb" ] && ok "the copy is staged under DESTDIR, in LIBEXECDIR" ||
+    bad "no staged copy in $S$P/lib/wealthdb"
+[ "$(readlink "$S$P/bin/wealthdb")" = "$P/lib/wealthdb/wealthdb/wealthdb" ] &&
+    ok "the staged link names where the package puts the copy, without DESTDIR" ||
+    bad "the staged link reads $(readlink "$S$P/bin/wealthdb" 2>/dev/null)"
+[ "$(readlink "$S$P/bin/wealthdb-collect")" = "$P/lib/wealthdb/bin/wealthdb-collect" ] && ok "and the dispatcher's" ||
+    bad "the staged dispatcher link reads $(readlink "$S$P/bin/wealthdb-collect" 2>/dev/null)"
+[ ! -e "$P/lib" ] && ok "nothing is written outside DESTDIR" || bad "$P/lib was written to"
+[ -z "$(find "$S" -name '*.new' -o -name '*.old')" ] && ok "and nothing is left beside the staged copy" ||
+    bad "a folder is left beside the staged copy"
+
 echo "a second install:"
 echo stale > "$COPY/stale"
 git -C "$TREE" rm -q -f collectors/testcol/load.py
