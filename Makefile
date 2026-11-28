@@ -261,7 +261,7 @@ install:
 	@mkdir "$(PREFIX)/libexec/wealthdb.new"
 	@if [ -e .git ]; then \
 		{ git ls-files -z -- $(INSTALL_TREE) && \
-			printf '%s\0' $(INSTALL_BUILT) $(wildcard web/lib/*.jar); } | \
+			printf '%s\0' $(INSTALL_BUILT); } | \
 			tar -cf - $(call TAR_SKIP,$(INSTALL_SKIP)) --null -T -; \
 	else \
 		tar -cf - $(call TAR_SKIP,$(INSTALL_SKIP) $(INSTALL_SKIP_UNTRACKED)) \

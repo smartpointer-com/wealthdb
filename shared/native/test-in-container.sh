@@ -28,14 +28,13 @@ tar -C /src -cf - \
     --exclude=./wealthdb/wealthdb-engine --exclude=./web/lib --exclude=./site/public/shots . |
     tar -C /work/tree -xf -
 cd /work/tree
-mkdir -p web/lib
-cp -p /cache/web-lib/* web/lib/ 2>/dev/null || true
+# Metabase and its driver persist between runs in the mounted cache.
+export WEALTHDB_WEB_LIB_DIR=/cache/web-lib
 
 echo "==> configure"
 ./configure --engine=native --prefix=/work/prefix
 echo "==> build"
 make --no-print-directory build-wealthdb build-web
-cp -p web/lib/* /cache/web-lib/
 if [ "$#" -gt 0 ]; then
     make --no-print-directory test SUITES="$*"
 fi
@@ -48,9 +47,11 @@ echo "==> install"
 make --no-print-directory install
 COPY=/work/prefix/libexec/wealthdb
 for f in config.mk wealthdb/wealthdb wealthdb/wealthdb-engine bin/wealthdb-collect \
-    web/lib/metabase.jar web/lib/duckdb.metabase-driver.jar collectors/plaid/plaid; do
+    collectors/plaid/plaid; do
     [ -e "$COPY/$f" ] || fail "the copy lacks $f"
 done
+# The dashboards download their Metabase on first start: no copy holds one.
+[ -z "$(find "$COPY" -name '*.jar' -print)" ] || fail "the copy holds a jar"
 extra="$(find /work/prefix \( -name tests -o -name 'test_*' -o -name .venv -o -name __pycache__ \
     -o -name core -o -name '*.log' \) -print)"
 [ -z "$extra" ] || fail "the copy holds what a run does not need: $extra"

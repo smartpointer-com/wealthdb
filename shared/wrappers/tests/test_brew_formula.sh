@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Behaviour test of shared/brew/formula.sh: the formula it prints states
-# the dashboards' two files at the pins web/Dockerfile holds, installs
+# Behaviour test of shared/brew/formula.sh: the formula it prints holds
+# no Metabase (the dashboards download theirs on first start), installs
 # from the main branch without a release and from the release's archive
 # alone with one, keeps the build to what a checksum names, refuses half
 # a release, and is Ruby that parses. And of release-formula.sh: it
@@ -15,15 +15,12 @@ source "$HERE/lib.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 F="$ROOT/shared/brew/formula.sh"
-pin() { sed -n "s/^ARG $1=//p" "$ROOT/web/Dockerfile"; }
 
 echo "the formula:"
 head="$("$F")" || bad "formula.sh failed"
 has "it is the wealthdb formula" "class Wealthdb < Formula" "$head"
-has "Metabase at the Dockerfile's version" "https://downloads.metabase.com/$(pin MB_VERSION)/metabase.jar" "$head"
-has "and checksum" "sha256 \"$(pin MB_SHA256)\"" "$head"
-has "the driver at the Dockerfile's address" "url \"$(pin DRIVER_URL)\"" "$head"
-has "and checksum" "sha256 \"$(pin DRIVER_SHA256)\"" "$head"
+lacks "it holds no Metabase: the dashboards download theirs" "resource " "$head"
+lacks "...nor its address" "metabase.jar" "$head"
 has "it configures the native engine" '"./configure", "--engine=native", "--prefix=#{prefix}"' "$head"
 has "it installs from the main branch" 'head "https://github.com/smartpointer-com/wealthdb.git", branch: "main"' "$head"
 lacks "with no release, it names no archive" "archive/refs/tags" "$head"
@@ -37,7 +34,8 @@ rel="$("$F" 1.2.3 "$sum")" || bad "formula.sh 1.2.3 SUM failed"
 has "a release names its archive" 'url "https://github.com/smartpointer-com/wealthdb/archive/refs/tags/v1.2.3.tar.gz"' "$rel"
 has "and its checksum" "sha256 \"$sum\"" "$rel"
 lacks "a release installs from no branch" "head " "$rel"
-if [ "$(grep -c 'sha256 "' <<<"$rel")" = 3 ] && [ "$(grep -c ' url "' <<<"$rel")" = 3 ]; then ok "every download of a release has a checksum"
+# One download, the archive, with its checksum: nothing else to hold.
+if [ "$(grep -c 'sha256 "' <<<"$rel")" = 1 ] && [ "$(grep -c ' url "' <<<"$rel")" = 1 ]; then ok "every download of a release has a checksum"
 else bad "a download of a release has no checksum"; fi
 
 # refused DESC NEEDLE ARGS...: formula.sh ARGS fails, prints no formula,
@@ -65,19 +63,16 @@ if command -v ruby >/dev/null 2>&1; then
 fi
 
 echo "a release's formula, from its archive:"
-# A repository of its own with the two scripts, a Dockerfile's pins and
-# one tag. No user or system git config, and none of a calling hook's
+# A repository of its own with the scripts and one tag. No user or system git config, and none of a calling hook's
 # variables.
 unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
 R="$TMP/repo"
-mkdir -p "$R/shared/brew" "$R/shared/wrappers" "$R/web" "$R/wealthdb"
+mkdir -p "$R/shared/brew" "$R/wealthdb"
 cp "$ROOT/shared/brew/formula.sh" "$ROOT/shared/brew/release-formula.sh" \
     "$ROOT/shared/brew/same_tree.py" "$R/shared/brew/"
-cp "$ROOT/shared/wrappers/image-tag.sh" "$R/shared/wrappers/"
-cp "$ROOT/web/Dockerfile" "$R/web/"
 echo "package main" > "$R/wealthdb/main.go"
 # As the real tree has them: a link, and a file git fills in on export.
 echo "rules" > "$R/AGENTS.md" && ln -s AGENTS.md "$R/CLAUDE.md"
@@ -196,33 +191,9 @@ held_back "three arguments" "usage: release-formula.sh" 1.2.3 "$TMP/good.tar.gz"
 held_back "a version with its v" "the tag without its v" v1.2.3
 held_back "a version that is no number" "is no version" latest
 
-# The pins reach the formula through three places. Each must be as the
-# tag has it.
-echo "# edited" >> "$R/shared/wrappers/image-tag.sh"
-held_back "a helper that differs from the tag's" "differs from v1.2.3" 1.2.3 "$TMP/good.tar.gz"
-git -C "$R" checkout -q -- shared/wrappers/image-tag.sh
-echo "# edited" >> "$R/web/Dockerfile"
-held_back "pins that differ from the tag's" "differs from v1.2.3" 1.2.3 "$TMP/good.tar.gz"
-git -C "$R" checkout -q -- web/Dockerfile
-
-echo "the shape of the Dockerfile's pins:"
-F="$R/shared/brew/formula.sh"
-# with_pin NAME VALUE: the repository's Dockerfile with that one pin.
-with_pin() {
-    git -C "$R" checkout -q -- web/Dockerfile
-    sed "s|^ARG $1=.*|ARG $1=$2|" "$R/web/Dockerfile" > "$TMP/Dockerfile" && cp "$TMP/Dockerfile" "$R/web/Dockerfile"
-}
-with_pin MB_SHA256 abc123
-refused "a Metabase checksum that is too short" "MB_SHA256" 1.2.3 "$sum"
-with_pin DRIVER_SHA256 "$sum # the driver"
-refused "a driver checksum with a comment after it" "DRIVER_SHA256" 1.2.3 "$sum"
-with_pin MB_VERSION 'v1"; system "x'
-refused "a version with a quote in it" "MB_VERSION" 1.2.3 "$sum"
-with_pin DRIVER_URL 'https://example.invalid/${DRIVER_VERSION}/d.jar'
-refused "an address with a variable in it" "DRIVER_URL" 1.2.3 "$sum"
-with_pin DRIVER_URL http://example.invalid/d.jar
-refused "an address that is not https" "no https address" 1.2.3 "$sum"
-git -C "$R" checkout -q -- web/Dockerfile
-"$F" 1.2.3 "$sum" >/dev/null 2>&1 && ok "the tag's own pins pass" || bad "the tag's own pins are refused"
+# The formula comes from shared/brew/, which must be as the tag has it.
+echo "# edited" >> "$R/shared/brew/formula.sh"
+held_back "a formula script that differs from the tag's" "differs from v1.2.3" 1.2.3 "$TMP/good.tar.gz"
+git -C "$R" checkout -q -- shared/brew/formula.sh
 
 summary "brew formula tests"

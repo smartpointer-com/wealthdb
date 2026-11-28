@@ -9,20 +9,16 @@
 # the main branch alone (brew install --HEAD).
 #
 # The formula builds the native engine (wealthdb/docs/NATIVE.md) with
-# ./configure, make and make install. The dashboards' two files are
-# resources at the versions and checksums web/Dockerfile pins, read from
-# it here, so the formula and the image never state two pins.
+# ./configure, make and make install. It holds no Metabase: the
+# dashboards download theirs the first time they start, at the versions
+# and checksums web/Dockerfile pins (web/web).
 #
 # Everything a release's formula installs is held to a checksum: the
-# source archive and the two resources by the formula, the Go modules by
-# go.sum, which the build may not add to. So a release's formula has no
-# `head`: nothing installs it from a branch. The build uses the Go that
-# Homebrew installed and downloads no other.
+# source archive by the formula, the Go modules by go.sum, which the
+# build may not add to. So a release's formula has no `head`: nothing
+# installs it from a branch. The build uses the Go that Homebrew
+# installed and downloads no other.
 set -eu
-
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-. "$ROOT/shared/wrappers/image-tag.sh"
-arg() { wealthdb_dockerfile_arg "$ROOT/web/Dockerfile" "$1"; }
 
 usage() { echo "usage: formula.sh [VERSION SHA256]" >&2; exit 2; }
 
@@ -43,26 +39,6 @@ case "$#" in
         fi
         ;;
     *) usage ;;
-esac
-
-mb_version="$(arg MB_VERSION)" mb_sha="$(arg MB_SHA256)"
-driver_url="$(arg DRIVER_URL)" driver_sha="$(arg DRIVER_SHA256)"
-for v in "$mb_version" "$mb_sha" "$driver_url" "$driver_sha"; do
-    [ -n "$v" ] || { echo "formula.sh: web/Dockerfile lacks a pin" >&2; exit 1; }
-done
-# The pins go into the formula between double quotes, as they are. One
-# with a quote, a comment, a variable or a blank would print a formula
-# that holds a file to no real checksum, so each is held to its shape.
-hex64() { case "$1" in *[!0-9a-f]*) return 1 ;; esac; [ "${#1}" -eq 64 ]; }
-plain() { case "$1" in *[!0-9A-Za-z._/:+-]*) return 1 ;; esac; }
-pin_fails() { echo "formula.sh: web/Dockerfile pins $1 as '$2', which is $3" >&2; exit 1; }
-hex64 "$mb_sha" || pin_fails MB_SHA256 "$mb_sha" "not 64 hex digits"
-hex64 "$driver_sha" || pin_fails DRIVER_SHA256 "$driver_sha" "not 64 hex digits"
-plain "$mb_version" || pin_fails MB_VERSION "$mb_version" "no plain version"
-plain "$driver_url" || pin_fails DRIVER_URL "$driver_url" "no plain address"
-case "$driver_url" in
-    https://*) ;;
-    *) pin_fails DRIVER_URL "$driver_url" "no https address" ;;
 esac
 
 cat <<RUBY
@@ -94,21 +70,7 @@ cat <<RUBY
   depends_on "openjdk@21"
   depends_on "python@3.13"
 
-  # The dashboards: Metabase and its DuckDB driver, as the image holds them.
-  resource "metabase" do
-    url "https://downloads.metabase.com/$mb_version/metabase.jar"
-    sha256 "$mb_sha"
-  end
-
-  resource "duckdb-driver" do
-    url "$driver_url"
-    sha256 "$driver_sha"
-  end
-
   def install
-    resource("metabase").stage { (buildpath/"web/lib").install "metabase.jar" }
-    resource("duckdb-driver").stage { (buildpath/"web/lib").install "duckdb.metabase-driver.jar" }
-
     # The build downloads the Go modules go.sum names, each held to its
     # checksum there, and nothing else: no module go.sum lacks, and no
     # other Go toolchain than the one Homebrew installed.

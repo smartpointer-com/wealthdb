@@ -2,8 +2,8 @@
 # Behaviour test of the Makefile's install, uninstall and update in a
 # tree that config.mk gives a prefix:
 #   - in a git checkout, install copies the files git tracks, config.mk,
-#     .image-tag, a native tree's engine and the dashboards' two files:
-#     no test, and nothing git does not track;
+#     .image-tag and a native tree's engine: no test, no Metabase (the
+#     dashboards download theirs), and nothing git does not track;
 #   - in a tree with no .git, every file but the tests, a core file and
 #     a log;
 #   - a second install drops what the tree dropped, and a copy that
@@ -88,9 +88,11 @@ for f in LICENSE README.md bin/wealthdb-collect wealthdb/wealthdb mcp/mcp web/we
 done
 holds "and the configure record" config.mk
 holds "and the image tag" .image-tag
-holds "and the dashboards' two files" web/lib/metabase.jar
-holds "(both)" web/lib/duckdb.metabase-driver.jar
-omits "no other file of web/lib" web/lib/notes.txt
+# The dashboards download their Metabase on first start, so the copy
+# holds none, even where the tree has one.
+omits "and no Metabase" web/lib/metabase.jar
+omits "(nor its driver)" web/lib/duckdb.metabase-driver.jar
+omits "nor any other file of web/lib" web/lib/notes.txt
 omits "no core file" collectors/testcol/core
 omits "no log" collectors/testcol/run.log
 omits "no other untracked file" collectors/testcol/session.json
