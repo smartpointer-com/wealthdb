@@ -3,7 +3,7 @@
 Design notes for the Erste Bank und Sparkassen (George, Austria) retail
 collector. Sections: scope (§1), the discovery harness (§2), the
 discovery walk (§3), the source's behaviour (§3-Surface, with lettered
-parts §A–§H), and the runtime (§4). The layout follows
+parts §A–§H), the runtime (§4) and the silver (§5). The layout follows
 [raiffeisen_at](../raiffeisen_at/DESIGN.md). Everything below is stated
 from captures; §H lists what is still open.
 
@@ -344,4 +344,35 @@ scale.
   `statements/<account>/` and `invoices/<product>/`, each with a
   `listing.json` beside its PDFs.
 
-`load` is not built yet. The wrapper accepts it and exits 2.
+## 5. Silver
+
+`load.py` reads every complete bronze run, oldest first, into the schema
+in `migrations/`. Its header comment states the sign convention and the
+keys; this section says why they are what they are.
+
+- **Keys.** A checking account is keyed by its IBAN, so it joins across
+  sources as in raiffeisen_at. A credit card is keyed by its shadow
+  account id, which keys its history and statements (§G). George's own
+  ids stay in `accounts.source_id`. A transaction is keyed by George's
+  row `id`.
+- **Dates.** George sends dates as Vienna midnights in epoch
+  milliseconds, so 22:00 or 23:00 UTC the day before (§C). They are read
+  in `Europe/Vienna`, then stored as the UTC midnight of that day.
+- **Signs.** Amounts are stored as George states them: money out is
+  negative. A card's balance is negated into the positive amount owed,
+  the fleet's card convention (§G).
+- **Information rows.** `BANKINFO` rows book no amount and lack George's
+  `IS_BAL_RELEVANT` flag. They are kept with `balance_relevant = 0`.
+- **Daily closing balances** come from each row's running balance (§C),
+  rebuilt from the whole ledger on every load that ingests a run. The
+  rows of one day can come back out of order, so a day's close is the
+  one balance no other row of that day starts from. A day without a
+  single answer takes its close from its neighbour and the day's
+  amounts. Days whose closes do not chain are counted in a warning, never
+  patched.
+- **Statements** are listed in `statements` whether or not their PDF was
+  downloaded; the PDFs are in `documents`, deduped by content.
+- **No statement backfill.** Bronze keeps every run, so the history floor
+  (§C) only hides what lies before the first download. The statement
+  PDFs are kept in bronze, so a backfill can be added if that span
+  matters.

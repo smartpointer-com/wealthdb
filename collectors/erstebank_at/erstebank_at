@@ -10,8 +10,8 @@
 # after it (DESIGN.md §F), so `download` is a one-shot: a live session
 # reused, or a sign-in with the push approved on the phone (nothing to type,
 # no VNC), then the REST fetch, in one browser lifetime. `login` folds into `download`; `vnc-login` is the by-hand
-# fallback; `prune` is a pure file walk that runs host-side. `load` is not
-# built yet.
+# fallback; `load` builds the silver; `prune` is a pure file walk that runs
+# host-side.
 #
 # The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
 
@@ -57,7 +57,9 @@ Subcommands:
                       last sign-in is still alive (exit 0/1; no push).
   vnc-login [args...] Fallback for download: expose VNC and do the sign-in
                       by hand, then fetch.
-  load [args...]      Not built yet (exits 2).
+  load [args...]      Ingest bronze into the SQLite silver (accounts,
+                      transactions, daily closing balances, statements).
+                      --force rebuilds from all bronze.
   explore [args...]   Discovery harness: Camoufox over VNC + HAR / network
                       log / click log / DOM snapshots / response bodies
                       under /debug. Sign-in and the push approval are
