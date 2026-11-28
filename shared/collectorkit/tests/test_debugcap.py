@@ -1233,6 +1233,41 @@ class RedactBodyTest(unittest.TestCase):
         self.assertNotIn("EXAMPLEPASSWORD", out)
         self.assertIn("SignIn", out)
 
+    # Telemetry posts the page URL, and after an implicit grant that URL
+    # carries the token in its fragment. No field name marks it.
+    PAGE_URL = "https://app.example.invalid/index.html#access_token=EXAMPLETOKEN"
+
+    def test_masks_a_token_in_a_url_valued_form_field(self):
+        import urllib.parse
+        body = ("dync=x&url=" + urllib.parse.quote(self.PAGE_URL, safe="")
+                + "&ref=https%3A%2F%2Fapp.example.invalid%2F")
+        out = debugcap.redact_body(body, "application/x-www-form-urlencoded")
+        self.assertNotIn("EXAMPLETOKEN", out)
+        self.assertIn("access_token%3D", out)
+        self.assertIn("dync=x", out)
+        self.assertIn("&ref=https%3A%2F%2Fapp.example.invalid%2F", out)
+
+    def test_masks_a_token_in_a_url_valued_json_member(self):
+        out = debugcap.redact_body(
+            json.dumps({"page": {"href": self.PAGE_URL},
+                        "trail": [self.PAGE_URL, "https://x.invalid/a"],
+                        "echo": "seen EXAMPLETOKEN"}),
+            "application/json")
+        self.assertNotIn("EXAMPLETOKEN", out)
+        self.assertIn("https://x.invalid/a", out)
+
+    def test_masks_a_token_in_a_url_written_in_plain_text(self):
+        out = debugcap.redact_body(f"visited {self.PAGE_URL} then left",
+                                   "text/plain")
+        self.assertNotIn("EXAMPLETOKEN", out)
+        self.assertIn("then left", out)
+
+    def test_leaves_a_url_without_a_secret_alone(self):
+        body = "url=https%3A%2F%2Fapp.example.invalid%2F%23%2Foverview"
+        self.assertEqual(
+            debugcap.redact_body(body, "application/x-www-form-urlencoded"),
+            body)
+
     def test_masks_the_echo_of_what_it_masked_by_name(self):
         """A body names its secret once and then spells it again somewhere the
         name pass cannot see — a JSON member beside a free-text field that
