@@ -11,7 +11,7 @@ import (
 // TestEveryKindRegisters pins what the registry holds once every
 // adapter is imported: the kinds, the sign pins and the label traits.
 func TestEveryKindRegisters(t *testing.T) {
-	want := []string{"amex", "angellist", "carta", "chase", "cointracking", "curves", "equityzen",
+	want := []string{"amex", "angellist", "carta", "chase", "cointracking", "curves", "equityzen", "erstebank_at",
 		"fidelity", "firstcitizens", "fred", "manual", "plaid", "raiffeisen_at", "refdata", "relevate",
 		"schwab", "swissquote", "synthetic", "ubs", "viac"}
 	if got := silver.Kinds(); !slices.Equal(got, want) {

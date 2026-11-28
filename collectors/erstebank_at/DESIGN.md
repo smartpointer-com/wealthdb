@@ -3,7 +3,8 @@
 Design notes for the Erste Bank und Sparkassen (George, Austria) retail
 collector. Sections: scope (§1), the discovery harness (§2), the
 discovery walk (§3), the source's behaviour (§3-Surface, with lettered
-parts §A–§H), the runtime (§4) and the silver (§5). The layout follows
+parts §A–§H), the runtime (§4), the silver (§5) and the gold
+adapter (§6). The layout follows
 [raiffeisen_at](../raiffeisen_at/DESIGN.md). Everything below is stated
 from captures; §H lists what is still open.
 
@@ -376,3 +377,37 @@ keys; this section says why they are what they are.
   (§C) only hides what lies before the first download. The statement
   PDFs are kept in bronze, so a backfill can be added if that span
   matters.
+
+## 6. Gold adapter
+
+`wealthdb/internal/silver/erstebank_at/` (package `erstebankat`, kind
+`erstebank_at`) follows the chase model, which also mixes cash and cards.
+
+- **Accounts.** A checking account becomes a `cash` account, a credit card
+  a `card` account. The display name is George's product name with the
+  mask.
+- **Balances.** A current balance comes from the roster at each run that
+  listed the account (`run_accounts`). A closing balance comes from each
+  day in `daily_balances`, stamped at the day's last second. A card's
+  amount owed turns into negative cash.
+- **Transactions.** Both ledgers, keyed by George's row id. Information
+  rows that book no amount are left out.
+- **Kinds on checking.** `BANKFEE` is the account-closing entry. Its text
+  sets the kind: `KESt` is tax, `Zins` is interest, anything else is a
+  fee. The other known types are a deposit or a withdrawal by sign.
+- **Kinds on a card.** George books every card row as `CREDITCARD`. A
+  charge is a purchase. A credit that carries a merchant category code
+  (`mcc`) is a refund. A credit without one is the card's repayment.
+- **Unknown types** land as `other`, with the raw type in the payload as
+  `source_kind`.
+- **Text.** The title goes to the description, the free-text lines to the
+  memo, and the partner or merchant to the counterparty. George's
+  sub-category goes to the provider category. George lets the account
+  holder re-file a category, so it never sets a kind. The spending tier
+  has no translation for it yet.
+
+It registers via the blank import in `cmd/wealthdb/main.go` and the
+`silver_sources` migration
+(`internal/gold/migrations/0173_silver_sources_erstebank_at.sql`). Its
+policy is the deposit-bank one: the checking accounts' return rows are
+hidden, and the engine drops card accounts from returns.

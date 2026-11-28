@@ -42,7 +42,7 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 		// The bank policy: every capital kind counts, every other knob at
 		// its default. The deposit banks' accounts are cash and amex's are
 		// cards, which the engine hides or drops by kind on any source.
-		"amex": bank, "angellist": bank, "chase": bank, "fidelity": bank, "firstcitizens": bank,
+		"amex": bank, "angellist": bank, "chase": bank, "erstebank_at": bank, "fidelity": bank, "firstcitizens": bank,
 		"raiffeisen_at": bank, "relevate": bank, "schwab": bank, "swissquote": bank, "viac": bank,
 		// A crypto tracker's coin transfer legs count as every source's
 		// transfers do: a pair nets as any source's does; an unpaired leg

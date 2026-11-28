@@ -44,7 +44,7 @@ func TestCatalogue(t *testing.T) {
 			}
 		}
 	}
-	want := []string{"amex", "angellist", "carta", "chase", "cointracking", "curves", "equityzen",
+	want := []string{"amex", "angellist", "carta", "chase", "cointracking", "curves", "equityzen", "erstebank_at",
 		"fidelity-web", "firstcitizens", "fred", "manual", "plaid", "raiffeisen_at", "refdata",
 		"relevate", "schwab-api", "schwab-web", "svb", "swissquote", "ubs-psn", "ubs-web", "viac"}
 	if got := slices.Sorted(slices.Values(names)); !slices.Equal(got, want) {
