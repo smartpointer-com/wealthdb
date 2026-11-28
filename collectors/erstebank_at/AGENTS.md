@@ -37,7 +37,8 @@ Allowed without asking:
   `--help` on any verb, and a bare `login` (a no-op);
 - `login --check`: it opens the sign-in page on the stored profile and
   never submits it, so no push fires. It reports ALIVE while the
-  sign-in's session lasts and DEAD after (DESIGN.md §F);
+  sign-in's session lasts and DEAD after (DESIGN.md §F). It fills and
+  clicks nothing;
 - `prune` (host-side file walk; `--dry-run` first).
 
 Not allowed unless explicitly asked: anything that touches the live site.
@@ -65,7 +66,9 @@ sign-in itself):
   final redirect carrying the token), the push wait screen with its
   comparison code (`#verificationCode`) and cancel link (`#cancelLink`),
   and the poll `POST /sts/secapp/secondfactor?client_id=georgeclient`.
-  The page's own sensor posts (DESIGN.md §A) ride along unprompted.
+  The cookie notice's close button (`#cookiebutton`) may be clicked: it
+  grants no consent. The page's own sensor posts (DESIGN.md §A) ride
+  along unprompted.
 - **Checking accounts (Girokonto)**, read-only, on `api.sparkasse.at`:
   - roster: `GET /rest/netbanking/my/accounts` and
     `GET /rest/netbanking/my/accounts/<accountId>`;
@@ -92,16 +95,12 @@ sign-in form, the push poll, and the two PDF downloads above.
 
 The SPA fires calls outside this list **on its own** when its routes
 load. That passive traffic is not scope widening, and the collector's own
-code must never call those endpoints or navigate their surfaces. Seen so
-far: `…/orders/payments`, `…/orders/payments/limits`,
-`…/accounts/<accountId>/standingorders`, `…/contacts`, `…/plugins`,
-`…/messages`, `…/securities`, `…/pensions`, `…/contracts/*`,
-`…/instant-cash`, `…/watchdogs/*`, `…/cards/<cardId>/{trackings,authorized-cards,invoice-delivery}`,
-`…/profile*`, `/rest/my/serviceRequests/*`, `/ebv-user/*`,
-`cards-api.sparkasse.at/my/products/installment-plans`,
-`sam.sparkasse.at` (electronic storage), `messaging.sparkasse.at`,
-the `/proxy/ggw/*` dashboard, promotion and flag feeds, and
-`POST /proxy/g/api/my/categorization/on-login`.
+code must never call those endpoints or navigate their surfaces. It is of
+these kinds: payment-order and limit reads, standing-order and contact
+listings, plugin and message feeds, securities, pension and contract
+reads, card settings reads, profile and service-request reads,
+electronic-storage and messaging hosts, dashboard, promotion and flag
+feeds, and a categorization call at sign-in.
 
 Forbidden — do not navigate to, click, or scrape:
 

@@ -58,6 +58,7 @@ COPIES = {
         "loader_state": BOOKKEEPING, "document_derivations": BOOKKEEPING}),
     "curves": Copy(("curves/testdata/silver_schema.sql",), {
         "schema_meta": VERSION}),
+    "erstebank_at": Copy(("erstebank_at/testdata/silver_schema.sql",)),
     "equityzen": Copy(("equityzen/testdata/silver_schema.sql",), {
         "schema_meta": VERSION, "capital_account_statements": UNREAD,
         "k1_documents": UNREAD, "tax_documents": UNREAD,

@@ -61,52 +61,68 @@ conventions.
 
 - **Sign-in** happens in a Camoufox browser on `login.sparkasse.at`. The
   form asks for the user name only.
-- **The push** is approved in the George app (or George ID). `download`
-  prints the 4-character comparison code the page shows. A sign-in lasts
-  a few hours; a run inside that window needs no push. `login` folds into
-  `download`, which signs in only when there is no live session.
+- **The push** is approved in the George app or in George ID. `download`
+  prints the 4-character comparison code the page shows. A session can
+  outlive the browser (see [DESIGN.md](DESIGN.md) §F). A run that finds
+  one needs no push. `login` folds into `download`.
 - **Data** comes from George's REST API: the account and card rosters,
-  each transaction history (stable ids, booking and value dates, a running
-  balance), and the statement PDFs of accounts and cards.
+  each transaction history, and the statement PDFs of accounts and cards.
+  A history row has a stable id, booking and value dates, and a running
+  balance.
 - **`load`** writes a SQLite silver: the accounts and cards, the
   transactions, a daily closing balance per account, and the statement
   listings and PDFs. A card's balance is stored as the positive amount
   owed.
+- **Gold** (`wealthdb/internal/silver/erstebank_at/`) maps these to cash
+  and card accounts with a closing-balance series and both ledgers.
 
-[DESIGN.md](DESIGN.md) maps the source.
+[DESIGN.md](DESIGN.md) maps the source. The
+[`raiffeisen_at`](../raiffeisen_at/) collector is the model for the
+checking half, and [`amex`](../amex/) for the card half.
 
-## Credentials
+## Setup
 
-`~/.secrets/erstebank_at.env`, chmod `0600`:
+```
+make build-erstebank_at
+```
 
-```bash
-ERSTEBANK_AT_USERNAME='example-user'
+Credentials go in `~/.secrets/erstebank_at.env` (chmod `0600`):
+
+```
+ERSTEBANK_AT_USERNAME='...'   # the George user name (Verfügernummer or alias)
 ```
 
 ## Usage
 
-```bash
-collectors/erstebank_at/erstebank_at build
-collectors/erstebank_at/erstebank_at download                  # sign in + fetch (default window ~90 days)
-collectors/erstebank_at/erstebank_at download --lookback all   # full history
-collectors/erstebank_at/erstebank_at download --dry-run        # sign in, read the rosters only
-collectors/erstebank_at/erstebank_at login --check             # is the last sign-in still alive? (no push)
-collectors/erstebank_at/erstebank_at vnc-login                 # sign in by hand over VNC, then fetch
-collectors/erstebank_at/erstebank_at load                      # bronze → silver SQLite
-collectors/erstebank_at/erstebank_at load --force              # rebuild the silver from all bronze
-collectors/erstebank_at/erstebank_at explore                   # discovery harness over VNC
+```
+wealthdb-collect erstebank_at download                  # sign in if needed + REST fetch → bronze (default window ~90 days)
+wealthdb-collect erstebank_at download --lookback all   # full history (the initial backfill)
+wealthdb-collect erstebank_at download --dry-run        # read the rosters only
+wealthdb-collect erstebank_at login --check             # is a session alive? (no push)
+wealthdb-collect erstebank_at vnc-login                 # by-hand sign-in fallback over VNC
+wealthdb-collect erstebank_at load                      # bronze → silver SQLite
+wealthdb-collect erstebank_at load --force              # rebuild the silver from all bronze
+
+wealthdb-collect erstebank_at explore                   # discovery harness over VNC
 ```
 
-A `download` without a live session, `--dry-run` included, fires a real
-push. Run it deliberately and never in quick succession. Nothing is typed in the
-terminal.
+`download` types the user name from the env file. It then prints the
+comparison code and waits for the push approval. Nothing is typed in the
+terminal, so no TTY is needed. A run that finds no live session fires a
+real push, `--dry-run` included. Run it deliberately and never in quick
+succession.
+
+`download` exits 0 when the run is whole, 4 when it came back short
+(a history read only in part, a statement listing or PDF that failed),
+and 1 when it could not finish. A short run is still loadable. The next
+run asks again.
 
 `explore` prints a VNC address and records the session under
 `~/.cache/wealthdb/debug/erstebank_at/<UTC-ts>/`. That dir holds real
 account data. `prune` reclaims it once it is an hour old:
 
-```bash
-collectors/erstebank_at/erstebank_at prune --dry-run
+```
+wealthdb-collect erstebank_at prune --dry-run
 ```
 
 ## Output

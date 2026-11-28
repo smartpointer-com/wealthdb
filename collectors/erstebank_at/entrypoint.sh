@@ -2,10 +2,10 @@
 # Container entrypoint. Dispatches a single positional subcommand to the
 # corresponding Python under /app/.
 #
-# A George sign-in lasts a few hours and no device trust skips the push
-# after it (DESIGN.md §F), so `download` is a one-shot: a live session
-# reused, or a sign-in with the push approved on the phone (nothing to type,
-# no VNC), then the REST fetch, in one Camoufox lifetime. `login` folds into
+# A live session is reused and no device trust skips the push after it
+# (DESIGN.md §F), so `download` is a one-shot: a live session reused, or a
+# sign-in with the push approved on the phone (nothing to type, no VNC),
+# then the REST fetch, in one Camoufox lifetime. `login` folds into
 # `download` (except `login --check`, a read-only session probe).
 # `vnc-login` is the by-hand fallback. `load` builds the silver. `prune` is a
 # pure file walk.
@@ -91,12 +91,13 @@ Subcommands:
               nothing to type. Fetches the rosters, each history, and the
               statement PDFs into a UTC-stamped bronze run dir under /data.
               --lookback bounds the window; --no-documents skips PDFs;
-              --dry-run reads the rosters only (it still signs in).
+              --dry-run reads the rosters only; it signs in like a
+              run, so it fires a push when no session is alive.
   vnc-login   Fallback for download: expose VNC and do the sign-in by
               hand, then fetch.
   login       Folds into download, which signs in only without a live
               session. 'login --check' probes the session read-only
-              (exit 0 alive / 1 dead; no push).
+              (exit 0 alive / 1 none / 3 no verdict; no push).
   load        Ingest bronze into the SQLite silver (accounts, transactions,
               daily closing balances, statements). --force rebuilds from
               all bronze.

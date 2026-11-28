@@ -116,7 +116,8 @@ mode `0700`. It is derived data: deleting it costs one slower load.
 without a new MFA push. Where a session persists, `download --dry-run`
 walks with it but exports nothing. The one-shot collectors keep no
 session between runs, so their `download` signs in itself: schwab-web,
-chase, raiffeisen_at, erstebank_at, amex, fidelity-web and firstcitizens. There a dry
+chase, raiffeisen_at, amex, fidelity-web and firstcitizens. erstebank_at
+signs in only when no session is alive. There a dry
 run signs in too. Which dry runs an agent may start without asking is
 set by root [AGENTS.md](../AGENTS.md) §2 and each collector's own
 `AGENTS.md`; amex is the case that matters (see the exceptions below).
