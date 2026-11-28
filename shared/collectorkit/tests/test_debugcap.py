@@ -84,6 +84,26 @@ class RedactUrlTest(unittest.TestCase):
         url = "https://x.invalid/a/b"
         self.assertEqual(debugcap.redact_url(url), url)
 
+    def test_masks_an_implicit_grant_token_in_the_fragment(self):
+        # An OAuth implicit grant returns its token in the fragment, which
+        # is not part of the query.
+        out = debugcap.redact_url(
+            "https://app.example.invalid/index.html"
+            "#access_token=LEAKME&token_type=bearer&expires_in=300")
+        self.assertNotIn("LEAKME", out)
+        self.assertIn("access_token=", out)
+        self.assertIn("token_type=bearer", out)
+
+    def test_masks_a_token_in_a_fragment_route_query(self):
+        out = debugcap.redact_url(
+            "https://app.example.invalid/#/callback?token=LEAKME&x=1")
+        self.assertNotIn("LEAKME", out)
+        self.assertIn("#/callback?token=", out)
+
+    def test_leaves_an_spa_route_fragment_alone(self):
+        url = "https://app.example.invalid/index.html#/accounts/overview"
+        self.assertEqual(debugcap.redact_url(url), url)
+
     def test_unparseable_url_is_dropped_not_guessed_at(self):
         # A string we cannot parse is exactly where a naive mask would miss,
         # so drop it whole rather than write something we did not understand.
@@ -988,6 +1008,24 @@ class RedactHarTest(unittest.TestCase):
         self.assertTrue(debugcap.redact_har(self.har, redact, log=log))
         return self.har.read_text()
 
+    # An OAuth implicit grant: the token rides the redirect's fragment.
+    REDIRECT_ENTRY = {
+        "request": {"method": "GET",
+                    "url": "https://login.x.invalid/oauth/authorize"},
+        "response": {
+            "status": 302,
+            "redirectURL": "https://app.x.invalid/#access_token=EXAMPLETOKEN",
+            "headers": [{"name": "Location",
+                         "value": "https://app.x.invalid/"
+                                  "#access_token=EXAMPLETOKEN"}],
+        },
+    }
+
+    def test_masks_a_token_handed_over_in_a_redirect_fragment(self):
+        blob = self._redacted(entry=self.REDIRECT_ENTRY)
+        self.assertNotIn("EXAMPLETOKEN", blob)
+        self.assertIn("#access_token=", blob)
+
     def test_masks_the_credentials_it_was_given(self):
         blob = self._redacted(debugcap.secret_redactor(self.SECRET,
                                                        "example-user"))
@@ -1365,6 +1403,21 @@ class RedactHeadersTest(unittest.TestCase):
     def test_the_credential_header_set_is_the_one_stated_here(self):
         self.assertEqual(frozenset(KNOWN_PARAMS) | frozenset(HEADER_ONLY),
                          redact._SECRET_HEADERS)
+
+    def test_masks_the_url_a_redirect_names(self):
+        # A sign-in's redirect is where an implicit grant hands over its
+        # token; the header is kept, its token is not.
+        out = debugcap.redact_headers({
+            "Location": "https://app.example.invalid/#access_token=LEAKME",
+            "content-location": "/next?token=LEAKME",
+            "refresh": "0; url=https://app.example.invalid/?api_key=LEAKME",
+            "link": "<https://x.invalid/p?sig=LEAKME>; rel=next"})
+        for name, value in out.items():
+            with self.subTest(name):
+                self.assertNotIn("LEAKME", value)
+        self.assertTrue(out["Location"].startswith(
+            "https://app.example.invalid/#access_token="))
+        self.assertTrue(out["refresh"].startswith("0; url=https://"))
 
     def test_empty_and_unmappable_inputs_are_safe(self):
         self.assertEqual(debugcap.redact_headers(None), {})
