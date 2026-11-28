@@ -2,10 +2,10 @@
 # Container entrypoint. Dispatches a single positional subcommand to the
 # corresponding Python under /app/.
 #
-# George fires a push at every sign-in and keeps no session across browser
-# restarts (DESIGN.md §F), so `download` is a one-shot: sign-in + REST
-# fetch in one Camoufox lifetime, the push approved on the phone (nothing to
-# type, no VNC). `login` has nothing durable to persist, so it folds into
+# A George sign-in lasts a few hours and no device trust skips the push
+# after it (DESIGN.md §F), so `download` is a one-shot: a live session
+# reused, or a sign-in with the push approved on the phone (nothing to type,
+# no VNC), then the REST fetch, in one Camoufox lifetime. `login` folds into
 # `download` (except `login --check`, a read-only session probe).
 # `vnc-login` is the by-hand fallback. `load` is not built yet (exits 2).
 
@@ -42,7 +42,7 @@ case "${1:-help}" in
         ;;
     login)
         # `login --check` is a read-only session probe (no push). A bare
-        # `login` has nothing to persist — it folds into `download` — so it
+        # `login` folds into `download`, which signs in when needed, so it
         # is a clean no-op an orchestrator's login → download → load can
         # call without tripping.
         shift
@@ -53,8 +53,8 @@ case "${1:-help}" in
                 exec python3 /app/login.py "$@"
             fi
         done
-        echo "erstebank_at: 'login' folds into 'download' — nothing to" \
-             "persist (a push fires at every sign-in; DESIGN.md §F)." >&2
+        echo "erstebank_at: 'login' folds into 'download', which signs in" \
+             "only when no session is alive (DESIGN.md §F)." >&2
         echo "  Run 'download' (one-shot sign-in + fetch), or 'login --check'" \
              "to probe a session." >&2
         exit 0
@@ -92,9 +92,9 @@ Subcommands:
               --dry-run reads the rosters only (it still signs in).
   vnc-login   Fallback for download: expose VNC and do the sign-in by
               hand, then fetch.
-  login       Folds into download (nothing to persist). 'login --check'
-              probes a session read-only (exit 0 alive / 1 dead; dead
-              between runs is expected).
+  login       Folds into download, which signs in only without a live
+              session. 'login --check' probes the session read-only
+              (exit 0 alive / 1 dead; no push).
   load        Not built yet (exits 2).
   prune       Delete non-complete dumps from the bronze tree. --dry-run
               prints the plan. Usually run host-side via the wrapper.

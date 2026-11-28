@@ -62,9 +62,9 @@ conventions.
 - **Sign-in** happens in a Camoufox browser on `login.sparkasse.at`. The
   form asks for the user name only.
 - **The push** is approved in the George app (or George ID). `download`
-  prints the 4-character comparison code the page shows. A push fires at
-  every sign-in, so `login` folds into `download`: one browser and one
-  push per run.
+  prints the 4-character comparison code the page shows. A sign-in lasts
+  a few hours; a run inside that window needs no push. `login` folds into
+  `download`, which signs in only when there is no live session.
 - **Data** comes from George's REST API: the account and card rosters,
   each transaction history (stable ids, booking and value dates, a running
   balance), and the statement PDFs of accounts and cards.
@@ -87,13 +87,13 @@ collectors/erstebank_at/erstebank_at build
 collectors/erstebank_at/erstebank_at download                  # sign in + fetch (default window ~90 days)
 collectors/erstebank_at/erstebank_at download --lookback all   # full history
 collectors/erstebank_at/erstebank_at download --dry-run        # sign in, read the rosters only
-collectors/erstebank_at/erstebank_at login --check             # is a session alive? (dead between runs is expected)
+collectors/erstebank_at/erstebank_at login --check             # is the last sign-in still alive? (no push)
 collectors/erstebank_at/erstebank_at vnc-login                 # sign in by hand over VNC, then fetch
 collectors/erstebank_at/erstebank_at explore                   # discovery harness over VNC
 ```
 
-Every `download`, `--dry-run` included, fires a real push. Run it
-deliberately and never in quick succession. Nothing is typed in the
+A `download` without a live session, `--dry-run` included, fires a real
+push. Run it deliberately and never in quick succession. Nothing is typed in the
 terminal.
 
 `explore` prints a VNC address and records the session under
