@@ -23,8 +23,10 @@ RUN pip install -r requirements.txt
 #   george_client.py  George wire contract (pure: endpoints, parsers)
 #   login.py          one-shot sign-in (push) + the REST helper
 #   download.py       REST fetch → bronze
+#   load.py           bronze → SQLite silver
 #   prune.py          bronze reclaim
-COPY explore.py george_client.py login.py download.py prune.py /app/
+COPY explore.py george_client.py login.py download.py load.py prune.py /app/
+COPY migrations /app/migrations
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 

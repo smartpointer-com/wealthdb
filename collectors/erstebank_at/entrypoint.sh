@@ -7,7 +7,8 @@
 # reused, or a sign-in with the push approved on the phone (nothing to type,
 # no VNC), then the REST fetch, in one Camoufox lifetime. `login` folds into
 # `download` (except `login --check`, a read-only session probe).
-# `vnc-login` is the by-hand fallback. `load` is not built yet (exits 2).
+# `vnc-login` is the by-hand fallback. `load` builds the silver. `prune` is a
+# pure file walk.
 
 set -euo pipefail
 
@@ -60,8 +61,9 @@ case "${1:-help}" in
         exit 0
         ;;
     load)
-        echo "erstebank_at: 'load' is not built yet." >&2
-        exit 2
+        # Silver loader — pure SQLite + Python, no browser.
+        shift
+        exec python3 /app/load.py --bronze-dir /data "$@"
         ;;
     prune)
         # Bronze reclaim — pure file walk. Also reachable host-side via the
@@ -95,7 +97,9 @@ Subcommands:
   login       Folds into download, which signs in only without a live
               session. 'login --check' probes the session read-only
               (exit 0 alive / 1 dead; no push).
-  load        Not built yet (exits 2).
+  load        Ingest bronze into the SQLite silver (accounts, transactions,
+              daily closing balances, statements). --force rebuilds from
+              all bronze.
   prune       Delete non-complete dumps from the bronze tree. --dry-run
               prints the plan. Usually run host-side via the wrapper.
   sh|bash     Open an interactive shell.

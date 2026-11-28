@@ -20,8 +20,9 @@ pure, so it is unit-tested against synthetic payloads.
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit
+from zoneinfo import ZoneInfo
 
 # --- origins --------------------------------------------------------------
 
@@ -227,11 +228,17 @@ def history_has_more(body: object, page: int) -> bool:
     return isinstance(total, int) and page + 1 < total
 
 
+# George's dates are local midnights in Vienna, sent as epoch milliseconds
+# (22:00 or 23:00 UTC the day before). Read in UTC, every date would land a
+# day early.
+TZ = ZoneInfo("Europe/Vienna")
+
+
 def epoch_ms_date(value: object) -> date | None:
-    """A George epoch-milliseconds timestamp as a UTC date."""
+    """A George epoch-milliseconds date as the calendar day it names."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return datetime.fromtimestamp(value / 1000, tz=timezone.utc).date()
+    return datetime.fromtimestamp(value / 1000, tz=TZ).date()
 
 
 def oldest_booking(rows: list[dict]) -> date | None:

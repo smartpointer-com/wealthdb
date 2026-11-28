@@ -68,7 +68,10 @@ conventions.
 - **Data** comes from George's REST API: the account and card rosters,
   each transaction history (stable ids, booking and value dates, a running
   balance), and the statement PDFs of accounts and cards.
-- `load` is not built yet.
+- **`load`** writes a SQLite silver: the accounts and cards, the
+  transactions, a daily closing balance per account, and the statement
+  listings and PDFs. A card's balance is stored as the positive amount
+  owed.
 
 [DESIGN.md](DESIGN.md) maps the source.
 
@@ -89,6 +92,8 @@ collectors/erstebank_at/erstebank_at download --lookback all   # full history
 collectors/erstebank_at/erstebank_at download --dry-run        # sign in, read the rosters only
 collectors/erstebank_at/erstebank_at login --check             # is the last sign-in still alive? (no push)
 collectors/erstebank_at/erstebank_at vnc-login                 # sign in by hand over VNC, then fetch
+collectors/erstebank_at/erstebank_at load                      # bronze → silver SQLite
+collectors/erstebank_at/erstebank_at load --force              # rebuild the silver from all bronze
 collectors/erstebank_at/erstebank_at explore                   # discovery harness over VNC
 ```
 
@@ -106,6 +111,9 @@ collectors/erstebank_at/erstebank_at prune --dry-run
 
 ## Output
 
-Bronze runs land under `$XDG_DATA_HOME/wealthdb/erstebank_at/<UTC-ts>/`.
-Each run holds the rosters, one history file per account or card, and
-the statement PDFs with their listings.
+- Bronze runs land under `$XDG_DATA_HOME/wealthdb/erstebank_at/<UTC-ts>/`.
+  Each run holds the rosters, one history file per account or card, and
+  the statement PDFs with their listings.
+- Silver is `$XDG_DATA_HOME/wealthdb/erstebank_at/erstebank_at.db`, with
+  the tables `accounts`, `transactions`, `daily_balances`, `statements`,
+  `documents`, `run_accounts` and `dump_runs` ([DESIGN.md](DESIGN.md) §5).

@@ -1082,7 +1082,7 @@ restated here.
 | [`chase`](chase/) | Chase retail banking (checking + savings) | scraped session + 2FA | Docker (Camoufox) |
 | [`firstcitizens`](firstcitizens/) | First Citizens retail banking (checking + savings) | Q2 REST + terminal 2FA (persistent device trust) | Docker (Camoufox login + REST download) |
 | [`raiffeisen_at`](raiffeisen_at/) | Austrian Raiffeisen retail banking, Mein ELBA (checking + savings) | Camoufox login + pushTAN, then REST | Docker (Camoufox login + REST fetch); bank-supplied listings in `supplied/` backfill the deep past |
-| [`erstebank_at`](erstebank_at/) | Erste Bank und Sparkassen Austria, George (checking + credit cards) | Camoufox sign-in + push (login folds into `download`), then REST | Docker (Camoufox sign-in + REST fetch); `load` not built yet |
+| [`erstebank_at`](erstebank_at/) | Erste Bank und Sparkassen Austria, George (checking + credit cards) | Camoufox sign-in + push (login folds into `download`), then REST | Docker (Camoufox sign-in + REST fetch) |
 | [`amex`](amex/) | American Express card portal (credit + charge cards) | scraped session + one-time passcode (login folds into `download`), then REST | Docker (Camoufox sign-in + REST fetch) |
 | [`relevate`](relevate/) | Relevate / Pensexpert (Pillar 2) | REST + mTAN | Docker |
 | [`viac`](viac/) | VIAC (Pillar 3a) | REST + mTAN | Docker |

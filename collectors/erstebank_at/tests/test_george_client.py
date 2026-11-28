@@ -136,6 +136,17 @@ def test_credit_cards_keep_credit_only_with_both_ids():
     assert george.credit_cards({}) == []
 
 
+def test_dates_are_read_in_vienna():
+    # Vienna midnight is 23:00 UTC the day before in winter, 22:00 in summer.
+    winter = int(datetime(2026, 1, 14, 23, tzinfo=timezone.utc).timestamp()
+                 * 1000)
+    summer = int(datetime(2026, 7, 14, 22, tzinfo=timezone.utc).timestamp()
+                 * 1000)
+    assert george.epoch_ms_date(winter) == date(2026, 1, 15)
+    assert george.epoch_ms_date(summer) == date(2026, 7, 15)
+    assert george.epoch_ms_date(True) is None
+
+
 def test_oldest_booking_reads_epoch_ms():
     rows = [{"bookingDate": _ms(date(2026, 3, 2))},
             {"bookingDate": _ms(date(2026, 1, 15))},
