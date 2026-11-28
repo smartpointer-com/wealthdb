@@ -116,7 +116,7 @@ mode `0700`. It is derived data: deleting it costs one slower load.
 without a new MFA push. Where a session persists, `download --dry-run`
 walks with it but exports nothing. The one-shot collectors keep no
 session between runs, so their `download` signs in itself: schwab-web,
-chase, raiffeisen_at, amex, fidelity-web and firstcitizens. There a dry
+chase, raiffeisen_at, erstebank_at, amex, fidelity-web and firstcitizens. There a dry
 run signs in too. Which dry runs an agent may start without asking is
 set by root [AGENTS.md](../AGENTS.md) §2 and each collector's own
 `AGENTS.md`; amex is the case that matters (see the exceptions below).
@@ -445,7 +445,7 @@ rather than failing.)
 The `--mfa-timeout` defaults, in seconds:
 
 - 300 (five minutes): schwab-api, schwab-web, fidelity-web, chase,
-  amex, firstcitizens, swissquote, ubs-web. That includes a sign-in
+  amex, firstcitizens, erstebank_at, swissquote, ubs-web. That includes a sign-in
   done by hand over VNC.
 - raiffeisen_at: the pushTAN timeout the server declares.
 - 3600: plaid's `link` verb. That wait is the lifetime of the hosted
@@ -1082,6 +1082,7 @@ restated here.
 | [`chase`](chase/) | Chase retail banking (checking + savings) | scraped session + 2FA | Docker (Camoufox) |
 | [`firstcitizens`](firstcitizens/) | First Citizens retail banking (checking + savings) | Q2 REST + terminal 2FA (persistent device trust) | Docker (Camoufox login + REST download) |
 | [`raiffeisen_at`](raiffeisen_at/) | Austrian Raiffeisen retail banking, Mein ELBA (checking + savings) | Camoufox login + pushTAN, then REST | Docker (Camoufox login + REST fetch); bank-supplied listings in `supplied/` backfill the deep past |
+| [`erstebank_at`](erstebank_at/) | Erste Bank und Sparkassen Austria, George (checking + credit cards) | Camoufox sign-in + push (login folds into `download`), then REST | Docker (Camoufox sign-in + REST fetch); `load` not built yet |
 | [`amex`](amex/) | American Express card portal (credit + charge cards) | scraped session + one-time passcode (login folds into `download`), then REST | Docker (Camoufox sign-in + REST fetch) |
 | [`relevate`](relevate/) | Relevate / Pensexpert (Pillar 2) | REST + mTAN | Docker |
 | [`viac`](viac/) | VIAC (Pillar 3a) | REST + mTAN | Docker |

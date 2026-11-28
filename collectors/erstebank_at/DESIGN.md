@@ -298,11 +298,39 @@ scale.
 
 - **Verbs.** No trust survives the browser (§F), so `login` folds into
   `download`: one Camoufox lifetime per run, signed in by one push.
+  A bare `login` is a no-op. `login --check` opens the sign-in page and
+  never submits it, so it fires no push; it reports dead between runs.
+  `vnc-login` is the by-hand fallback.
 - **Tier.** Bot defense rides the pages, not the data API (§A), so the
-  browser signs in and the data is read as REST through `page.request`,
-  which shares the browser's cookie jar, with the bearer from the
-  redirect added to each call.
+  browser signs in and the data is read as REST through the context's
+  `request` API, which shares the browser's cookie jar, with the bearer
+  added to each call (`login.Api`).
+- **Sign-in from the terminal** (`login.py`):
+  - The user name from the env file is filled into `input#user`, read
+    back, and submitted.
+  - The comparison code is read from `b#verificationCode` and printed.
+  - The wait is five minutes. It ends on a working bearer, on the page's
+    own error text (`#errorContainer`, `#error`), shown verbatim, or on
+    the timeout.
+- **The bearer** has two sources: the George URL fragment (polled, and
+  seen in frame navigations and the redirect's `Location`) and the
+  `Authorization` header of the SPA's own data calls. Either is only a
+  candidate. The sign-in is done when the candidate reads the account
+  roster. No candidate exists before the approval, so no data call runs
+  while the push is pending.
+- **The fetch** (`download.py`):
+  - the account roster and the card roster;
+  - each history, newest first, paged until it reaches before
+    `--lookback`;
+  - each statement listing, and the PDFs inside the window. A statement
+    still rendering (§E) is asked for again every three seconds, six
+    times at most.
+  - A credit card is keyed `<shadowAccountId>-<cardId>`. A debit card is
+    not fetched: its payments are in its account's history.
+- **Bronze** follows the fleet layout: `run.json` (in-progress, then
+  complete or dry-run), `accounts.json`, `cards.json`,
+  `history/<product>.json` (with a `complete` flag), and
+  `statements/<account>/` and `invoices/<product>/`, each with a
+  `listing.json` beside its PDFs.
 
-`login` and `download` are not built yet. Until then only `explore` and
-`prune` run. `login`, `download` and `load` are accepted by the wrapper
-and exit 2.
+`load` is not built yet. The wrapper accepts it and exits 2.

@@ -34,15 +34,18 @@ Allowed without asking:
 - reading code, config and docs, and reading an existing capture under
   the debug dir;
 - `make build-erstebank_at` / `make test-erstebank_at`, unit tests,
-  `--help` on any verb;
+  `--help` on any verb, and a bare `login` (a no-op);
+- `login --check`: it opens the sign-in page on the stored profile and
+  never submits it, so no push fires. It reports DEAD between runs, by
+  design;
 - `prune` (host-side file walk; `--dry-run` first).
 
 Not allowed unless explicitly asked: anything that touches the live site.
-That covers a real `explore` and "just checking the selectors" against the
-live login page. No session survives the browser, so every sign-in fires
-a push (DESIGN.md §F): the future `download` signs in, and so does
-`download --dry-run`. Every live run is explicitly requested with the user
-present. Never fire sign-ins in quick succession.
+That covers a real `explore`, `download` or `vnc-login`, and "just
+checking the selectors" against the live login page. No session survives
+the browser, so every sign-in fires a push (DESIGN.md §F): `download`
+signs in, and so does `download --dry-run`. Every live run is explicitly
+requested with the user present. Never fire sign-ins in quick succession.
 
 ## 1. Read-only George access — never trigger writes
 
@@ -124,11 +127,12 @@ Forbidden — do not navigate to, click, or scrape:
   product, product offers and upgrades, account switching services.
 - **George plugins and the George store** — activating, buying or
   configuring any plugin.
-- **Profile, settings and the second factor** — contact details, user name or
-  alias, password, signature limits, notifications, statement-delivery
-  settings, George app or George ID device pairing or method changes, and any privacy,
-  data-sharing or third-party-access (open-banking) consent surface —
-  granting it would expose data to an external party.
+- **Profile, settings and the second factor** — contact details, user
+  name or alias, password, signature limits, notifications,
+  statement-delivery settings, George app or George ID device pairing or
+  method changes, and any privacy, data-sharing or third-party-access
+  (open-banking) consent surface — granting it would expose data to an
+  external party.
 - **The Postfach (message center)** beyond reading statements — reading,
   composing or sending messages, and the advisor-contact surfaces. If
   statements are delivered there, only their listing and PDF fetch are

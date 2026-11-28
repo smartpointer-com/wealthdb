@@ -218,6 +218,7 @@ There is one collector per provider.
 - **Banks** — [UBS](collectors/ubs-web/) (netbanking and the
   [PSN feed](collectors/ubs-psn/)), [Swissquote](collectors/swissquote/),
   [Raiffeisen Austria](collectors/raiffeisen_at/),
+  [Erste Bank Austria](collectors/erstebank_at/),
   [Chase](collectors/chase/), [First Citizens](collectors/firstcitizens/);
   [American Express](collectors/amex/) cards.
 - **Brokerages** — [Schwab](collectors/schwab-api/) (the Trader API and

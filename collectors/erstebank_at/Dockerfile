@@ -5,8 +5,8 @@
 # matching Playwright pin, the pre-fetched Firefox bundle at
 # /opt/camoufox-cache, and the collectorkit shared package.
 #
-# Camoufox, the fleet's standard browser for a source whose bot defense is
-# not yet measured (DESIGN.md §1).
+# Camoufox signs in; the sign-in page carries a first-party sensor, the data
+# API does not (DESIGN.md §A).
 ARG WEALTHDB_IMAGE_TAG=latest
 FROM wealthdb/base-camoufox:${WEALTHDB_IMAGE_TAG}
 
@@ -19,9 +19,12 @@ RUN pip install -r requirements.txt
 
 # Copy scripts last, by name, so stray host artefacts (.venv, traces,
 # captures, downloaded statements) never enter the image.
-#   explore.py      discovery harness
-#   prune.py        bronze reclaim
-COPY explore.py prune.py /app/
+#   explore.py        discovery harness
+#   george_client.py  George wire contract (pure: endpoints, parsers)
+#   login.py          one-shot sign-in (push) + the REST helper
+#   download.py       REST fetch → bronze
+#   prune.py          bronze reclaim
+COPY explore.py george_client.py login.py download.py prune.py /app/
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 
