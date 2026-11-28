@@ -8,11 +8,11 @@ bodies, downloads, and a DOM snapshot of every distinct screen (the
 artefacts are described in collectorkit.explore) — so login.py and
 download.py can be written from real traces.
 
-The sign-in is typed by hand (DESIGN.md §2). The George login form is
-expected to ask for a user name only, with the s Identity push completing
-the sign-in, and the shared pre-fill fills only a username + password pair
-in one frame. The user name is still read from the env file: it feeds the
-redactor, so no capture carries it.
+The sign-in is typed by hand (DESIGN.md §2). The George login form asks
+for a user name only, with the s Identity push completing the sign-in
+(DESIGN.md §A-§B), and the shared pre-fill fills only a username +
+password pair in one frame. The user name is still read from the env file:
+it feeds the redactor, so no capture carries it.
 
 The session should walk the discovery flows DESIGN.md §3 details: the
 sign-in (the s Identity challenge and its completion), the checking
@@ -52,10 +52,10 @@ USER_ENV = "ERSTEBANK_AT_USERNAME"
 EVENT_PREFIX = "__ERSTEBANK_AT_EVENT__ "
 
 # The DOM snapshots and the in-page detector are restricted to sparkasse.at
-# (and subdomains — the entry point george.sparkasse.at and, expected, its
-# login host are under it). A frame on any other host is still in the HAR,
-# but no DOM of it is written. The gate is widened only when a capture
-# shows a load-bearing frame elsewhere, never pre-emptively.
+# (and subdomains — george.sparkasse.at, the login host login.sparkasse.at
+# and the API hosts are all under it). A frame on any other host is still
+# in the HAR, but no DOM of it is written. The gate is widened only when a
+# capture shows a load-bearing frame elsewhere, never pre-emptively.
 HOST_RE = re.compile(r"(^|\.)sparkasse\.at$", re.I)
 
 # Locators tried in order. Deliberately broad, so the detector reports a
@@ -81,8 +81,8 @@ USER_SELECTOR = (
 PWD_SELECTOR = "input[type='password']"
 
 # A one-time-code field: the usual hooks plus a TAN field's `tan` name. The
-# expected factor is an s Identity push (approve in the app, nothing to
-# type), so this records any FALLBACK factor the challenge screen offers.
+# factor is an s Identity push (approve in the app, nothing to type), so
+# this records any FALLBACK factor the challenge screen offers.
 OTP_SELECTOR = (
     "input[autocomplete='one-time-code'], input[inputmode='numeric'], "
     "input[name*='otp' i], input[name*='code' i], input[id*='otp' i], "
