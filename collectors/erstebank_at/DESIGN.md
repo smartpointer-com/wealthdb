@@ -250,13 +250,18 @@ scale.
 
 ### §F — Session persistence and device trust: none
 
-- **Nothing survives a browser restart.** A run on the same profile
-  without `--fresh` opens on an empty login form. Neither the session nor
-  the user name is remembered, and the push fires again.
+- **The sign-in session outlives the browser, for a while.** It lives in
+  the profile's cookies on `login.sparkasse.at`. Within it, George opens
+  on a fresh browser already signed in: the authorize step returns a new
+  token without the form or a push. A session 45 minutes old was still
+  alive; one 8 hours old was gone.
+- **After it lapses, nothing is remembered.** The run opens on an empty
+  login form, the user name included, and the push fires again. There is
+  no device trust that skips the push.
 - The bearer lives in the page, handed over in the redirect fragment
   (§A), for one hour. One run fits inside one token.
-- So `login` folds into `download` (§4): one browser lifetime and one
-  push per run, as in raiffeisen_at.
+- So `login` folds into `download` (§4): a run reuses a live session and
+  signs in, with one push, only when there is none.
 
 ### §G — Credit cards: served by George itself
 
@@ -296,10 +301,12 @@ scale.
 
 ## 4. Runtime
 
-- **Verbs.** No trust survives the browser (§F), so `login` folds into
-  `download`: one Camoufox lifetime per run, signed in by one push.
-  A bare `login` is a no-op. `login --check` opens the sign-in page and
-  never submits it, so it fires no push; it reports dead between runs.
+- **Verbs.** A session lasts hours, and no device trust skips the push
+  after it (§F), so `login` folds into `download`: one Camoufox lifetime
+  per run, reusing a live session or signing in with one push. A bare
+  `login` is a no-op. `login --check` opens George and never submits the
+  sign-in form, so it fires no push; it reports whether the session is
+  still alive.
   `vnc-login` is the by-hand fallback.
 - **Tier.** Bot defense rides the pages, not the data API (§A), so the
   browser signs in and the data is read as REST through the context's

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """George bronze fetch — the REST walk over a signed-in session.
 
-George fires a push at every sign-in (DESIGN.md §F), so the sign-in and
-the fetch run in one browser lifetime: the wrapper's `download` verb is
-`login.py --bronze-dir /data`, which signs in and then calls :func:`walk`
+The sign-in and the fetch run in one browser lifetime (DESIGN.md §F): the
+wrapper's `download` verb is `login.py --bronze-dir /data`, which reuses a
+live session or signs in, then calls :func:`walk`
 here with a `login.Api` (the browser context's `request` API plus the
 bearer). This module does no DOM scraping.
 

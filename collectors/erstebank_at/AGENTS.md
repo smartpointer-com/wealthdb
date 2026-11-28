@@ -36,15 +36,15 @@ Allowed without asking:
 - `make build-erstebank_at` / `make test-erstebank_at`, unit tests,
   `--help` on any verb, and a bare `login` (a no-op);
 - `login --check`: it opens the sign-in page on the stored profile and
-  never submits it, so no push fires. It reports DEAD between runs, by
-  design;
+  never submits it, so no push fires. It reports ALIVE while the
+  sign-in's session lasts and DEAD after (DESIGN.md §F);
 - `prune` (host-side file walk; `--dry-run` first).
 
 Not allowed unless explicitly asked: anything that touches the live site.
 That covers a real `explore`, `download` or `vnc-login`, and "just
-checking the selectors" against the live login page. No session survives
-the browser, so every sign-in fires a push (DESIGN.md §F): `download`
-signs in, and so does `download --dry-run`. Every live run is explicitly
+checking the selectors" against the live login page. Once the sign-in's
+session has lapsed, a push fires at the next sign-in (DESIGN.md §F):
+`download` signs in then, and so does `download --dry-run`. Every live run is explicitly
 requested with the user present. Never fire sign-ins in quick succession.
 
 ## 1. Read-only George access — never trigger writes

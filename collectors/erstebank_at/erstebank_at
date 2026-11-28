@@ -6,10 +6,10 @@
 # invocation, and the safety guard refuses to evict a container hosting a
 # live VNC session.
 #
-# George fires a push at every sign-in and keeps no session across browser
-# restarts (DESIGN.md §F), so `download` is a one-shot: sign-in + REST
-# fetch in one browser lifetime, the push approved on the phone (nothing to
-# type, no VNC). `login` folds into `download`; `vnc-login` is the by-hand
+# A George sign-in lasts a few hours and no device trust skips the push
+# after it (DESIGN.md §F), so `download` is a one-shot: a live session
+# reused, or a sign-in with the push approved on the phone (nothing to type,
+# no VNC), then the REST fetch, in one browser lifetime. `login` folds into `download`; `vnc-login` is the by-hand
 # fallback; `prune` is a pure file walk that runs host-side. `load` is not
 # built yet.
 #
@@ -52,9 +52,9 @@ Subcommands:
                       the George app — no VNC, nothing to type. --lookback
                       bounds the window; --no-documents skips the PDFs;
                       --dry-run reads the rosters only (it still signs in).
-  login [args...]     Folds into download (nothing to persist). \`login
-                      --check\` reports whether a session is still alive
-                      (exit 0/1; dead between runs is expected).
+  login [args...]     Folds into download, which signs in only without a
+                      live session. \`login --check\` reports whether the
+                      last sign-in is still alive (exit 0/1; no push).
   vnc-login [args...] Fallback for download: expose VNC and do the sign-in
                       by hand, then fetch.
   load [args...]      Not built yet (exits 2).

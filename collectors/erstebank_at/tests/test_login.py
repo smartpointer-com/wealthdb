@@ -265,6 +265,25 @@ def test_terminal_sign_in_announces_the_code_and_returns_the_bearer(
     assert all(tick >= approved_at for _, tick in ctx.request.gets)
 
 
+def test_a_live_session_is_reused_without_a_push(tmp_path, caplog):
+    # Within the sign-in's lifetime George opens signed in (§F): no form is
+    # submitted and no code is announced.
+    page = SignInPage()
+
+    def opens_signed_in(url, **kw):
+        page.state = "done"
+        page.url = REDIRECT
+
+    page.goto = opens_signed_in
+    caplog.set_level(logging.INFO, logger="erstebank_at.login")
+    token = login.authenticate(Context(page), page, login.Watch(),
+                               args=_args(tmp_path), cli_mfa=True,
+                               mfa_timeout=30)
+    assert token == TOKEN
+    assert page.clicked == [] and page.typed == ""
+    assert "Push sent" not in caplog.text
+
+
 def test_the_pages_error_text_ends_the_sign_in_verbatim(tmp_path, caplog):
     page = SignInPage(error="Synthetic error text from the sign-in page.")
     ctx = Context(page)

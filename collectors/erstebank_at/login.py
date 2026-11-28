@@ -4,10 +4,11 @@
 It also holds the shared authenticate() and the REST helper download.py
 reads through.
 
-George keeps no session and no device trust across a browser restart
-(DESIGN.md §F): every sign-in fires a push to the George app. So the
-sign-in and the fetch run in **one browser lifetime**, and the `login` verb
-folds into `download`; this script backs both.
+A George sign-in lasts a few hours, across browser restarts, and no device
+trust skips the push after it (DESIGN.md §F). So the sign-in and the fetch
+run in **one browser lifetime**: a live session is reused, and a push fires
+only when there is none. The `login` verb folds into `download`; this
+script backs both.
 
 The sign-in (DESIGN.md §A-§B) is an OAuth implicit grant on
 `login.sparkasse.at`:
@@ -30,7 +31,7 @@ the push is pending.
 
 Modes:
   --check   open the profile and probe for a live session; exit 0 (alive) /
-            1 (dead). Dead between runs is expected (§F); fires no push.
+            1 (dead). Never submits the form, so fires no push.
   default   sign in from the terminal (push approved on the phone), then
             fetch via download.walk() into --bronze-dir.
   --no-cli-mfa  the vnc-login fallback: the whole sign-in is done by hand
@@ -81,7 +82,7 @@ def camoufox(profile_dir: Path, fresh: bool = False):
     offers it. Yields (context, page)."""
     kit_explore.prepare_profile(
         profile_dir, fresh=fresh, log=log,
-        note="George keeps no device trust, so the sign-in is unchanged")
+        note="the next run signs in with a push")
     with launch.persistent_camoufox(profile_dir) as (context, page):
         yield context, page
 
@@ -279,7 +280,10 @@ def _drive_to_push(context, page, watch: Watch, args) -> bool:
                   "(DOM captured with --debug.)")
         return False
     if watch.token is not None:
-        return True                       # signed in already; probed later
+        # The last sign-in is still alive (§F): George opened signed in.
+        # The candidate is probed like any other.
+        log.info("George opened signed in — checking the session (no push)")
+        return True
     if not _submit_username(page, username, args):
         return False
 
@@ -391,7 +395,7 @@ def _capture(page, args, name: str) -> None:
 
 def run_check(args: argparse.Namespace) -> int:
     """Open George on the stored profile and probe for a live session.
-    Exit 0 if alive, 1 otherwise. Dead between runs is expected (§F). The
+    Exit 0 if alive, 1 otherwise. A sign-in lasts a few hours (§F). The
     sign-in form is never submitted, so no push fires."""
     with camoufox(args.profile_dir) as (context, page):
         watch = Watch().attach(context)
@@ -403,7 +407,7 @@ def run_check(args: argparse.Namespace) -> int:
             if probe(context, watch.token):
                 log.info("session ALIVE")
                 return 0
-    log.info("session DEAD — a sign-in is required (expected between runs)")
+    log.info("session DEAD — the next download signs in with a push")
     return 1
 
 
@@ -442,8 +446,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "%(default)s.")
     p.add_argument("--check", action="store_true",
                    help="Probe the stored profile for a live session and "
-                        "exit 0/1; no push. Reports DEAD between runs by "
-                        "design (§F).")
+                        "exit 0/1; no push (§F).")
     p.add_argument("--cli-mfa", dest="cli_mfa", action="store_true",
                    default=True,
                    help="Submit the user name from the env file and wait "
@@ -482,8 +485,8 @@ def main(argv: list[str]) -> int:
             return 2
         return run_check(args)
     if args.bronze_dir is None:
-        # No session survives the run (§F), so a sign-in without a fetch
-        # would cost a push for nothing.
+        # The sign-in serves the fetch (§F); one without a fetch could
+        # cost a push for nothing.
         log.error("--bronze-dir is required to sign in: the sign-in serves "
                   "the fetch (the download verb passes /data).")
         return 2
