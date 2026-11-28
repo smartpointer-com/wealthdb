@@ -144,8 +144,8 @@ func TestRosterRowRecords(t *testing.T) {
 // row per account and run that listed it inside the window, valued at its
 // latest roster row at or before the run, in the account's currency. A run
 // that listed an account twice states it once, a roster row counts as a
-// listing, and a row with no balance states none. A failing query is
-// named for the collector.
+// listing, and a row with no balance states none. A sign function sets the
+// canonical sign. A failing query is named for the collector.
 func TestAppendReportedBalances(t *testing.T) {
 	ctx := context.Background()
 	db := scratch(t, `CREATE TABLE accounts (snapshot_at INTEGER, account_external_id TEXT, balance REAL);
@@ -153,9 +153,9 @@ INSERT INTO accounts VALUES (1, 'a', 10), (4, 'a', 40), (1, 'b', NULL), (3, 'b',
 CREATE TABLE runs (snapshot_at INTEGER, account_external_id TEXT, kind TEXT);
 INSERT INTO runs VALUES (2, 'a', 'x'), (2, 'a', 'y'), (5, 'a', 'x'), (9, 'a', 'x'), (2, 'b', 'x'), (5, 'b', 'x');`)
 	ccy := func(id string) string { return map[string]string{"a": "CHF"}[id] + "X" }
-	emit := func(table string) ([]string, error) {
+	emitSigned := func(table string, sign func(string, float64) canonical.Decimal) ([]string, error) {
 		var batch canonical.SnapshotBatch
-		err := appendReportedBalances(ctx, db, "bank", table, canonical.Window{Start: 0, End: 8}, ccy, &batch)
+		err := appendReportedBalances(ctx, db, "bank", table, canonical.Window{Start: 0, End: 8}, ccy, sign, &batch)
 		var out []string
 		for _, cb := range batch.CashBalances {
 			if cb.BalanceKind != canonical.BalanceKindCurrent || string(cb.Payload) != `{"basis":"roster"}` {
@@ -166,10 +166,23 @@ INSERT INTO runs VALUES (2, 'a', 'x'), (2, 'a', 'y'), (5, 'a', 'x'), (9, 'a', 'x
 		}
 		return out, err
 	}
+	emit := func(table string) ([]string, error) { return emitSigned(table, nil) }
 	got, err := emit("runs")
 	if want := []string{"a@1=10 CHFX", "a@2=10 CHFX", "a@4=40 CHFX", "a@5=40 CHFX",
 		"b@3=30 X", "b@5=30 X"}; err != nil || !slices.Equal(got, want) {
 		t.Errorf("AppendReportedBalances = %v, %v; want %v", got, err, want)
+	}
+	negB := func(id string, v float64) canonical.Decimal {
+		d := canonical.NewDecimalFromFloat(v)
+		if id == "b" {
+			return d.Neg()
+		}
+		return d
+	}
+	got, err = emitSigned("runs", negB)
+	if want := []string{"a@1=10 CHFX", "a@2=10 CHFX", "a@4=40 CHFX", "a@5=40 CHFX",
+		"b@3=-30 X", "b@5=-30 X"}; err != nil || !slices.Equal(got, want) {
+		t.Errorf("signed AppendReportedBalances = %v, %v; want %v", got, err, want)
 	}
 	if _, err := db.Exec(`DROP TABLE accounts`); err != nil {
 		t.Fatal(err)

@@ -4186,12 +4186,12 @@ wealthdb/
 │   ├── silver/                     — adapter interface + registry, one package per source kind
 │   │   │                             (series holds curves and fred):
 │   │   │                             amex angellist carta chase cointracking equityzen
-│   │   │                             fidelity firstcitizens manual plaid raiffeisen_at
+│   │   │                             erstebank_at fidelity firstcitizens manual plaid raiffeisen_at
 │   │   │                             refdata relevate schwab series swissquote synthetic
 │   │   │                             ubs viac
 │   │   ├── all/                    — imports every backend once
 │   │   ├── curves/ · fred/         — the series fixtures (testdata only)
-│   │   ├── bank/                   — the deposit and card adapter that amex, chase, firstcitizens and raiffeisen_at declare
+│   │   ├── bank/                   — the deposit and card adapter that amex, chase, erstebank_at, firstcitizens and raiffeisen_at declare
 │   │   └── <source>/               — impl (snapshots/transactions/classmap); adapter.go registers its silver.Source, with policy.go and lotpolicy.go where a policy needs code
 │   ├── gold/                       — DuckDB schema, writer, queries, report macros
 │   │   ├── migrations/             — 0001…NNNN SQL: tables and data moves, //go:embed-ed by schema.go
