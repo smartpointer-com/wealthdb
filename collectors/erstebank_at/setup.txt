@@ -1,0 +1,12 @@
+# What the first sign-in needs. Format: collectors/README.md,
+# "The setup declaration".
+var ERSTEBANK_AT_USERNAME required plain <user-name> Your George user name (Verfügernummer or alias)
+session erstebank_at-profile
+checks login download
+docs Setup
+signin The sign-in is part of every download that finds no live session.
+signin Approve the push in the George app or George ID. Check that it
+signin shows the same code as the terminal. There is nothing to type.
+then wealthdb-collect erstebank_at download --lookback all
+then wealthdb-collect erstebank_at load
+then wealthdb load -a

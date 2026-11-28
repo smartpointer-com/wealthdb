@@ -6,12 +6,12 @@
 # invocation, and the safety guard refuses to evict a container hosting a
 # live VNC session.
 #
-# A George sign-in lasts a few hours and no device trust skips the push
-# after it (DESIGN.md §F), so `download` is a one-shot: a live session
-# reused, or a sign-in with the push approved on the phone (nothing to type,
-# no VNC), then the REST fetch, in one browser lifetime. `login` folds into `download`; `vnc-login` is the by-hand
-# fallback; `load` builds the silver; `prune` is a pure file walk that runs
-# host-side.
+# A live session is reused and no device trust skips the push after it
+# (DESIGN.md §F), so `download` is a one-shot: a live session reused, or a
+# sign-in with the push approved on the phone (nothing to type, no VNC),
+# then the REST fetch, in one browser lifetime. `login` folds into
+# `download`; `vnc-login` is the by-hand fallback; `load` builds the
+# silver; `prune` is a pure file walk that runs host-side.
 #
 # The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
 
@@ -35,7 +35,7 @@ if [[ "${1:-}" == "build" ]]; then
     wrapper_build "$@"
 fi
 
-if [[ "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0 ]]; then
+if wrapper_wants_help "$@"; then
     cat <<EOF
 erstebank_at — host wrapper
 
@@ -51,10 +51,12 @@ Subcommands:
                       UTC-stamped bronze run dir. The push is approved in
                       the George app — no VNC, nothing to type. --lookback
                       bounds the window; --no-documents skips the PDFs;
-                      --dry-run reads the rosters only (it still signs in).
+                      --dry-run reads the rosters only. It signs in like a
+                      run, so it fires a push when no session is alive.
   login [args...]     Folds into download, which signs in only without a
-                      live session. \`login --check\` reports whether the
-                      last sign-in is still alive (exit 0/1; no push).
+                      live session. \`login --check\` reports whether a
+                      session is alive (exit 0 alive, 1 none, 3 no
+                      verdict; no push).
   vnc-login [args...] Fallback for download: expose VNC and do the sign-in
                       by hand, then fetch.
   load [args...]      Ingest bronze into the SQLite silver (accounts,
@@ -82,6 +84,17 @@ Credentials (read from /secrets/erstebank_at.env inside the container
 = \$HOME/.secrets/erstebank_at.env on the host; chmod 0600):
   ERSTEBANK_AT_USERNAME   the George user name (Verfügernummer or alias)
   The sign-in is confirmed in the George app.
+EOF
+    exit 0
+fi
+
+# `login` folds into `download` (§F), so a bare one is a host-side no-op.
+# `login --check` is a read-only session probe and passes through, as do the
+# help flags.
+if wrapper_login_folds --check --help -h -- "$@"; then
+    cat >&2 <<'EOF'
+erstebank_at: 'login' folds into 'download', which signs in only when no session is alive (§F).
+  Run 'download' (one-shot sign-in + fetch), or 'login --check' to probe a session.
 EOF
     exit 0
 fi

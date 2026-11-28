@@ -5,8 +5,8 @@ collector. Sections: scope (§1), the discovery harness (§2), the
 discovery walk (§3), the source's behaviour (§3-Surface, with lettered
 parts §A–§H), the runtime (§4), the silver (§5) and the gold
 adapter (§6). The layout follows
-[raiffeisen_at](../raiffeisen_at/DESIGN.md). Everything below is stated
-from captures; §H lists what is still open.
+[raiffeisen_at](../raiffeisen_at/DESIGN.md). Everything below is the
+source's behaviour as mapped; §H lists what is still open.
 
 ## 1. Scope
 
@@ -150,9 +150,8 @@ identified: no known vendor's cookie or script name appears.
   box (`#infoContainer` / `#infoMsgContainer`) and a cancel link
   (`a#cancelLink`). `a#cancelIcon` ("Benutzer wechseln") switches the
   user. The code is read from the DOM, never from a network event.
-- The wait screen shows no deadline. A push approved four minutes after
-  it fired still completed the sign-in, inside the fleet's five-minute
-  MFA wait.
+- The wait screen shows no deadline. The collector waits the fleet's
+  five minutes (root AGENTS.md §9).
 - **Completion is a JSON poll.** The page calls
   `POST /sts/secapp/secondfactor?client_id=georgeclient` (no body,
   `X-Requested-With: XMLHttpRequest`) every `pollingIntervalMs` (3000).
@@ -253,13 +252,16 @@ scale.
 - `GET …/statements/<statementId>/at/fees?includeVoucher=…&format=…` lists
   the fees a statement charges.
 
-### §F — Session persistence and device trust: none
+### §F — Session persistence and device trust
+
+This is the one place that states how long a sign-in lasts. Other files
+point here.
 
 - **The sign-in session outlives the browser, for a while.** It lives in
   the profile's cookies on `login.sparkasse.at`. Within it, George opens
   on a fresh browser already signed in: the authorize step returns a new
-  token without the form or a push. A session 45 minutes old was still
-  alive; one 8 hours old was gone.
+  token without the form or a push. How long it lasts is open (§H). It
+  lapses within a day.
 - **After it lapses, nothing is remembered.** The run opens on an empty
   login form, the user name included, and the push fires again. There is
   no device trust that skips the push.
@@ -291,25 +293,33 @@ scale.
 - **Signs.** A card amount is signed like a checking one: outgoing
   (a purchase) negative, incoming (a refund or repayment) positive. The
   card's `balance`, in its detail and in each row's running balance, is
-  negative while money is owed. That is already the fleet's liability
-  sign, as in amex. A credit card's detail has `type: CREDIT`.
+  negative while money is owed. Silver stores it as the positive amount
+  owed, the fleet's card convention as in amex (§5), and gold negates it
+  again into liability cash (§6). A credit card's detail has
+  `type: CREDIT`.
 - Open: whether the server returns more than `numberOfMonths=36` reaches.
 
 ### §H — Still open
 
 - The push's declined or expired answer (§B). The first run that meets
   one records it; the collector shows the page's own error text.
-- The card history's floor and the invoice listing's cap (§G). The
-  captures reach no limit on either.
+- The card history's floor and the invoice listing's cap (§G).
+- How long the sign-in session lasts (§F).
+- Whether the roster lists products other than checking accounts with an
+  IBAN, and whether the card roster carries a balance.
+- Whether the history holds pending rows, and whether a row keeps its id
+  from pending to booked.
+- What the next run meets on a profile after a push was left unapproved:
+  the form, the old wait screen, or a new push.
 
 ## 4. Runtime
 
-- **Verbs.** A session lasts hours, and no device trust skips the push
-  after it (§F), so `login` folds into `download`: one Camoufox lifetime
+- **Verbs.** A session can outlive the browser, and no device trust
+  skips the push after it (§F), so `login` folds into `download`: one Camoufox lifetime
   per run, reusing a live session or signing in with one push. A bare
-  `login` is a no-op. `login --check` opens George and never submits the
-  sign-in form, so it fires no push; it reports whether the session is
-  still alive.
+  `login` is a no-op. `login --check` opens George and never fills or submits
+  the sign-in form, so it fires no push. It exits 0 when a session is
+  alive, 1 when the form shows, and 3 when it could not tell.
   `vnc-login` is the by-hand fallback.
 - **Tier.** Bot defense rides the pages, not the data API (§A), so the
   browser signs in and the data is read as REST through the context's
@@ -381,24 +391,28 @@ keys; this section says why they are what they are.
 ## 6. Gold adapter
 
 `wealthdb/internal/silver/erstebank_at/` (package `erstebankat`, kind
-`erstebank_at`) follows the chase model, which also mixes cash and cards.
+`erstebank_at`) declares the source to the shared bank adapter
+(`internal/silver/bank`), which amex, chase, firstcitizens and
+raiffeisen_at also use.
 
 - **Accounts.** A checking account becomes a `cash` account, a credit card
   a `card` account. The display name is George's product name with the
   mask.
 - **Balances.** A current balance comes from the roster at each run that
   listed the account (`run_accounts`). A closing balance comes from each
-  day in `daily_balances`, stamped at the day's last second. A card's
-  amount owed turns into negative cash.
-- **Transactions.** Both ledgers, keyed by George's row id. Information
-  rows that book no amount are left out.
+  day in `daily_balances`, stamped at the day's last second. The engine
+  negates a card's positive amount owed into negative cash.
+- **Transactions.** Both ledgers, keyed by George's row id. Rows without
+  `IS_BAL_RELEVANT` book no amount and are left out.
 - **Kinds on checking.** `BANKFEE` is the account-closing entry. Its text
   sets the kind: `KESt` is tax, `Zins` is interest, anything else is a
   fee. The other known types are a deposit or a withdrawal by sign.
 - **Kinds on a card.** George books every card row as `CREDITCARD`. A
   charge is a purchase. A credit that carries a merchant category code
   (`mcc`) is a refund. A credit without one is the card's repayment.
-- **Unknown types** land as `other`, with the raw type in the payload as
+- **Unknown types** take the kind of their sign, so the row stays in cash
+  flow and spending: a withdrawal or deposit on checking, a purchase or
+  card payment on a card. The raw type stays in the payload as
   `source_kind`.
 - **Text.** The title goes to the description, the free-text lines to the
   memo, and the partner or merchant to the counterparty. George's
@@ -406,8 +420,7 @@ keys; this section says why they are what they are.
   holder re-file a category, so it never sets a kind. The spending tier
   has no translation for it yet.
 
-It registers via the blank import in `cmd/wealthdb/main.go` and the
-`silver_sources` migration
-(`internal/gold/migrations/0180_silver_sources_erstebank_at.sql`). Its
-policy is the deposit-bank one: the checking accounts' return rows are
-hidden, and the engine drops card accounts from returns.
+The adapter registers through its import in `internal/silver/all` and
+names the collector in its `Collectors`. Its policy is the plain bank
+one: the engine hides every cash account's return rows by kind and drops
+card accounts from returns.
