@@ -5,8 +5,11 @@ Parses each bronze run dir (download.py has the layout) into the silver
 schema (migrations/): the checking accounts and credit cards, the accounts
 each run listed, the transaction ledger, the statement listings and the
 statement PDF inventory. Then it rebuilds the daily closing balances from
-the ledger. Idempotent: an already-loaded run is skipped, and every write
-converges on its key, so re-running is a no-op.
+the ledger. The frame is the shared one (`collectorkit.loader`): an
+already-loaded run is skipped, every write converges on its key, and
+`--force` builds a fresh silver beside the old one, so a failed rebuild
+loses nothing. A run whose roster is unreadable fails the load, since gold
+reads each run's listing as the whole roster.
 
 The history JSON is the ledger (DESIGN.md §C, §D): every row carries a
 stable `id`, a signed amount, booking and value dates, and the running
@@ -29,7 +32,7 @@ from collections import defaultdict
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, silver
+from collectorkit import bronze, loader, silver
 
 import george_client as george
 
@@ -346,14 +349,23 @@ def _insert_documents(conn, snapshot_at: int, account: str, folder: Path,
 # Per-run loader
 # ============================================================
 
-def _read_json(path: Path, *, quiet: bool = False):
-    """The parsed JSON at `path`, or None (with a warning unless `quiet`)
-    when it is missing or not valid JSON."""
+def _read_json(path: Path):
+    """The parsed JSON at `path`. A roster that is missing or unreadable
+    raises: gold reads every run's listing as the whole roster, so a run
+    without one must not load as an empty one."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{path.parent.name}/{path.name}: unreadable "
+                         f"({type(exc).__name__})") from exc
+
+
+def _read_optional(path: Path):
+    """The parsed JSON at `path`, or None where a product has none: a
+    history or listing that failed is absent from bronze by design."""
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        if not quiet:
-            log.warning("%s: missing or not valid JSON; skipping", path.name)
         return None
 
 
@@ -362,19 +374,23 @@ def _list(value) -> list[dict]:
         if isinstance(value, list) else []
 
 
-def run_products(run_dir: Path, *, quiet: bool = False) -> dict:
+def run_products(run_dir: Path) -> dict:
     """The run's products by bronze stem: `{stem: (external id, kind,
     accounts row)}`. A checking account's history and statements are
     filed under its George id, a card's under `<shadow>-<card>`; silver
-    keys them by IBAN and shadow account id."""
+    keys them by IBAN and shadow account id. Raises when either roster is
+    unreadable."""
+    accounts = _read_json(run_dir / "accounts.json")
+    cards = _read_json(run_dir / "raw" / "cards.json")
+    if not isinstance(accounts, list) or not isinstance(cards, dict):
+        raise ValueError(f"{run_dir.name}: a roster has the wrong shape")
     products = {}
-    for acct in _list(_read_json(run_dir / "accounts.json", quiet=quiet)):
+    for acct in _list(accounts):
         row = checking_row(acct)
         if row and acct.get("id"):
             products[bronze.safe_stem(acct["id"])] = (
                 row["account_external_id"], KIND_CHECKING, row)
-    raw = _read_json(run_dir / "raw" / "cards.json", quiet=True)
-    for card in _list(raw.get("cards") if isinstance(raw, dict) else None):
+    for card in _list(cards.get("cards")):
         row = card_row(card)
         if row and card.get("id"):
             stem = bronze.safe_stem(george.card_product_id(
@@ -383,28 +399,10 @@ def run_products(run_dir: Path, *, quiet: bool = False) -> dict:
     return products
 
 
-def _listed_ids(run_dir: Path) -> list[str]:
-    return [ext for ext, _, _ in run_products(run_dir, quiet=True).values()]
-
-
-def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
-    """Load one bronze run dir. Returns True if ingested, False if skipped
-    (a dump that is not complete, or one already loaded). The caller owns
-    the transaction (`main` makes each run one)."""
-    if not bronze.run_is_loadable(run_dir):
-        run_json = run_dir / "run.json"
-        log.info("skip %s (%s)", run_dir.name,
-                 f"status={bronze.run_status(run_json)}" if run_json.is_file()
-                 else "no run.json")
-        return False
-    try:
-        snapshot_at = bronze.parse_run_ts(run_dir.name)
-    except ValueError:
-        log.warning("skip %s (unparseable run slug)", run_dir.name)
-        return False
-    if snapshot_at in silver.loaded_snapshots(conn):
-        return False
-
+def load_run(conn: sqlite3.Connection, run: loader.Run) -> int:
+    """Load one bronze run. The frame owns the transaction and the
+    `dump_runs` row. Returns the number of products."""
+    run_dir, snapshot_at = run.dir, run.snapshot_at
     products = run_products(run_dir)
     for _, _, row in products.values():
         _insert_account(conn, snapshot_at, row)
@@ -412,7 +410,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
                               [ext for ext, _, _ in products.values()])
 
     for stem, (account, kind, _) in sorted(products.items()):
-        history = _read_json(run_dir / "history" / f"{stem}.json", quiet=True)
+        history = _read_optional(run_dir / "history" / f"{stem}.json")
         if isinstance(history, dict):
             rows = [transaction_row(account, kind, r)
                     for r in _list(history.get("transactions"))]
@@ -424,53 +422,45 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
         else:
             folder, project, doc_kind = (
                 run_dir / "invoices" / stem, invoice_row, "card_statement")
-        listing = _read_json(folder / "listing.json", quiet=True)
+        listing = _read_optional(folder / "listing.json")
         rows = [project(account, r) for r in _list(listing)]
         silver.upsert_rows(conn, "statements", _STATEMENT_COLUMNS,
                            _with(snapshot_at, [r for r in rows if r]))
         if folder.is_dir():
             _insert_documents(conn, snapshot_at, account, folder, doc_kind)
-
-    conn.execute(
-        "INSERT OR REPLACE INTO dump_runs (snapshot_at, silver_schema_version,"
-        " run_dir) VALUES (?,?,?)",
-        (snapshot_at, silver.current_schema_version(conn), str(run_dir)))
-    log.info("loaded %s (%d product(s))", run_dir.name, len(products))
-    return True
+    return len(products)
 
 
-def main(argv: list[str]) -> int:
+def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     p.add_argument("--bronze-dir", type=Path, required=True,
                    help="Bronze tree root (holds the <UTC-ts>/ run dirs).")
     p.add_argument("--silver-db", type=Path, default=None,
                    help="Silver SQLite path. Default: "
                         "<bronze-dir>/erstebank_at.db.")
-    cli.add_standard_args(p, verb="load")
-    args = p.parse_args(argv)
-    cli.configure_logging(args.verbose)
+    return p
 
-    db_path = args.silver_db or (args.bronze_dir / "erstebank_at.db")
-    if args.force:
-        silver.reset(db_path)
-    conn = silver.open_db(db_path)
-    try:
-        silver.apply_migrations(conn, MIGRATIONS_DIR)
+
+def _paths(args: argparse.Namespace) -> tuple[Path, Path]:
+    return args.silver_db or (args.bronze_dir / "erstebank_at.db"), args.bronze_dir
+
+
+def _rebuild_balances(conn: sqlite3.Connection, load: loader.Load) -> None:
+    """Re-derive the daily closes after a load that ingested a run."""
+    if load.loaded:
         with silver.transaction(conn):
-            bronze.backfill_run_listings(conn, args.bronze_dir, _listed_ids)
-        loaded = 0
-        for run_dir in bronze.iter_run_dirs(args.bronze_dir):
-            with silver.transaction(conn):          # one atomic load per run
-                if load_run(conn, run_dir):
-                    loaded += 1
-        if loaded:
-            with silver.transaction(conn):
-                rebuild_daily_balances(conn)
-        log.info("done: %d run(s) ingested into %s", loaded, db_path)
-    finally:
-        conn.close()
-    return 0
+            rebuild_daily_balances(conn)
+
+
+SPEC = loader.LoaderSpec(
+    name="erstebank_at", schema=MIGRATIONS_DIR, load_run=load_run,
+    parser=_parser, counts=("product(s)",), defaults=_paths,
+    after_runs=_rebuild_balances, run_columns=loader.given_run_columns)
+
+
+def main(argv: list[str] | None = None) -> int:
+    return loader.main(SPEC, argv)
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(main())
