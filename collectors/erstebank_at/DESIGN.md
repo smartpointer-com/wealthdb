@@ -298,6 +298,8 @@ point here.
   again into liability cash (§6). A credit card's detail has
   `type: CREDIT`.
 - Open: whether the server returns more than `numberOfMonths=36` reaches.
+- A debit card (`type: BANK_CARD`) is read only as a roster row. Only a
+  `CREDIT` card has an account of its own.
 
 ### §H — Still open
 
@@ -306,9 +308,15 @@ point here.
 - The card history's floor and the invoice listing's cap (§G).
 - How long the sign-in session lasts (§F).
 - Whether the roster lists products other than checking accounts with an
-  IBAN, and whether the card roster carries a balance.
+  IBAN. A checking row reads `product: girokonto`, `type: CURRENT`, with
+  an `accountno` holding the IBAN. The roster read keeps only rows of
+  `type: CURRENT` (or without a `type`), so another product is never read
+  or loaded.
 - Whether the history holds pending rows, and whether a row keeps its id
-  from pending to booked.
+  from pending to booked. A history row's `flags` come from this set:
+  `IS_VISIBLE`, `IS_BAL_RELEVANT`, `IS_CLAIMABLE`,
+  `IS_PFM_RELEVANT_INCLUDED`, `IS_PFM_RELEVANT_EXCLUDED`,
+  `ALLOWS_REPLY`, `ALLOWS_TRANSFER_REDO`. None marks a row as pending.
 - What the next run meets on a profile after a push was left unapproved:
   the form, the old wait screen, or a new push.
 

@@ -115,6 +115,9 @@ def test_render_pending():
 def test_paging_rules():
     body = {"pageNumber": 0, "pageCount": 2, "accounts": [{"id": ACCOUNT}]}
     assert george.roster_accounts(body) == [{"id": ACCOUNT}]
+    mixed = {"accounts": [{"id": "a", "type": "CURRENT"},
+                          {"id": "b", "type": "SAVING"}, {"id": "c"}]}
+    assert [a["id"] for a in george.roster_accounts(mixed)] == ["a", "c"]
     assert george.page_has_more(body, 0)
     assert not george.page_has_more(body, 1)
     assert george.page_number_is(body, 0)

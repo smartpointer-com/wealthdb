@@ -248,6 +248,23 @@ def test_a_roster_short_of_its_declared_count_fails_the_run(tmp_path):
                       since=date(2026, 1, 1), until=date(2026, 4, 30))
 
 
+def test_a_roster_row_of_another_type_is_neither_read_nor_a_shortfall(
+        tmp_path):
+    class Mixed(FakeApi):
+        def get_json(self, url):
+            if urlsplit(url).path.endswith("/my/accounts"):
+                return 200, {"pageNumber": 0, "pageCount": 1,
+                             "pageTotalSize": 2,
+                             "accounts": [{"id": ACCOUNT, "type": "CURRENT"},
+                                          {"id": "other", "type": "SAVING"}]}
+            return super().get_json(url)
+
+    api = Mixed(history=_history())
+    download.walk(api, tmp_path, since=date(2026, 1, 1),
+                  until=date(2026, 4, 30))
+    assert not any("other" in u for u in api.gets + api.posts)
+
+
 def test_a_roster_past_the_page_cap_fails_the_run(tmp_path):
     class Endless(FakeApi):
         def get_json(self, url):

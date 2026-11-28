@@ -184,10 +184,17 @@ def is_render_pending(status: int, body: object) -> bool:
 
 # --- projections ----------------------------------------------------------
 
+CHECKING_TYPE = "CURRENT"
+
+
 def roster_accounts(body: object) -> list[dict]:
-    """The `accounts[]` of one roster page."""
+    """The checking accounts of one roster page. A row of another `type`
+    (a savings account, say) is left out, so it is never read or loaded. A
+    row without a `type` stays."""
     if isinstance(body, dict) and isinstance(body.get("accounts"), list):
-        return [a for a in body["accounts"] if isinstance(a, dict)]
+        return [a for a in body["accounts"]
+                if isinstance(a, dict)
+                and a.get("type", CHECKING_TYPE) == CHECKING_TYPE]
     return []
 
 
