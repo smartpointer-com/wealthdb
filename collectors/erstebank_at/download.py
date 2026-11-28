@@ -81,6 +81,7 @@ def fetch_roster(api, run_dir: Path) -> list[dict]:
     the one asked for (the roster would repeat), the page cap, or fewer
     rows than the roster declares."""
     rows: list[dict] = []
+    listed = 0
     declared = None
     for page in range(MAX_ROSTER_PAGES):
         status, body = api.get_json(george.accounts_url(page))
@@ -94,14 +95,15 @@ def fetch_roster(api, run_dir: Path) -> list[dict]:
                                f"the roster is short")
         if page == 0:
             declared = george.roster_declared_total(body)
+        listed += len(body.get("accounts") or [])
         rows.extend(george.roster_accounts(body))
         if not george.page_has_more(body, page):
             break
     else:
         raise RuntimeError(f"the account roster passed {MAX_ROSTER_PAGES} "
                            f"pages; the roster is short")
-    if declared is not None and len(rows) != declared:
-        raise RuntimeError(f"the account roster holds {len(rows)} row(s) "
+    if declared is not None and listed != declared:
+        raise RuntimeError(f"the account roster holds {listed} row(s) "
                            f"but declares {declared}")
     return rows
 
