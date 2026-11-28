@@ -203,8 +203,10 @@ scale.
   - card fields where a card paid (`cardId`, `maskedCardNumber`,
     `merchantName`, `mcc`, exchange-rate and fee fields), and
     `categories`.
-- **History floor:** open. The SPA paged only the first pages. The first
-  download that pages to the end measures it.
+- **History floor:** the server returns history back to 1 January of the
+  third calendar year before the current one. The floor moves forward
+  each January. Bronze keeps every run, so it loses only what lies before
+  the first download. Older rows are only in the statements (§E).
 - `GET /proxy/g/api/my/transactions/<id>/similar` is the detail view's
   "similar transactions" read.
 
@@ -231,7 +233,8 @@ scale.
   `minBookingDate` / `maxBookingDate`, `statementDate`,
   `previousBalance`, `numberOfVouchers` and `flags` (`isAsynchronous`).
   The listing takes no date window and answers the whole archive in one
-  page. Whether the server caps its reach is open.
+  page. The archive reaches further back than the transaction history
+  (§C).
 - **Download:** `POST /rest/netbanking/my/accounts/<accountId>/statements/download?format=<fmt>&statementIds=<statementId>&includeVoucher=<bool>`
   with the bearer as a form field (`access_token=…`) → the file
   (`application/octet-stream`). The SPA turns it into a `blob:` URL. The
@@ -241,7 +244,8 @@ scale.
   download of a statement in a format can answer
   `422 {"errors": [{"scope": "ASYNCHRON", "error": "FIELD_INVALID"}]}`
   while the server renders it. The same call a few seconds later returns
-  the file. Once rendered, a format answers at once.
+  the file. Once rendered, a format answers at once. A statement never
+  downloaded before can take longer than the first attempts span.
 - **The open period:** `GET …/statements/current` returns the period not
   yet printed: `previousBalance`, `newBalance`, `totalCredits`,
   `totalDebits` and its `transactions[]`.
@@ -294,10 +298,8 @@ scale.
 
 - The push's declined or expired answer (§B). The first run that meets
   one records it; the collector shows the page's own error text.
-- The history floor (§C), the statement archive's cap (§E) and the
-  invoice listing's cap (§G). The first download that pages to the end
-  measures all three, and they decide whether a statement backfill is
-  needed at all.
+- The card history's floor and the invoice listing's cap (§G). The
+  captures reach no limit on either.
 
 ## 4. Runtime
 
@@ -331,7 +333,9 @@ scale.
     `--lookback`;
   - each statement listing, and the PDFs inside the window. A statement
     still rendering (§E) is asked for again every three seconds, six
-    times at most.
+    times. One still rendering then is asked for once more at the end of
+    the run, after a 30-second wait. A PDF that still fails is counted in
+    `documents_failed`, and the next run asks again.
   - A credit card is keyed `<shadowAccountId>-<cardId>`. A debit card is
     not fetched: its payments are in its account's history.
 - **Bronze** follows the fleet layout: `run.json` (in-progress, then
