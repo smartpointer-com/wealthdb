@@ -12,7 +12,7 @@ country. Scope is two account kinds: **checking accounts (Girokonto)** and
 **credit cards**, as far as George itself serves them.
 
 The surface is mapped in DESIGN.md §A–§G: an OAuth implicit-grant login
-on `login.sparkasse.at` with an s Identity push, and a REST/JSON data API
+on `login.sparkasse.at` with a George app push, and a REST/JSON data API
 on `api.sparkasse.at`. The allow list below is stated against the mapped
 endpoints and errs wide on the forbid side. Never widen it without the
 user opting in in writing. Mapping a new endpoint does not widen scope.
@@ -25,9 +25,9 @@ drift is diagnosable. Repo prose stays English.
 ## 0. Never run a real session unprompted
 
 Root [AGENTS.md](../../AGENTS.md) §2 applies with extra force here.
-`explore` mints a real George session and fires a real **s Identity
-push** at a real phone. Repeated sign-ins can trip fraud heuristics into
-a lock-out.
+`explore` mints a real George session and fires a real **push to the
+George app** on a real phone. Repeated sign-ins can trip fraud heuristics
+into a lock-out.
 
 Allowed without asking:
 
@@ -39,25 +39,24 @@ Allowed without asking:
 
 Not allowed unless explicitly asked: anything that touches the live site.
 That covers a real `explore` and "just checking the selectors" against the
-live login page. The future `login`, `download` and `download --dry-run`
-count as signing in until this file says otherwise: whether a session
-survives the browser is still unmeasured (DESIGN.md §F). Every live run is
-explicitly requested with the user present. Never fire sign-ins in quick
-succession.
+live login page. No session survives the browser, so every sign-in fires
+a push (DESIGN.md §F): the future `download` signs in, and so does
+`download --dry-run`. Every live run is explicitly requested with the user
+present. Never fire sign-ins in quick succession.
 
 ## 1. Read-only George access — never trigger writes
 
 Root [AGENTS.md](../../AGENTS.md) §1 mandates read-only access. George is
 especially dangerous: a new payment sits one click from every account
-view, and a single submit plus an s Identity approval can move real money
-irreversibly. The s Identity app signs payments with the same push that
+view, and a single submit plus a George app approval can move real money
+irreversibly. The George app signs payments with the same push that
 signs the login, so **any push other than the one the sign-in itself
 fired must never be approved**. Navigation stays allow-list-tight.
 
 Allowed — only these surfaces may be driven (all read-only except the
 sign-in itself):
 
-- **The sign-in and its s Identity challenge** on `login.sparkasse.at`:
+- **The sign-in and its push challenge** on `login.sparkasse.at`:
   `GET`/`POST /sts/oauth/authorize?…client_id=georgeclient&response_type=token`
   (the capability probe, the user-name form `form#credentials`, and the
   final redirect carrying the token), the push wait screen with its
@@ -71,7 +70,10 @@ sign-in itself):
   - statements: `GET …/accounts/<accountId>/statements?page=…&size=…&sort=…&order=…`,
     `GET …/statements/current`, and the PDF
     `POST …/statements/download?format=…&statementIds=…&includeVoucher=…`
-    (a read-only export trigger; its body carries only the bearer).
+    in any of its formats (`PDF_A4`, `TXT_A4`, the other text layouts,
+    `OFX`) — a read-only export trigger whose body carries only the
+    bearer. Its first call for a format may answer `422` while the server
+    renders the file; repeating it is the read the SPA itself makes.
 - **Credit cards**, read-only, on `api.sparkasse.at`:
   - roster: `GET /rest/netbanking/my/cards` and
     `GET /rest/netbanking/my/cards/<cardId>` (credit-card rows only; a
@@ -80,8 +82,6 @@ sign-in itself):
   - statements: `GET /proxy/g/api/my/accounts/<cardAccountId>-<cardId>/invoices?numberOfMonths=…`
     and the PDF `POST /rest/netbanking/my/cards/<cardId>/invoices/<billId>/pdf`
     (a read-only export trigger; its body carries only the bearer).
-- **Transaction exports** of an in-scope account, once explore maps them
-  (DESIGN.md §D): triggering an export is a read.
 - Logout (optional; not required between runs, but harmless).
 
 These are the only `POST`s the collector's own code may send: the
@@ -109,7 +109,7 @@ Forbidden — do not navigate to, click, or scrape:
   QR / photo payments, transfers between own accounts, card repayment.
   Any control amounting to "Neue Zahlung", "Überweisung", "Auftrag",
   "Senden", "Unterschreiben", "Zeichnen", "Freigeben", "Bestätigen" —
-  and any s Identity approval other than the sign-in's own.
+  and any George app approval other than the sign-in's own.
 - **Card lifecycle and card settings** — limits, blocks / unblocks,
   geo-blocking, PIN, activation, replacement, online-payment (3-D Secure)
   settings, digital-wallet enrolment, instalment or "pay later" options
@@ -124,9 +124,9 @@ Forbidden — do not navigate to, click, or scrape:
   product, product offers and upgrades, account switching services.
 - **George plugins and the George store** — activating, buying or
   configuring any plugin.
-- **Profile, settings and s Identity** — contact details, user name or
+- **Profile, settings and the second factor** — contact details, user name or
   alias, password, signature limits, notifications, statement-delivery
-  settings, s Identity device pairing or method changes, and any privacy,
+  settings, George app or George ID device pairing or method changes, and any privacy,
   data-sharing or third-party-access (open-banking) consent surface —
   granting it would expose data to an external party.
 - **The Postfach (message center)** beyond reading statements — reading,
@@ -145,7 +145,7 @@ appears in the allow-list above.
 ## 2. Protect the session and any device trust
 
 The George session is the keys to the kingdom: it can move money through
-the flows above, subject to an s Identity approval.
+the flows above, subject to a George app approval.
 
 - `/secrets/erstebank_at-profile/` is the persistent Camoufox profile
   dir. It holds the session cookie and any browser or device-trust
@@ -161,7 +161,7 @@ Per root [AGENTS.md](../../AGENTS.md) §3: never bypass, downgrade, or
 `~/.secrets/erstebank_at.env`: `ERSTEBANK_AT_USERNAME` (the George user
 name). The form is expected to ask for nothing else. Should explore show
 a password field, `ERSTEBANK_AT_PASSWORD` joins it — never a
-`--password` flag, never persisted. The s Identity approval happens on
+`--password` flag, never persisted. The George app approval happens on
 the phone; nothing code-like is ever accepted on argv. If the site
 challenges the browser, the answer is a better stealth profile, never an
 auth bypass.

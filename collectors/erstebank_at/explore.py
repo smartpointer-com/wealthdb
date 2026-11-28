@@ -9,13 +9,13 @@ artefacts are described in collectorkit.explore) — so login.py and
 download.py can be written from real traces.
 
 The sign-in is typed by hand (DESIGN.md §2). The George login form asks
-for a user name only, with the s Identity push completing the sign-in
+for a user name only, with the George app push completing the sign-in
 (DESIGN.md §A-§B), and the shared pre-fill fills only a username +
 password pair in one frame. The user name is still read from the env file:
 it feeds the redactor, so no capture carries it.
 
 The session should walk the discovery flows DESIGN.md §3 details: the
-sign-in (the s Identity challenge and its completion), the checking
+sign-in (the push challenge and its completion), the checking
 accounts (transaction history, its paging and filters, each export format
 once), the statement archive (its listing, one PDF, its reach), and the
 credit cards (where their data is served from).
@@ -81,7 +81,7 @@ USER_SELECTOR = (
 PWD_SELECTOR = "input[type='password']"
 
 # A one-time-code field: the usual hooks plus a TAN field's `tan` name. The
-# factor is an s Identity push (approve in the app, nothing to type), so
+# factor is a George app push (approve in the app, nothing to type), so
 # this records any FALLBACK factor the challenge screen offers.
 OTP_SELECTOR = (
     "input[autocomplete='one-time-code'], input[inputmode='numeric'], "
@@ -131,7 +131,7 @@ def load_username(env_file: Path | None) -> str:
 
 # What the person at the VNC session is asked to walk (DESIGN.md §3).
 WALK = ("walk the discovery flows (DESIGN.md §3): 1) sign in via VNC, "
-        "noting the s Identity screen, any comparison code, and its "
+        "noting the push screen, any comparison code, and its "
         "completion; 2) open each checking account's transaction list, "
         "scroll its paging, open one transaction's detail, and run each "
         "export format once; 3) open the statement archive: its listing, "
