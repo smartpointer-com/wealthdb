@@ -150,8 +150,15 @@ identified: no known vendor's cookie or script name appears.
   box (`#infoContainer` / `#infoMsgContainer`) and a cancel link
   (`a#cancelLink`). `a#cancelIcon` ("Benutzer wechseln") switches the
   user. The code is read from the DOM, never from a network event.
-- The wait screen shows no deadline. The collector waits the fleet's
-  five minutes (root AGENTS.md §9).
+- The wait screen shows no deadline. George ends an unapproved push
+  after about three minutes, on its own. The page then shows the error
+  `Es kam zu einer Zeitüberschreitung. Ein Login kann leider nicht
+  durchgeführt werden. Bitte versuchen Sie es erneut.` The collector
+  shows it verbatim and exits. Its own wait is the fleet's five minutes
+  (root AGENTS.md §9), so George's end comes first.
+- A new sign-in after an unapproved one meets the user-name form and
+  fires a new push with a new comparison code. The old push leaves
+  nothing behind.
 - **Completion is a JSON poll.** The page calls
   `POST /sts/secapp/secondfactor?client_id=georgeclient` (no body,
   `X-Requested-With: XMLHttpRequest`) every `pollingIntervalMs` (3000).
@@ -160,9 +167,9 @@ identified: no known vendor's cookie or script name appears.
   navigates the authorize URL, which redirects with the token (§A).
 - The poll lives on the login host. It touches no authenticated data
   surface, so a collector can read it without disturbing the challenge.
-- Open: the poll's answer for a declined or expired push, and the error
-  text the page shows then. Open: whether a fallback factor exists; the
-  wait screen offers none.
+- Open: the poll's answer for a declined push, and the error text the
+  page shows then. Open: whether a fallback factor exists; the wait
+  screen offers none.
 
 ### §C — The data API and transaction history
 
@@ -303,8 +310,8 @@ point here.
 
 ### §H — Still open
 
-- The push's declined or expired answer (§B). The first run that meets
-  one records it; the collector shows the page's own error text.
+- The push's declined answer (§B). The first run that meets one records
+  it; the collector shows the page's own error text.
 - The card history's floor and the invoice listing's cap (§G).
 - How long the sign-in session lasts (§F).
 - Whether the roster lists products other than checking accounts with an
@@ -317,8 +324,6 @@ point here.
   `IS_VISIBLE`, `IS_BAL_RELEVANT`, `IS_CLAIMABLE`,
   `IS_PFM_RELEVANT_INCLUDED`, `IS_PFM_RELEVANT_EXCLUDED`,
   `ALLOWS_REPLY`, `ALLOWS_TRANSFER_REDO`. None marks a row as pending.
-- What the next run meets on a profile after a push was left unapproved:
-  the form, the old wait screen, or a new push.
 
 ## 4. Runtime
 
