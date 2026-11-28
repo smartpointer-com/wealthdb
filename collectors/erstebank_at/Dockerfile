@@ -17,18 +17,9 @@ WORKDIR /app
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# Copy scripts last, by name, so stray host artefacts (.venv, traces,
-# captures, downloaded statements) never enter the image.
-#   explore.py        discovery harness
-#   george_client.py  George wire contract (pure: endpoints, parsers)
-#   login.py          one-shot sign-in (push) + the REST helper
-#   download.py       REST fetch → bronze
-#   load.py           bronze → SQLite silver
-#   prune.py          bronze reclaim
-COPY explore.py george_client.py login.py download.py load.py prune.py /app/
-COPY migrations /app/migrations
-COPY entrypoint.sh /app/
-RUN chmod +x /app/entrypoint.sh
+# No source: every run and every test mounts the checkout over /app
+# (HAS_APP_MOUNT in the wrapper), entrypoint.sh included, so the image
+# holds only what the code runs on.
 
 # Image default user is root. The wrapper runs the container with
 # `--user $(id -u):$(id -g)` so files written to mounted volumes have
