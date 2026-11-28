@@ -44,6 +44,11 @@ class Request:
     def __init__(self, page=None):
         self.page = page
         self.gets = []
+        self.posts = []
+
+    def post(self, url, headers=None, form=None):
+        self.posts.append((url, dict(form or {})))
+        return Resp(200, None)
 
     def get(self, url, headers=None):
         self.gets.append((url, self.page.ticks if self.page else None))
@@ -85,8 +90,10 @@ class Locator:
     def click(self, timeout=None):
         self.page.clicked.append(self.selector)
         if self.selector == george.SEL_SUBMIT:
-            self.page.state = "push"
+            self.page.state = "silent" if self.page.silent else "push"
             self.page.push_at = self.page.ticks
+            if self.page.click_raises:
+                raise TimeoutError("the click timed out after submitting")
 
     def fill(self, value):
         self.page.typed = value
@@ -95,7 +102,7 @@ class Locator:
         return self.page.typed
 
     def press(self, key):
-        pass
+        self.page.pressed.append(key)
 
 
 class SignInPage:
@@ -103,7 +110,11 @@ class SignInPage:
     push wait screen, then (after `approve_after` ticks) the redirect — or
     an error text instead."""
 
-    def __init__(self, *, approve_after=3, error=None):
+    def __init__(self, *, approve_after=3, error=None, silent=False,
+                 click_raises=False):
+        self.silent = silent
+        self.click_raises = click_raises
+        self.pressed = []
         self.state = "blank"
         self.url = "about:blank"
         self.ticks = 0
@@ -184,8 +195,8 @@ def _no_browser(*a, **kw):
 
 
 def test_a_sign_in_without_a_bronze_dir_is_refused(monkeypatch):
-    # No session survives the run, so a sign-in that fetches nothing would
-    # fire a push for nothing: refused before any browser starts.
+    # The sign-in serves the fetch, and one without a fetch could cost a
+    # push for nothing: refused before any browser starts.
     monkeypatch.setattr(login, "camoufox", _no_browser)
     assert login.main([]) == 2
 
@@ -325,3 +336,197 @@ def test_no_approval_times_out(tmp_path, caplog):
                                mfa_timeout=1)
     assert token is None
     assert "no working session within 1s" in caplog.text
+
+
+# --- one push per sign-in -------------------------------------------------
+
+def test_a_click_that_raises_is_not_followed_by_a_second_submit(tmp_path):
+    page = SignInPage(click_raises=True)
+    login.authenticate(Context(page), page, login.Watch(),
+                       args=_args(tmp_path), cli_mfa=True, mfa_timeout=1)
+    assert page.clicked.count(george.SEL_SUBMIT) == 1
+    assert page.pressed == []
+
+
+def test_a_missing_wait_screen_stops_without_asking_for_approval(
+        tmp_path, caplog, monkeypatch):
+    monkeypatch.setattr(login, "CHALLENGE_SCREEN_TIMEOUT_S", 1)
+    page = SignInPage(silent=True)
+    token = login.authenticate(Context(page), page, login.Watch(),
+                               args=_args(tmp_path), cli_mfa=True,
+                               mfa_timeout=30)
+    assert token is None
+    assert "Push sent" not in caplog.text
+    assert "vnc-login" in caplog.text
+    assert "comparison code" in caplog.text
+
+
+def test_a_refused_candidate_is_probed_once(tmp_path):
+    page = SignInPage()
+    page.url = "https://george.sparkasse.at/index.html#access_token=STALE"
+
+    def tick(ms):
+        page.ticks += 1
+        if page.ticks == 6:
+            page.url = REDIRECT
+
+    page.wait_for_timeout = tick
+    ctx = Context(page)
+    assert login._wait_for_token(ctx, page, login.Watch(), 30,
+                                 watch_errors=True) == TOKEN
+    assert len(ctx.request.gets) == 2          # STALE once, TOKEN once
+
+
+# --- the data API ---------------------------------------------------------
+
+def test_the_document_form_carries_only_the_bearer():
+    ctx = Context()
+    login.Api(ctx, TOKEN).post_token_form("https://api.sparkasse.at/x/pdf")
+    assert ctx.request.posts == [("https://api.sparkasse.at/x/pdf",
+                                  {"access_token": TOKEN})]
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_refused_bearer_raises_on_a_read(status):
+    ctx = Context()
+    ctx.request.get = lambda url, headers=None: Resp(status, None)
+    with pytest.raises(george.BearerEnded):
+        login.Api(ctx, TOKEN).get_json("https://api.sparkasse.at/x")
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_refused_bearer_raises_on_a_document(status):
+    ctx = Context()
+    ctx.request.post = lambda url, headers=None, form=None: Resp(status, None)
+    with pytest.raises(george.BearerEnded):
+        login.Api(ctx, TOKEN).post_token_form("https://api.sparkasse.at/x")
+
+
+def test_a_server_error_is_a_status_not_a_stop():
+    ctx = Context()
+    ctx.request.get = lambda url, headers=None: Resp(500, None)
+    assert login.Api(ctx, TOKEN).get_json("https://api.sparkasse.at/x") == (
+        500, None)
+
+
+# --- the verbs ------------------------------------------------------------
+
+def _browser(monkeypatch, page, ctx=None):
+    import contextlib
+
+    @contextlib.contextmanager
+    def fake(profile_dir, fresh=False):
+        yield (ctx or Context(page)), page
+
+    monkeypatch.setattr(login, "camoufox", fake)
+
+
+def _check_args(tmp_path):
+    return SimpleNamespace(profile_dir=tmp_path)
+
+
+def test_check_reports_alive_without_touching_the_form(tmp_path, monkeypatch):
+    page = SignInPage()
+    page.goto = lambda url, **kw: setattr(page, "url", REDIRECT)
+    _browser(monkeypatch, page)
+    assert login.run_check(_check_args(tmp_path)) == 0
+    assert page.typed == "" and page.clicked == [] and page.pressed == []
+
+
+def test_check_reports_a_shown_form_as_no_session(tmp_path, monkeypatch):
+    page = SignInPage()
+    _browser(monkeypatch, page)
+    assert login.run_check(_check_args(tmp_path)) == 1
+    assert page.typed == "" and page.clicked == [] and page.pressed == []
+
+
+def test_check_without_a_verdict_exits_three(tmp_path, monkeypatch):
+    page = SignInPage()
+    page.goto = lambda url, **kw: None
+    _browser(monkeypatch, page)
+    monkeypatch.setattr(login, "wait_for", lambda *a, **kw: False)
+    assert login.run_check(_check_args(tmp_path)) == 3
+
+
+def test_check_with_a_browser_that_will_not_start_exits_three(
+        tmp_path, monkeypatch, caplog):
+    def broken(profile_dir, fresh=False):
+        raise RuntimeError("no browser")
+
+    monkeypatch.setattr(login, "camoufox", broken)
+    assert login.run_check(_check_args(tmp_path)) == 3
+    assert "no verdict" in caplog.text
+
+
+def _fetch_args(tmp_path):
+    args = login.parse_args(["--bronze-dir", str(tmp_path)])
+    args.profile_dir = tmp_path
+    return args
+
+
+def _fetch(monkeypatch, tmp_path, walk):
+    import download
+
+    _browser(monkeypatch, SignInPage())
+    monkeypatch.setattr(login, "authenticate", lambda *a, **kw: TOKEN)
+    monkeypatch.setattr(download, "walk", walk)
+    return login.run_login_and_fetch(_fetch_args(tmp_path))
+
+
+def test_a_whole_run_exits_zero(tmp_path, monkeypatch):
+    assert _fetch(monkeypatch, tmp_path,
+                  lambda *a, **kw: {"short": False}) == 0
+
+
+def test_a_short_run_exits_four(tmp_path, monkeypatch):
+    assert _fetch(monkeypatch, tmp_path,
+                  lambda *a, **kw: {"short": True}) == 4
+
+
+def test_a_bearer_ended_mid_run_exits_one(tmp_path, monkeypatch, caplog):
+    def walk(*a, **kw):
+        raise george.BearerEnded("HTTP 401")
+
+    assert _fetch(monkeypatch, tmp_path, walk) == 1
+    assert "ended the bearer" in caplog.text
+
+
+def test_a_failed_sign_in_exits_one(tmp_path, monkeypatch):
+    import download
+
+    _browser(monkeypatch, SignInPage())
+    monkeypatch.setattr(login, "authenticate", lambda *a, **kw: None)
+    monkeypatch.setattr(download, "walk", _no_browser)
+    assert login.run_login_and_fetch(_fetch_args(tmp_path)) == 1
+
+
+def test_a_playwright_error_never_puts_the_bearer_in_the_log(
+        tmp_path, monkeypatch, caplog):
+    def walk(*a, **kw):
+        raise RuntimeError(
+            "request failed\nCall log:\n  - authorization: Bearer "
+            f"{TOKEN}\n  - cookie: session={TOKEN}")
+
+    assert _fetch(monkeypatch, tmp_path, walk) == 1
+    assert TOKEN not in caplog.text
+
+
+def test_an_unwritable_bronze_dir_stops_before_the_sign_in(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(login, "camoufox", _no_browser)
+    args = _fetch_args(tmp_path / "absent")
+    with pytest.raises(SystemExit):
+        login.run_login_and_fetch(args)
+
+
+# --- what reaches a log line ----------------------------------------------
+
+def test_neither_the_bearer_nor_the_user_name_reaches_a_log_line(
+        tmp_path, caplog):
+    caplog.set_level(logging.DEBUG)
+    page = SignInPage()
+    ctx = Context(page)
+    assert login.authenticate(ctx, page, login.Watch(), args=_args(tmp_path),
+                              cli_mfa=True, mfa_timeout=30) == TOKEN
+    assert TOKEN not in caplog.text
+    assert USER not in caplog.text

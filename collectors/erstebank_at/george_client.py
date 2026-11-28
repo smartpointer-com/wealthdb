@@ -88,6 +88,21 @@ def bearer_from_header(value: str | None) -> str | None:
     return None
 
 
+class BearerEnded(Exception):
+    """The data API refused the bearer (HTTP 401 or 403): it expired or was
+    ended. Nothing after it in the run can be read, so the run stops."""
+
+
+BEARER_REFUSED = (401, 403)
+
+# A document is a PDF only when its body starts with this.
+PDF_MAGIC = b"%PDF"
+
+
+def is_pdf(body: object) -> bool:
+    return isinstance(body, (bytes, bytearray)) and bytes(body).startswith(PDF_MAGIC)
+
+
 # --- data endpoints (§C, §E, §G) ------------------------------------------
 
 def _q(value: str) -> str:
@@ -183,6 +198,12 @@ def page_has_more(body: object, page: int) -> bool:
         return False
     count = body.get("pageCount")
     return isinstance(count, int) and page + 1 < count
+
+
+def roster_declared_total(body: object) -> int | None:
+    """The account count a roster page declares (`pageTotalSize`), or None."""
+    total = body.get("pageTotalSize") if isinstance(body, dict) else None
+    return total if isinstance(total, int) and not isinstance(total, bool) else None
 
 
 def page_number_is(body: object, page: int) -> bool:

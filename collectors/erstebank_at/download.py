@@ -25,6 +25,12 @@ A product is a checking account (its id) or a credit card
 
 Read-only (AGENTS.md): every call is a GET except the two document
 downloads, whose POST body carries only the bearer.
+
+A short run is a complete one that says so: a history not read to its end,
+a listing that failed (written nowhere) or a PDF that did not download sets
+`short` in the summary. A short roster fails the run, since gold reads
+every roster as the whole one. A 401 or 403 ends the bearer
+(`george.BearerEnded`) and stops the run.
 """
 from __future__ import annotations
 
@@ -70,9 +76,12 @@ def build_manifest(status: str, *, accounts: list[str], cards: list[str],
 
 
 def fetch_roster(api, run_dir: Path) -> list[dict]:
-    """Every checking-roster page, merged. A page that is not the one asked
-    for ends the walk with a warning, since the roster would repeat."""
+    """Every checking-roster page, merged. The roster is the whole set of
+    accounts a run covers, so a short one fails the run: a page that is not
+    the one asked for (the roster would repeat), the page cap, or fewer
+    rows than the roster declares."""
     rows: list[dict] = []
+    declared = None
     for page in range(MAX_ROSTER_PAGES):
         status, body = api.get_json(george.accounts_url(page))
         if status != 200 or not isinstance(body, dict):
@@ -81,12 +90,19 @@ def fetch_roster(api, run_dir: Path) -> list[dict]:
         bronze.atomic_write_json(run_dir / "raw" / f"accounts-{page}.json",
                                  body)
         if page and not george.page_number_is(body, page):
-            log.warning("the roster ignored page=%d; keeping the pages "
-                        "before it", page)
-            break
+            raise RuntimeError(f"the account roster ignored page={page}; "
+                               f"the roster is short")
+        if page == 0:
+            declared = george.roster_declared_total(body)
         rows.extend(george.roster_accounts(body))
         if not george.page_has_more(body, page):
             break
+    else:
+        raise RuntimeError(f"the account roster passed {MAX_ROSTER_PAGES} "
+                           f"pages; the roster is short")
+    if declared is not None and len(rows) != declared:
+        raise RuntimeError(f"the account roster holds {len(rows)} row(s) "
+                           f"but declares {declared}")
     return rows
 
 
@@ -138,13 +154,18 @@ def download_document(api, url: str, pump) -> bytes | str | None:
     for attempt in range(RENDER_ATTEMPTS):
         try:
             status, body, error = api.post_token_form(url)
+        except george.BearerEnded:
+            raise
         except Exception as exc:
             # safe_error, never %r: a Playwright call log repeats the
             # request headers, the bearer included.
             log.debug("document failed: %s", debugcap.safe_error(exc))
             return None
         if 200 <= status < 300 and body:
-            return body
+            if george.is_pdf(body):
+                return body
+            log.debug("document: the body is not a PDF")
+            return None
         if not george.is_render_pending(status, error):
             log.debug("document: HTTP %s", status)
             return None
@@ -167,21 +188,28 @@ def _doc_path(out_dir: Path, day, key: str) -> Path:
 
 
 def statement_documents(api, account_id: str, out_dir: Path,
-                        since: date | None) -> list[Document]:
+                        since: date | None) -> list[Document] | None:
     """Write a checking account's statement listing and return the PDFs in
-    the window."""
+    the window. A listing that failed on any page is written nowhere, since
+    a partial one would read as the whole archive; None says so."""
     listing: list[dict] = []
     for page in range(MAX_STATEMENT_PAGES):
         status, body = api.get_json(george.statements_url(account_id, page))
         if status != 200 or not isinstance(body, dict):
             log.warning("statements %s page %d: HTTP %s",
                         bronze.log_id(account_id), page, status)
-            break
+            return None
         if page and not george.page_number_is(body, page):
-            break
+            log.warning("statements %s: page %d ignored the page asked for",
+                        bronze.log_id(account_id), page)
+            return None
         listing.extend(george.statement_rows(body))
         if not george.page_has_more(body, page):
             break
+    else:
+        log.warning("statements %s: stopped at the %d-page cap",
+                    bronze.log_id(account_id), MAX_STATEMENT_PAGES)
+        return None
     bronze.atomic_write_json(out_dir / "listing.json", listing)
     return [Document(
         george.statement_download_url(account_id, str(row["id"])),
@@ -193,14 +221,14 @@ def statement_documents(api, account_id: str, out_dir: Path,
 
 
 def invoice_documents(api, card: dict, out_dir: Path,
-                      since: date | None) -> list[Document]:
+                      since: date | None) -> list[Document] | None:
     """Write a credit card's statement listing and return the PDFs in the
-    window."""
+    window, or None, writing nothing, when the listing failed."""
     status, body = api.get_json(george.invoices_url(card["product_id"]))
-    if status != 200:
+    if status != 200 or not isinstance(body, list):
         log.warning("card statements %s: HTTP %s",
                     bronze.log_id(card["product_id"]), status)
-        return []
+        return None
     listing = george.invoice_rows(body)
     bronze.atomic_write_json(out_dir / "listing.json", listing)
     return [Document(
@@ -273,7 +301,8 @@ def walk(api, bronze_dir: Path, *, since: date | None = None,
              len(account_ids), len(cards))
 
     counts = {"transactions": 0, "statements": 0, "card_statements": 0,
-              "documents_failed": 0, "incomplete_histories": 0}
+              "documents_failed": 0, "incomplete_histories": 0,
+              "listings_failed": 0}
     if dry_run:
         log.info("[dry-run] would fetch history%s for each product",
                  " + statements" if documents else "")
@@ -297,15 +326,19 @@ def walk(api, bronze_dir: Path, *, since: date | None = None,
             log.info("  %s %s: %d transaction(s)", kind,
                      bronze.log_id(product_id), len(history["transactions"]))
         docs: list[Document] = []
-        for account_id in account_ids:
-            docs += statement_documents(
-                api, account_id,
-                run_dir / "statements" / bronze.safe_stem(account_id), since)
-        for card in cards:
-            docs += invoice_documents(
+        listed = ([statement_documents(
+            api, account_id,
+            run_dir / "statements" / bronze.safe_stem(account_id), since)
+            for account_id in account_ids]
+            + [invoice_documents(
                 api, card,
                 run_dir / "invoices" / bronze.safe_stem(card["product_id"]),
-                since)
+                since) for card in cards])
+        for found in listed:
+            if found is None:
+                counts["listings_failed"] += 1
+            else:
+                docs += found
         if documents:
             download_documents(api, docs, counts, pump)
 
@@ -314,4 +347,6 @@ def walk(api, bronze_dir: Path, *, since: date | None = None,
         status_str, accounts=account_ids, cards=card_products, counts=counts,
         since=since, until=until))
     log.info("download %s: %s", status_str, counts)
-    return {"run_dir": str(run_dir), **counts}
+    short = bool(counts["incomplete_histories"] or counts["documents_failed"]
+                 or counts["listings_failed"])
+    return {"run_dir": str(run_dir), "short": short, **counts}

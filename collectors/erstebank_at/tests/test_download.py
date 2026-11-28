@@ -9,9 +9,12 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import download  # noqa: E402
+import george_client as george  # noqa: E402
 
 ACCOUNT = "ACCT0000000000A1"
 CARD = "CARD0000000000C1"
@@ -215,7 +218,7 @@ def test_a_failed_later_history_page_marks_it_incomplete(tmp_path):
     assert summary["incomplete_histories"] == 1
 
 
-def test_a_roster_that_ignores_the_page_parameter_stops(tmp_path):
+def test_a_roster_that_ignores_the_page_parameter_fails_the_run(tmp_path):
     class Repeating(FakeApi):
         def get_json(self, url):
             if urlsplit(url).path.endswith("/my/accounts"):
@@ -224,11 +227,118 @@ def test_a_roster_that_ignores_the_page_parameter_stops(tmp_path):
                              "accounts": [{"id": ACCOUNT}]}
             return super().get_json(url)
 
-    api = Repeating(history=_history())
-    download.walk(api, tmp_path, since=date(2026, 1, 1),
-                  until=date(2026, 4, 30), documents=False)
-    accounts = json.loads((_run_dir(tmp_path) / "accounts.json").read_text())
-    assert accounts == [{"id": ACCOUNT}]
+    with pytest.raises(RuntimeError, match="ignored page=1"):
+        download.walk(Repeating(history=_history()), tmp_path,
+                      since=date(2026, 1, 1), until=date(2026, 4, 30))
+    manifest = json.loads((_run_dir(tmp_path) / "run.json").read_text())
+    assert manifest["status"] == "in-progress"
+
+
+def test_a_roster_short_of_its_declared_count_fails_the_run(tmp_path):
+    class Short(FakeApi):
+        def get_json(self, url):
+            if urlsplit(url).path.endswith("/my/accounts"):
+                return 200, {"pageNumber": 0, "pageCount": 1,
+                             "pageTotalSize": 2,
+                             "accounts": [{"id": ACCOUNT}]}
+            return super().get_json(url)
+
+    with pytest.raises(RuntimeError, match="declares 2"):
+        download.walk(Short(history=_history()), tmp_path,
+                      since=date(2026, 1, 1), until=date(2026, 4, 30))
+
+
+def test_a_roster_past_the_page_cap_fails_the_run(tmp_path):
+    class Endless(FakeApi):
+        def get_json(self, url):
+            if urlsplit(url).path.endswith("/my/accounts"):
+                page = int(parse_qs(urlsplit(url).query).get("page", [0])[0])
+                return 200, {"pageNumber": page, "pageCount": 10 ** 6,
+                             "accounts": [{"id": f"A{page}"}]}
+            return super().get_json(url)
+
+    with pytest.raises(RuntimeError, match="page"):
+        download.walk(Endless(history=_history()), tmp_path,
+                      since=date(2026, 1, 1), until=date(2026, 4, 30))
+
+
+def test_a_refused_bearer_stops_the_run(tmp_path):
+    class Lapsing(FakeApi):
+        def get_json(self, url):
+            if "/transactions" in url:
+                raise george.BearerEnded("HTTP 401")
+            return super().get_json(url)
+
+    with pytest.raises(george.BearerEnded):
+        download.walk(Lapsing(history=_history()), tmp_path,
+                      since=date(2026, 1, 1), until=date(2026, 4, 30))
+    manifest = json.loads((_run_dir(tmp_path) / "run.json").read_text())
+    assert manifest["status"] == "in-progress"
+
+
+def test_a_refused_bearer_on_a_document_is_not_swallowed(tmp_path):
+    class Lapsing(FakeApi):
+        def post_token_form(self, url):
+            raise george.BearerEnded("HTTP 403")
+
+    with pytest.raises(george.BearerEnded):
+        download.walk(Lapsing(history=_history()), tmp_path,
+                      since=date(2026, 1, 1), until=date(2026, 4, 30))
+
+
+def test_a_failed_statement_listing_is_written_nowhere(tmp_path):
+    class NoListing(FakeApi):
+        def get_json(self, url):
+            if urlsplit(url).path.endswith("/statements"):
+                return 500, None
+            return super().get_json(url)
+
+    summary = download.walk(NoListing(history=_history()), tmp_path,
+                            since=date(2026, 1, 1), until=date(2026, 4, 30))
+    run = _run_dir(tmp_path)
+    assert not (run / "statements" / ACCOUNT / "listing.json").exists()
+    assert (run / "invoices" / PRODUCT / "listing.json").exists()
+    assert summary["listings_failed"] == 1 and summary["short"] is True
+
+
+def test_a_failed_card_listing_is_written_nowhere(tmp_path):
+    class NoInvoices(FakeApi):
+        def get_json(self, url):
+            if urlsplit(url).path.endswith("/invoices"):
+                return 500, None
+            return super().get_json(url)
+
+    summary = download.walk(NoInvoices(history=_history()), tmp_path,
+                            since=date(2026, 1, 1), until=date(2026, 4, 30))
+    assert not (_run_dir(tmp_path) / "invoices" / PRODUCT
+                / "listing.json").exists()
+    assert summary["listings_failed"] == 1 and summary["short"] is True
+
+
+def test_a_whole_run_is_not_short(tmp_path):
+    summary = download.walk(FakeApi(history=_history()), tmp_path,
+                            since=date(2026, 1, 1), until=date(2026, 4, 30))
+    assert summary["short"] is False
+
+
+def test_a_failed_document_or_history_makes_the_run_short(tmp_path):
+    api = FakeApi(history=_history(), render_pending=100)
+    summary = download.walk(api, tmp_path, since=date(2026, 1, 1),
+                            until=date(2026, 4, 30))
+    assert summary["short"] is True
+
+
+def test_a_body_that_is_not_a_pdf_is_not_written(tmp_path):
+    class Html(FakeApi):
+        def post_token_form(self, url):
+            self.posts.append(url)
+            return 200, b"<html>session expired</html>", None
+
+    summary = download.walk(Html(history=_history()), tmp_path,
+                            since=date(2026, 1, 1), until=date(2026, 4, 30))
+    run = _run_dir(tmp_path)
+    assert list(run.rglob("*.pdf")) == []
+    assert summary["documents_failed"] == 2 and summary["short"] is True
 
 
 def test_a_failed_roster_fails_the_run(tmp_path):
@@ -236,7 +346,6 @@ def test_a_failed_roster_fails_the_run(tmp_path):
         def get_json(self, url):
             return 401, None
 
-    import pytest
     with pytest.raises(RuntimeError):
         download.walk(Down(history={}), tmp_path, since=date(2026, 1, 1),
                       until=date(2026, 4, 30))

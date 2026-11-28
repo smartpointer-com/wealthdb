@@ -120,8 +120,7 @@ def load_username(env_file: Path | None) -> str:
     it the captures can hold the user name in clear, so its absence is
     loud.
     """
-    if env_file is not None and envfile.source_env_file(env_file):
-        log.info("env file:    %s (sourced)", env_file)
+    envfile.load(None, candidates=(env_file,), logger=log)
     username = os.environ.get(USER_ENV, "")
     if not username:
         log.warning("%s not set: the captures cannot mask the user name. "
