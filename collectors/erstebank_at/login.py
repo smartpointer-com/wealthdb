@@ -4,10 +4,10 @@
 It also holds the shared authenticate() and the REST helper download.py
 reads through.
 
-A George sign-in lasts a few hours, across browser restarts, and no device
-trust skips the push after it (DESIGN.md §F). So the sign-in and the fetch
-run in **one browser lifetime**: a live session is reused, and a push fires
-only when there is none. The `login` verb folds into `download`; this
+A George sign-in can outlive the browser, and no device trust skips the push
+after it (DESIGN.md §F). So the sign-in and the fetch run in **one browser
+lifetime**: a live session is reused, and a push fires only when there is
+none. The `login` verb folds into `download`; this
 script backs both.
 
 The sign-in (DESIGN.md §A-§B) is an OAuth implicit grant on
@@ -31,7 +31,8 @@ the push is pending.
 
 Modes:
   --check   open the profile and probe for a live session; exit 0 (alive) /
-            1 (dead). Never submits the form, so fires no push.
+            1 (the sign-in form shows) / 3 (no verdict). Never fills or
+            submits the form, so fires no push.
   default   sign in from the terminal (push approved on the phone), then
             fetch via download.walk() into --bronze-dir.
   --no-cli-mfa  the vnc-login fallback: the whole sign-in is done by hand
@@ -52,7 +53,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from collectorkit import cli, debugcap, envfile, launch
+from collectorkit import bronze, cli, debugcap, envfile, launch
 from collectorkit import explore as kit_explore
 from collectorkit.launch import page_url, pump, wait_for
 
@@ -77,9 +78,9 @@ NO_TOKEN_RELOAD_S = 15
 @contextlib.contextmanager
 def camoufox(profile_dir: Path, fresh: bool = False):
     """A persistent Camoufox context on the profile dir, headed under the
-    entrypoint's Xvfb (VNC only for vnc-login). Nothing in the profile
-    skips the push (§F); `fresh` wipes it anyway, as on every verb that
-    offers it. Yields (context, page)."""
+    entrypoint's Xvfb (VNC only for vnc-login). `fresh` wipes the profile,
+    session included (§F), as on every verb that offers it. Yields
+    (context, page)."""
     kit_explore.prepare_profile(
         profile_dir, fresh=fresh, log=log,
         note="the next run signs in with a push")
@@ -156,19 +157,28 @@ class Api:
                 **extra}
 
     def get_json(self, url: str) -> tuple[int, object]:
-        """GET `url`; return (status, parsed JSON or None)."""
+        """GET `url`; return (status, parsed JSON or None). A 401 or 403
+        raises `george.BearerEnded`."""
         resp = self.context.request.get(url, headers=self._headers())
+        _check_bearer(resp.status)
         return resp.status, _json_or_none(resp)
 
     def post_token_form(self, url: str) -> tuple[int, bytes, object]:
         """POST the form the SPA sends to a document download: the bearer
         as `access_token`, nothing else (§E, §G). Returns (status, body
-        bytes, parsed JSON or None — set on an error answer)."""
+        bytes, parsed JSON or None — set on an error answer). A 401 or 403
+        raises `george.BearerEnded`."""
         resp = self.context.request.post(
             url, headers=self._headers(), form={"access_token": self.token})
+        _check_bearer(resp.status)
         body = resp.body()
         parsed = _json_or_none(resp) if resp.status >= 400 else None
         return resp.status, body, parsed
+
+
+def _check_bearer(status: int) -> None:
+    if status in george.BEARER_REFUSED:
+        raise george.BearerEnded(f"HTTP {status}")
 
 
 def _json_or_none(resp) -> object:
@@ -190,8 +200,7 @@ def probe(context, token: str | None) -> bool:
 # --- the sign-in page -----------------------------------------------------
 
 def load_username(env_file: Path) -> str:
-    if envfile.source_env_file(env_file):
-        log.info("env file: %s (sourced)", env_file)
+    envfile.load(None, candidates=(env_file,), logger=log)
     return os.environ.get(USER_ENV, "")
 
 
@@ -249,15 +258,18 @@ def _submit_username(page, username: str, args) -> bool:
         log.error("could not fill the user-name field. Retry with "
                   "vnc-login. (DOM captured with --debug.)")
         return False
+    # One path, chosen before acting: an attempt that raised may still have
+    # submitted, and a second one would fire a second push.
     with contextlib.suppress(Exception):
-        page.locator(george.SEL_SUBMIT).first.click(timeout=5000)
-        return True
-    with contextlib.suppress(Exception):
-        field.press("Enter")
+        if _visible(page, george.SEL_SUBMIT):
+            page.locator(george.SEL_SUBMIT).first.click(timeout=5000)
+        else:
+            field.press("Enter")
         return True
     _capture(page, args, "submit-failed")
-    log.error("could not submit the sign-in form. Retry with vnc-login. "
-              "(DOM captured with --debug.)")
+    log.error("could not submit the sign-in form. A push may have been "
+              "sent: approve none that shows no comparison code. Retry with "
+              "vnc-login. (DOM captured with --debug.)")
     return False
 
 
@@ -296,17 +308,22 @@ def _drive_to_push(context, page, watch: Watch, args) -> bool:
         error = read_error(page)
         return bool(code or error or _token_now(page, watch))
 
-    wait_for(challenge_up, page, CHALLENGE_SCREEN_TIMEOUT_S)
+    appeared = wait_for(challenge_up, page, CHALLENGE_SCREEN_TIMEOUT_S)
     if error:
         _capture(page, args, "sign-in-refused")
         log.error("George refused the sign-in: %s", error)
         return False
+    if not appeared or not (code or watch.token):
+        _capture(page, args, "no-push-screen")
+        log.error("the push wait screen with its comparison code did not "
+                  "appear within %ds. A push may have been sent: approve "
+                  "none that shows no comparison code. Use vnc-login. "
+                  "(DOM captured with --debug.)", CHALLENGE_SCREEN_TIMEOUT_S)
+        return False
     if code:
-        log.info("Push sent — approve the sign-in in the George app (or "
-                 "George ID). Comparison code: %s", code)
-    else:
-        log.info("Push sent — approve the sign-in in the George app (or "
-                 "George ID).")
+        log.info("Push sent. Comparison code: %s. Approve the sign-in in "
+                 "the George app (or George ID) only if it shows the same "
+                 "code.", code)
     return True
 
 
@@ -356,11 +373,15 @@ def _wait_for_token(context, page, watch: Watch, timeout_s: int, *,
     deadline = time.monotonic() + timeout_s
     on_george_since = None
     reloaded = False
+    refused: set[str] = set()
     while time.monotonic() < deadline:
         token = _token_now(page, watch)
-        if token is not None:
+        if token is not None and token not in refused:
             if probe(context, token):
                 return token
+            refused.add(token)
+            watch.token = None
+        elif token is not None:
             watch.token = None
         if watch_errors and read_error(page):
             return None
@@ -395,39 +416,66 @@ def _capture(page, args, name: str) -> None:
 
 def run_check(args: argparse.Namespace) -> int:
     """Open George on the stored profile and probe for a live session.
-    Exit 0 if alive, 1 otherwise. A sign-in lasts a few hours (§F). The
-    sign-in form is never submitted, so no push fires."""
-    with camoufox(args.profile_dir) as (context, page):
-        watch = Watch().attach(context)
-        with contextlib.suppress(Exception):
-            page.goto(george.START_URL, wait_until="domcontentloaded",
-                      timeout=45_000)
-        if wait_for(lambda: probe(context, _token_now(page, watch))
-                    or _visible(page, george.SEL_USER), page, 30):
+    Exit 0 if alive, 1 when the sign-in form shows (no session), and 3
+    when neither appeared or the browser did not start: no verdict either
+    way (§F). It fills and clicks nothing, so no push fires."""
+    try:
+        with camoufox(args.profile_dir) as (context, page):
+            watch = Watch().attach(context)
+            with contextlib.suppress(Exception):
+                page.goto(george.START_URL, wait_until="domcontentloaded",
+                          timeout=45_000)
+            wait_for(lambda: probe(context, _token_now(page, watch))
+                     or _visible(page, george.SEL_USER), page, 30)
             if probe(context, watch.token):
                 log.info("session ALIVE")
-                return 0
-    log.info("session DEAD — the next download signs in with a push")
-    return 1
+                return cli.EXIT_OK
+            if _visible(page, george.SEL_USER):
+                log.info("session DEAD — the next download signs in with a "
+                         "push")
+                return cli.EXIT_FAILED
+    except Exception as exc:
+        log.error("no verdict: the session probe could not run (%s)",
+                  debugcap.safe_error(exc))
+        return cli.EXIT_NO_VERDICT
+    log.warning("no verdict: neither a session nor the sign-in form "
+                "appeared (no network, or the site is down?)")
+    return cli.EXIT_NO_VERDICT
 
 
 def run_login_and_fetch(args: argparse.Namespace) -> int:
-    """Sign in (push), then fetch via download.walk() into --bronze-dir."""
+    """Sign in (push when no session is alive), then fetch via
+    download.walk() into --bronze-dir. Exit 0 when the run is whole, 4 when
+    it came back short, 1 when it could not finish. An error ends the run
+    with its safe text, never a Playwright call log, which repeats the
+    request headers and the bearer with them."""
     since, until = cli.resolve_standard(args, verb="download", log=log)
-    with camoufox(args.profile_dir, fresh=args.fresh) as (context, page):
-        watch = Watch().attach(context)
-        token = authenticate(context, page, watch, args=args,
-                             cli_mfa=args.cli_mfa,
-                             mfa_timeout=args.mfa_timeout)
-        if token is None:
-            return 1
-        import download
-        summary = download.walk(
-            Api(context, token), args.bronze_dir, since=since, until=until,
-            documents=not args.no_documents, dry_run=args.dry_run,
-            pump=lambda ms: pump(page, ms))
-        log.info("fetch done: %s", summary)
-    return 0
+    bronze.ensure_writable_dir(args.bronze_dir)
+    try:
+        with camoufox(args.profile_dir, fresh=args.fresh) as (context, page):
+            watch = Watch().attach(context)
+            token = authenticate(context, page, watch, args=args,
+                                 cli_mfa=args.cli_mfa,
+                                 mfa_timeout=args.mfa_timeout)
+            if token is None:
+                return cli.EXIT_FAILED
+            import download
+            summary = download.walk(
+                Api(context, token), args.bronze_dir, since=since,
+                until=until, documents=not args.no_documents,
+                dry_run=args.dry_run, pump=lambda ms: pump(page, ms))
+    except george.BearerEnded:
+        log.error("George ended the bearer mid-run. The run is not "
+                  "complete and is not loaded. Re-run.")
+        return cli.EXIT_FAILED
+    except Exception as exc:
+        log.error("the run failed: %s", debugcap.safe_error(exc))
+        return cli.EXIT_FAILED
+    log.info("fetch done: %s", summary)
+    if summary["short"]:
+        log.warning("the fetch came back short; the next run asks again")
+        return cli.EXIT_SHORT
+    return cli.EXIT_OK
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -445,8 +493,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help=f"Bash-sourced env file with {USER_ENV}. Default: "
                         "%(default)s.")
     p.add_argument("--check", action="store_true",
-                   help="Probe the stored profile for a live session and "
-                        "exit 0/1; no push (§F).")
+                   help="Probe the stored profile for a live session; no "
+                        "push. Exit 0 alive, 1 no session, 3 no verdict "
+                        "(DESIGN.md §F).")
     p.add_argument("--cli-mfa", dest="cli_mfa", action="store_true",
                    default=True,
                    help="Submit the user name from the env file and wait "
@@ -463,8 +512,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Skip the statement PDFs (checking and card).")
     p.add_argument("--dry-run", action="store_true",
                    help="Sign in and read the rosters only; fetch no history "
-                        "or PDFs and stamp the manifest 'dry-run'. Still "
-                        "fires a push.")
+                        "or PDFs and stamp the manifest 'dry-run'. Signs in "
+                        "like a run, so it fires a push when no session is "
+                        "alive (DESIGN.md §F).")
     p.add_argument("--debug", action="store_true",
                    help="Capture the sign-in DOM/screenshots into "
                         "--screenshot-dir (for pinning selectors).")
