@@ -408,6 +408,6 @@ keys; this section says why they are what they are.
 
 It registers via the blank import in `cmd/wealthdb/main.go` and the
 `silver_sources` migration
-(`internal/gold/migrations/0173_silver_sources_erstebank_at.sql`). Its
+(`internal/gold/migrations/0180_silver_sources_erstebank_at.sql`). Its
 policy is the deposit-bank one: the checking accounts' return rows are
 hidden, and the engine drops card accounts from returns.
