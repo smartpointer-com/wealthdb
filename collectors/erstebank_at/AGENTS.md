@@ -11,12 +11,11 @@ namespaced to Austria because Erste runs a distinct George system in each
 country. Scope is two account kinds: **checking accounts (Girokonto)** and
 **credit cards**, as far as George itself serves them.
 
-The surface is **not mapped yet**. DESIGN.md §H lists what the first
-explore must answer. Until it is mapped, the allow list below is stated
-against UI surfaces rather than endpoints, and it errs wide on the forbid
-side. Each explore narrows it to the endpoints it records. Never widen it
-without the user opting in in writing. Mapping a new endpoint does not
-widen scope.
+The surface is mapped in DESIGN.md §A–§G: an OAuth implicit-grant login
+on `login.sparkasse.at` with an s Identity push, and a REST/JSON data API
+on `api.sparkasse.at`. The allow list below is stated against the mapped
+endpoints and errs wide on the forbid side. Never widen it without the
+user opting in in writing. Mapping a new endpoint does not widen scope.
 
 **The UI is entirely German.** Never key a selector on display text —
 English *or* German — where an id / test-id / ARIA role exists. Where a
@@ -58,33 +57,48 @@ fired must never be approved**. Navigation stays allow-list-tight.
 Allowed — only these surfaces may be driven (all read-only except the
 sign-in itself):
 
-- **The sign-in and its s Identity challenge**: the user-name form, the
-  push wait screen with any comparison code it shows, its resend or
-  cancel control, any factor-choice screen the challenge offers (read
-  only — choosing a factor is part of signing in, enrolling one is not),
-  and the OIDC / token plumbing behind them.
-- **Checking accounts (Girokonto)**, read-only: the account overview and
-  roster, each account's detail, its transaction list (search, filter and
-  paging are reads), one transaction's detail view, and the balance as
-  displayed.
-- **Credit cards**, read-only, as far as George serves them: the card
-  roster, each card account's balance / limit / due date as displayed,
-  its transaction list and detail, and its statements. A card portal on
-  another site is out of scope: record that the link exists, never follow
-  it.
-- **Transaction exports** of an in-scope account (CSV, JSON or whatever
-  formats George offers): triggering an export is a read.
-- **Statements (Kontoauszüge / Kreditkartenabrechnungen)** of in-scope
-  accounts: the listing and the PDF download, including a read-only
-  "generate statement" trigger. Fetch documents of in-scope accounts
-  only.
+- **The sign-in and its s Identity challenge** on `login.sparkasse.at`:
+  `GET`/`POST /sts/oauth/authorize?…client_id=georgeclient&response_type=token`
+  (the capability probe, the user-name form `form#credentials`, and the
+  final redirect carrying the token), the push wait screen with its
+  comparison code (`#verificationCode`) and cancel link (`#cancelLink`),
+  and the poll `POST /sts/secapp/secondfactor?client_id=georgeclient`.
+  The page's own sensor posts (DESIGN.md §A) ride along unprompted.
+- **Checking accounts (Girokonto)**, read-only, on `api.sparkasse.at`:
+  - roster: `GET /rest/netbanking/my/accounts` and
+    `GET /rest/netbanking/my/accounts/<accountId>`;
+  - history: `GET /proxy/g/api/my/transactions?id=<accountId>&page=…&pageSize=…`;
+  - statements: `GET …/accounts/<accountId>/statements?page=…&size=…&sort=…&order=…`,
+    `GET …/statements/current`, and the PDF
+    `POST …/statements/download?format=…&statementIds=…&includeVoucher=…`
+    (a read-only export trigger; its body carries only the bearer).
+- **Credit cards**, read-only, on `api.sparkasse.at`:
+  - roster: `GET /rest/netbanking/my/cards` and
+    `GET /rest/netbanking/my/cards/<cardId>` (credit-card rows only; a
+    debit card is read only as the roster row it sits in);
+  - history: the same transactions endpoint, keyed by the card account;
+  - statements: `GET /proxy/g/api/my/accounts/<cardAccountId>-<cardId>/invoices?numberOfMonths=…`
+    and the PDF `POST /rest/netbanking/my/cards/<cardId>/invoices/<billId>/pdf`
+    (a read-only export trigger; its body carries only the bearer).
+- **Transaction exports** of an in-scope account, once explore maps them
+  (DESIGN.md §D): triggering an export is a read.
 - Logout (optional; not required between runs, but harmless).
 
-The dashboard fires calls outside this list **on its own** when its
-routes load (product tiles, Postfach unread count, plugin and marketing
-widgets, spending statistics). That passive traffic is not scope
-widening. The collector's own code must never call those endpoints or
-navigate their surfaces.
+These are the only `POST`s the collector's own code may send: the
+sign-in form, the push poll, and the two PDF downloads above.
+
+The SPA fires calls outside this list **on its own** when its routes
+load. That passive traffic is not scope widening, and the collector's own
+code must never call those endpoints or navigate their surfaces. Seen so
+far: `…/orders/payments`, `…/orders/payments/limits`,
+`…/accounts/<accountId>/standingorders`, `…/contacts`, `…/plugins`,
+`…/messages`, `…/securities`, `…/pensions`, `…/contracts/*`,
+`…/instant-cash`, `…/watchdogs/*`, `…/cards/<cardId>/{trackings,authorized-cards,invoice-delivery}`,
+`…/profile*`, `/rest/my/serviceRequests/*`, `/ebv-user/*`,
+`cards-api.sparkasse.at/my/products/installment-plans`,
+`sam.sparkasse.at` (electronic storage), `messaging.sparkasse.at`,
+the `/proxy/ggw/*` dashboard, promotion and flag feeds, and
+`POST /proxy/g/api/my/categorization/on-login`.
 
 Forbidden — do not navigate to, click, or scrape:
 
