@@ -63,9 +63,29 @@ _SECRET_NAMES = frozenset(_SECRET_HEADERS)
 # A percent-escape, for re-spelling one in lower-case hex.
 _PCT_ESCAPE_RE = re.compile(r"%[0-9A-Fa-f]{2}")
 
+# A `name=value` pair inside a URL fragment. An OAuth implicit grant hands
+# its token back as `#access_token=…`, and an SPA route can carry its own
+# query (`#/x?token=…`); neither is part of what urlsplit calls the query.
+_FRAGMENT_PAIR_RE = re.compile(r"(?P<name>[^=&?;/#]+)=(?P<value>[^&;]*)")
+
+# Response headers whose value is a URL, or holds one. A redirect is how a
+# sign-in hands its token to the next page, so the URL it names is masked
+# like any recorded URL.
+_URL_HEADERS = frozenset({"location", "content-location", "refresh", "link"})
+_EMBEDDED_URL_RE = re.compile(r"https?://[^\s<>\"',]+")
+
+
+def _mask_fragment(fragment: str) -> str:
+    def mask(m):
+        if m["name"].lower() in _SECRET_PARAMS:
+            return f"{m['name']}={REDACTED}"
+        return m.group(0)
+    return _FRAGMENT_PAIR_RE.sub(mask, fragment)
+
 
 def redact_url(url: str) -> str:
-    """Return `url` with credential-bearing query parameters masked.
+    """Return `url` with credential-bearing parameters masked, in the query
+    and in the fragment.
 
     Keeps the parameter NAME — that a request carried an `api_key` is the
     diagnostic; its value is the secret. A URL that cannot be parsed is
@@ -76,13 +96,29 @@ def redact_url(url: str) -> str:
         parts = urllib.parse.urlsplit(url)
     except ValueError:
         return REDACTED
-    if not parts.query:
+    if not parts.query and not parts.fragment:
         return url
-    pairs = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
-    masked = [(k, REDACTED if k.lower() in _SECRET_PARAMS else v)
-              for k, v in pairs]
+    query = parts.query
+    if query:
+        pairs = urllib.parse.parse_qsl(query, keep_blank_values=True)
+        query = urllib.parse.urlencode(
+            [(k, REDACTED if k.lower() in _SECRET_PARAMS else v)
+             for k, v in pairs])
+    fragment = _mask_fragment(parts.fragment)
+    if query == parts.query and fragment == parts.fragment:
+        return url
     return urllib.parse.urlunsplit(
-        parts._replace(query=urllib.parse.urlencode(masked)))
+        parts._replace(query=query, fragment=fragment))
+
+
+def _redact_url_header(value):
+    """A URL-valued header with every URL in it masked: a bare (possibly
+    relative) `Location`, or URLs embedded in a `Refresh` / `Link` value."""
+    if not isinstance(value, str):
+        return value
+    if "://" not in value:
+        return redact_url(value)
+    return _EMBEDDED_URL_RE.sub(lambda m: redact_url(m.group(0)), value)
 
 
 def safe_error(exc: BaseException) -> str:
@@ -187,7 +223,9 @@ def redact_headers(headers) -> dict:
     value is only knowable from the header it arrived in — an ``apikey``
     a site issues at runtime, a ``cookie`` a session sets. Keeping the
     name and dropping the value preserves the diagnostic (that the
-    request carried a key) without the key.
+    request carried a key) without the key. A header whose value is a URL
+    (``Location`` and kin) is kept, with that URL masked as
+    :func:`redact_url` masks any recorded URL.
     """
     if not headers:
         return {}
@@ -195,7 +233,9 @@ def redact_headers(headers) -> dict:
         items = headers.items()
     except AttributeError:
         return {}
-    return {k: (REDACTED if k.lower() in _SECRET_HEADERS else v)
+    return {k: (REDACTED if k.lower() in _SECRET_HEADERS
+                else _redact_url_header(v) if k.lower() in _URL_HEADERS
+                else v)
             for k, v in items}
 
 
@@ -408,6 +448,8 @@ def _redact_har_entry(entry: dict, redact) -> None:
         for pair in pairs:
             if isinstance(pair, dict):
                 pair["value"] = clean(pair.get("value"))
+                if str(pair.get("name", "")).lower() in _URL_HEADERS:
+                    pair["value"] = _redact_url_header(pair["value"])
     # Both fields on both halves. The spec puts `url` on the request and
     # `redirectURL` on the response, but a recorder that also writes the
     # other spelling would otherwise leave a URL — and the hop carrying a
